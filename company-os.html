@@ -1,0 +1,3270 @@
+<meta charset="utf-8" />
+<title>Company OS — a company simulator</title>
+
+<style>
+/* =========================================================================
+   Company OS — a control console wrapped around a lit office.
+
+   Two rules carry the design:
+
+   1. Type is split by WHO IS SPEAKING. Mono for anything the system measured
+      (metrics, clock, effort, ids, deltas). Sans for anything a person said.
+      The only serif in the product is the quotation mark on human speech.
+
+   2. --beam is reserved for one meaning: a person is waiting on your decision.
+      It appears above their head, on their row, on the tab, on the tray card,
+      and in the toast — and NOWHERE else. Locked work and negative outcomes
+      use neutral and --err instead, so the amber never dilutes.
+
+   The artwork on the canvas keeps its own fixed game palette; only the chrome
+   follows the light / dark theme.
+   ========================================================================= */
+
+:root {
+  color-scheme: dark light;
+
+  --ink: #101218;
+  --slate: #191c24;
+  --slate-2: #20242e;
+  --rule: #262b36;
+  --rule-strong: #333a48;
+
+  --text: #e9edf4;
+  --text-muted: #a2abbb;
+  --text-faint: #737d8e;
+
+  --accent: #7ea2ff;
+  --accent-weak: #1a2137;
+  --beam: #f2c46b;            /* waiting on you — reserved */
+  --beam-weak: #2b2213;
+  --tacit: #c4b1ff;
+  --tacit-weak: #1e1830;
+  --ok: #56d58c;
+  --ok-weak: #102519;
+  --err: #ff8b80;
+  --err-weak: #2a1512;
+
+  --stage-1: #1b1f29;
+  --stage-2: #0c0e13;
+
+  --radius: 12px;
+  --radius-sm: 7px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 14px 34px rgba(0, 0, 0, 0.42);
+
+  --sans: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial,
+    "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+  --mono: "SFMono-Regular", "Cascadia Mono", Consolas, "Noto Sans Mono", monospace;
+  --serif: Georgia, "Times New Roman", serif;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --ink: #eef0f4;
+    --slate: #ffffff;
+    --slate-2: #f6f8fb;
+    --rule: #dfe3ea;
+    --rule-strong: #c4cad5;
+    --text: #131720;
+    --text-muted: #545d6d;
+    --text-faint: #7b8494;
+    --accent: #2a55c9;
+    --accent-weak: #e7edff;
+    --beam: #9a6400;
+    --beam-weak: #fdf3dd;
+    --tacit: #6b46c1;
+    --tacit-weak: #f1ebfe;
+    --ok: #14713f;
+    --ok-weak: #e6f6ec;
+    --err: #b3261e;
+    --err-weak: #fdecea;
+    --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 10px 28px rgba(16, 24, 40, 0.09);
+  }
+}
+
+/* The viewer's toggle stamps data-theme on the root and must win both ways. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --ink: #101218; --slate: #191c24; --slate-2: #20242e;
+  --rule: #262b36; --rule-strong: #333a48;
+  --text: #e9edf4; --text-muted: #a2abbb; --text-faint: #737d8e;
+  --accent: #7ea2ff; --accent-weak: #1a2137;
+  --beam: #f2c46b; --beam-weak: #2b2213;
+  --tacit: #c4b1ff; --tacit-weak: #1e1830;
+  --ok: #56d58c; --ok-weak: #102519;
+  --err: #ff8b80; --err-weak: #2a1512;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 14px 34px rgba(0, 0, 0, 0.42);
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ink: #eef0f4; --slate: #ffffff; --slate-2: #f6f8fb;
+  --rule: #dfe3ea; --rule-strong: #c4cad5;
+  --text: #131720; --text-muted: #545d6d; --text-faint: #7b8494;
+  --accent: #2a55c9; --accent-weak: #e7edff;
+  --beam: #9a6400; --beam-weak: #fdf3dd;
+  --tacit: #6b46c1; --tacit-weak: #f1ebfe;
+  --ok: #14713f; --ok-weak: #e6f6ec;
+  --err: #b3261e; --err-weak: #fdecea;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 10px 28px rgba(16, 24, 40, 0.09);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; max-width: 100%; }
+
+body {
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 { margin: 0; line-height: 1.25; }
+p { margin: 0; }
+ul, ol { margin: 0; padding: 0; list-style: none; }
+button { font: inherit; color: inherit; }
+
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- type roles ----------
+   .mono = the system measured it. .said = a person said it. */
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* ---------- frame ---------- */
+
+.app {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  gap: 9px;
+  height: 100dvh;
+  overflow: hidden;
+  padding: 9px 11px 10px;
+}
+
+.head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px 18px;
+  padding: 8px 12px;
+  background: var(--slate);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand__logo {
+  display: grid; place-items: center;
+  width: 26px; height: 26px; flex: none;
+  border-radius: 6px;
+  background: var(--accent-weak);
+  color: var(--accent);
+  font-size: 15px;
+}
+.brand__title {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.brand__sub { font-size: 11px; color: var(--text-muted); }
+
+.clock {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 3px 10px;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  background: var(--slate-2);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+.clock__day { font-size: 12px; font-weight: 700; letter-spacing: 0.04em; }
+.clock__time { font-size: 11.5px; color: var(--text-muted); }
+
+.speed { display: flex; gap: 4px; margin-left: auto; }
+
+.btn {
+  padding: 5px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: var(--slate);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.btn:hover { background: var(--slate-2); border-color: var(--accent); }
+.btn[aria-pressed="true"] {
+  background: var(--accent-weak);
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 700;
+}
+.btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--ink);
+  font-weight: 650;
+}
+:root[data-theme="light"] .btn--primary { color: #fff; }
+@media (prefers-color-scheme: light) { :root:not([data-theme]) .btn--primary { color: #fff; } }
+.btn--primary:hover { background: var(--accent); filter: brightness(1.08); }
+.btn--small { padding: 3px 8px; font-size: 11.5px; }
+.btn--ghost { border-color: var(--rule); background: transparent; }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ---------- instrument strip ----------
+   One panel, hairline-divided: a gauge cluster, not five cards. */
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  background: var(--slate);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.metric {
+  position: relative;
+  padding: 8px 12px 10px;
+  border-left: 1px solid var(--rule);
+}
+.metric:first-child { border-left: none; }
+
+.metric__label {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.metric__row { display: flex; align-items: baseline; gap: 5px; margin-top: 1px; }
+.metric__value {
+  font-family: var(--mono);
+  font-size: 21px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.metric[data-tone="ok"] .metric__value { color: var(--ok); }
+.metric[data-tone="err"] .metric__value { color: var(--err); }
+.metric__unit { font-family: var(--mono); font-size: 10px; color: var(--text-faint); }
+
+.metric__delta {
+  position: absolute;
+  top: 7px; right: 10px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity 0.3s, transform 0.3s;
+}
+.metric__delta[data-show="1"] { opacity: 1; transform: none; }
+.metric__delta[data-good="1"] { color: var(--ok); }
+.metric__delta[data-good="0"] { color: var(--err); }
+
+/* progress bars inside cards */
+.bar {
+  margin-top: 6px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--rule);
+  overflow: hidden;
+}
+
+/* inside a metric the same element becomes the gauge on the panel edge */
+.metric .bar {
+  margin-top: 0;
+  border-radius: 0;
+  background: transparent;
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 2px;
+}
+.bar > i {
+  display: block;
+  height: 100%;
+  background: var(--rule-strong);
+  transition: width 0.45s ease;
+}
+.metric[data-tone="ok"] .bar > i { background: var(--ok); }
+.metric[data-tone="err"] .bar > i { background: var(--err); }
+
+/* ---------- rails ---------- */
+
+.body {
+  display: grid;
+  grid-template-columns: 244px minmax(0, 1fr) 356px;
+  gap: 9px;
+  min-height: 0;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--slate);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.panel__head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--rule);
+}
+.panel__title {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.panel__scroll { overflow: auto; padding: 8px; }
+
+.count {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+/* ---------- org rail ---------- */
+
+.org { display: flex; flex-direction: column; gap: 1px; }
+
+.org__me {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 8px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--accent-weak);
+}
+.org__group { margin-top: 8px; }
+.org__dept {
+  padding: 5px 8px 3px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.org__note {
+  margin-top: 10px;
+  padding: 9px 8px 2px;
+  border-top: 1px solid var(--rule);
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+.person {
+  display: flex; align-items: center; gap: 9px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.person:hover { background: var(--slate-2); }
+.person[data-selected="1"] { background: var(--accent-weak); border-color: var(--accent); }
+.person--sub { margin-left: 13px; }
+.person__body { min-width: 0; flex: 1; }
+.person__name { font-size: 12.5px; font-weight: 600; letter-spacing: -0.005em; }
+.person__role,
+.person__task {
+  font-size: 10.5px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.person__role { color: var(--text-faint); }
+.person__task { color: var(--text-muted); }
+/* a person waiting on you is the only amber thing in this rail */
+.person[data-waiting="1"] .person__task { color: var(--beam); font-weight: 600; }
+
+.av {
+  display: block; flex: none;
+  width: 30px; height: 30px;
+  border-radius: 7px;
+  background-color: var(--slate-2);
+  background-repeat: no-repeat;
+  background-position: center center;
+  background-size: 30px 30px;
+  image-rendering: pixelated;
+  overflow: hidden;
+  text-indent: -999px;
+}
+.av--lg {
+  width: 40px; height: 40px;
+  border-radius: 9px;
+  background-size: 40px 40px;
+}
+
+.dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--rule-strong); }
+.dot--working { background: var(--accent); }
+.dot--walking, .dot--meeting { background: var(--tacit); }
+.dot--idle { background: var(--rule-strong); }
+.dot--blocked {
+  background: var(--beam);
+  box-shadow: 0 0 0 3px var(--beam-weak);
+  animation: beat 1.9s ease-in-out infinite;
+}
+@keyframes beat {
+  0%, 100% { box-shadow: 0 0 0 2px var(--beam-weak); }
+  50% { box-shadow: 0 0 0 5px var(--beam-weak); }
+}
+
+/* ---------- the stage ----------
+   The floor is the hero: a lit diorama sunk into the console. */
+
+.floor { position: relative; display: flex; flex-direction: column; min-height: 0; }
+/* No padding and a flat ground: the office fills the panel and any leftover
+   sliver matches the artwork's own dark edge, so there is no visible frame.
+   The lighting comes from the baked vignette inside the canvas, not from here. */
+.floor__stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  background: var(--stage-2);
+}
+/* In light mode the surround goes pale, so the dark viewport reads as a screen
+   sitting on a desk rather than a hole in the page. */
+:root[data-theme="light"] .floor__stage { --stage-2: #23272f; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .floor__stage { --stage-2: #23272f; }
+}
+canvas {
+  display: block;
+  position: relative;
+  cursor: pointer;
+  touch-action: manipulation;
+  image-rendering: pixelated;
+}
+
+.floor__hint {
+  display: flex; flex-wrap: wrap; gap: 4px 16px;
+  padding: 7px 11px;
+  border-top: 1px solid var(--rule);
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+kbd {
+  padding: 0 4px;
+  border: 1px solid var(--rule-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--slate-2);
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+/* ---------- work rail ---------- */
+
+.tabs {
+  display: flex; gap: 0;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--rule);
+}
+.tab {
+  position: relative;
+  padding: 10px 7px;
+  border: none;
+  background: none;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+.tab:hover { color: var(--text-muted); }
+.tab[aria-selected="true"] { color: var(--text); }
+.tab[aria-selected="true"]::after {
+  content: "";
+  position: absolute;
+  left: 7px; right: 7px; bottom: -1px;
+  height: 2px;
+  background: var(--accent);
+}
+.tab__badge {
+  margin-left: 5px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--beam);
+  color: var(--ink);
+  font-size: 9.5px;
+  font-weight: 700;
+}
+:root[data-theme="light"] .tab__badge { color: #fff; }
+@media (prefers-color-scheme: light) { :root:not([data-theme]) .tab__badge { color: #fff; } }
+
+.card {
+  padding: 10px 11px;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--slate);
+}
+.card + .card { margin-top: 6px; }
+/* No entry animation here: the rail re-renders whenever anyone's progress
+   ticks, so an "arrival" animation would re-fire every half second. The
+   pulsing dot in the org rail and the toast carry that moment instead. */
+.card--alert {
+  border-color: var(--beam);
+  background: var(--beam-weak);
+}
+.card--locked { opacity: 0.5; }
+.card__top { display: flex; align-items: center; gap: 7px; margin-bottom: 4px; }
+.card__title { font-size: 13px; font-weight: 650; letter-spacing: -0.008em; line-height: 1.3; }
+.card__brief { font-size: 11.5px; line-height: 1.45; color: var(--text-muted); margin-top: 4px; }
+.card__row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 9px; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.chip--dept { border-color: transparent; background: var(--accent-weak); color: var(--accent); }
+.chip--num { text-transform: none; letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+.chip--warn { border-color: transparent; background: var(--beam); color: var(--ink); }
+:root[data-theme="light"] .chip--warn { color: #fff; }
+@media (prefers-color-scheme: light) { :root:not([data-theme]) .chip--warn { color: #fff; } }
+.chip--ok { border-color: transparent; background: var(--ok-weak); color: var(--ok); }
+.chip--info { border-color: transparent; background: var(--accent-weak); color: var(--accent); }
+.chip--tacit { border-color: transparent; background: var(--tacit-weak); color: var(--tacit); }
+.chip--good { border-color: transparent; background: var(--ok-weak); color: var(--ok); }
+.chip--bad { border-color: transparent; background: var(--err-weak); color: var(--err); }
+.chip--plain {
+  text-transform: none; letter-spacing: 0;
+  font-family: var(--sans); font-weight: 500;
+  font-size: 10.5px; color: var(--text-muted);
+  white-space: normal; text-align: left;
+}
+
+.opt {
+  display: block; width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: var(--slate);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.opt:hover { border-color: var(--accent); background: var(--accent-weak); }
+.opt__label { font-size: 12.5px; font-weight: 650; }
+.opt__detail { font-size: 11px; line-height: 1.45; color: var(--text-muted); }
+.opt__cost { margin-top: 5px; display: flex; flex-wrap: wrap; gap: 4px; }
+
+/* ---------- human speech ----------
+   The one serif in the product is this quotation mark. */
+
+.quote {
+  position: relative;
+  margin-top: 8px;
+  padding: 2px 0 2px 22px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.quote::before {
+  content: "\201C";
+  position: absolute;
+  left: 0; top: 4px;
+  font-family: var(--serif);
+  font-size: 27px;
+  line-height: 0.6;
+  color: var(--rule-strong);
+}
+.quote--tacit {
+  margin-top: 9px;
+  padding: 9px 11px 9px 24px;
+  border-radius: var(--radius-sm);
+  background: var(--tacit-weak);
+  color: var(--text);
+}
+.quote--tacit::before { left: 8px; top: 13px; color: var(--tacit); }
+.quote--tacit .chip { margin-right: 5px; vertical-align: 1px; }
+
+.log { display: flex; flex-direction: column; }
+.log__row {
+  display: grid;
+  grid-template-columns: 60px 1fr;
+  gap: 9px;
+  padding: 5px 6px;
+  border-bottom: 1px solid var(--rule);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.log__row:last-child { border-bottom: none; }
+.log__at {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.log__row[data-kind="signal"] .log__text { color: var(--beam); font-weight: 600; }
+.log__row[data-kind="note"] .log__text { color: var(--text-muted); }
+.log__row[data-kind="ok"] .log__text { color: var(--ok); }
+.log__row[data-kind="tacit"] .log__text { color: var(--tacit); }
+
+.empty {
+  padding: 26px 14px;
+  text-align: center;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-faint);
+}
+
+/* ---------- conversation ----------
+   Slides over the right of the stage, never the whole floor: you should not
+   lose sight of where the person you are talking to is standing. */
+
+.talk {
+  position: absolute;
+  inset: 0 0 0 auto;
+  width: min(452px, 100%);
+  display: flex; flex-direction: column;
+  background: var(--slate);
+  border-left: 1px solid var(--rule);
+  transform: translateX(10px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+  z-index: 3;
+}
+.talk[data-open="1"] { transform: none; opacity: 1; pointer-events: auto; }
+.talk__head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+.talk__who { min-width: 0; flex: 1; }
+.talk__name { font-size: 13.5px; font-weight: 650; }
+.talk__role { font-size: 10.5px; color: var(--text-faint); }
+.talk__body { flex: 1; overflow: auto; padding: 11px; }
+.talk__foot { padding: 9px 11px; border-top: 1px solid var(--rule); }
+
+.ask { display: flex; gap: 6px; }
+.ask input {
+  flex: 1; min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: var(--slate-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+.ask input::placeholder { color: var(--text-faint); }
+.hintrow { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+
+.foot {
+  display: flex; flex-wrap: wrap; gap: 3px 16px;
+  padding: 0 3px;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+/* ---------- intro ---------- */
+
+.intro {
+  position: fixed; inset: 0; z-index: 20;
+  display: grid; place-items: center;
+  padding: 16px;
+  background: color-mix(in srgb, var(--ink) 82%, transparent);
+  backdrop-filter: blur(4px);
+}
+.intro[hidden] { display: none; }
+.intro__card {
+  width: min(560px, 100%);
+  max-height: 92dvh;
+  overflow: auto;
+  padding: 22px;
+  background: var(--slate);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+.intro__eyebrow {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+.intro__title {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin-top: 5px;
+  text-wrap: balance;
+}
+.intro__lead { margin-top: 9px; font-size: 12.5px; line-height: 1.55; color: var(--text-muted); }
+
+.steps { margin: 16px 0 0; display: flex; flex-direction: column; gap: 11px; }
+.step { display: grid; grid-template-columns: 20px 1fr; gap: 11px; align-items: start; }
+.step__n {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  padding-top: 2px;
+}
+.step__t { font-size: 12.5px; font-weight: 650; }
+.step__d { font-size: 11.5px; line-height: 1.5; color: var(--text-muted); }
+
+.intro__note {
+  margin-top: 16px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--beam);
+  background: var(--beam-weak);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+/* ---------- toast ---------- */
+
+.toast {
+  position: fixed;
+  left: 50%; bottom: 20px;
+  transform: translate(-50%, 14px);
+  z-index: 15;
+  max-width: min(540px, calc(100% - 24px));
+  padding: 9px 15px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s, transform 0.25s;
+}
+.toast[data-show="1"] { opacity: 1; transform: translate(-50%, 0); }
+.toast[data-tone="signal"] { background: var(--beam); color: var(--ink); }
+:root[data-theme="light"] .toast[data-tone="signal"] { color: #fff; }
+@media (prefers-color-scheme: light) { :root:not([data-theme]) .toast[data-tone="signal"] { color: #fff; } }
+.toast[data-tone="ok"] { background: var(--ok-weak); color: var(--ok); border: 1px solid var(--ok); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+/* ---------- narrow ---------- */
+
+@media (max-width: 1140px) {
+  .app { height: auto; overflow: visible; }
+  .body { grid-template-columns: minmax(0, 1fr); }
+  .panel { max-height: 62dvh; }
+  .floor { order: -1; }
+  .metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .metric:nth-child(4) { border-left: none; }
+  .metric:nth-child(n + 4) { border-top: 1px solid var(--rule); }
+}
+@media (max-width: 800px) {
+  .talk { inset: 0; width: 100%; border-left: none; }
+}
+@media (max-width: 560px) {
+  .app { padding: 8px; }
+  .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metric:nth-child(odd) { border-left: none; }
+  .metric:nth-child(n + 3) { border-top: 1px solid var(--rule); }
+  .speed { margin-left: 0; }
+}
+</style>
+
+<div class="app">
+  <header class="head">
+    <div class="brand">
+      <span class="brand__logo" aria-hidden="true">◧</span>
+      <div>
+        <h1 class="brand__title">Company OS — Halstead Industrial</h1>
+        <p class="brand__sub">Assign work → someone starts → walk over and decide → the company changes</p>
+      </div>
+    </div>
+    <div class="clock">
+      <span class="clock__day" id="clockDay">Day 1</span>
+      <span class="clock__time" id="clockTime">09:00</span>
+    </div>
+    <div class="speed">
+      <button type="button" class="btn btn--small" id="btnPlay" aria-pressed="true">⏸ Pause</button>
+      <button type="button" class="btn btn--small" data-speed="1" aria-pressed="true">×1</button>
+      <button type="button" class="btn btn--small" data-speed="3" aria-pressed="false">×3</button>
+      <button type="button" class="btn btn--small" id="btnHelp">How to play</button>
+    </div>
+  </header>
+
+  <div class="metrics" id="metrics"></div>
+
+  <main class="body">
+    <section class="panel" aria-label="Org chart">
+      <div class="panel__head">
+        <h2 class="panel__title">Org chart — real reporting lines</h2>
+        <span class="count" id="orgCount">10</span>
+      </div>
+      <div class="panel__scroll">
+        <div class="org" id="org"></div>
+      </div>
+    </section>
+
+    <section class="panel floor" aria-label="Floor">
+      <div class="panel__head">
+        <h2 class="panel__title">Floor</h2>
+        <span class="chip" id="nearChip">Nobody nearby</span>
+      </div>
+      <div class="floor__stage">
+        <canvas id="cv" aria-label="Office floor plan showing each employee's avatar and current state."></canvas>
+      </div>
+      <div class="floor__hint">
+        <span>Move with <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrow keys</span>
+        <span>Click the floor to walk there</span>
+        <span>Walk up to someone to talk</span>
+        <span><kbd>Space</kbd> pauses</span>
+      </div>
+      <aside class="talk" id="talk" data-open="0" aria-live="polite">
+        <div class="talk__head">
+          <span class="av av--lg" id="talkAv">—</span>
+          <div class="talk__who">
+            <p class="talk__name" id="talkName">—</p>
+            <p class="talk__role" id="talkRole">—</p>
+          </div>
+          <span class="chip" id="talkState">—</span>
+          <button type="button" class="btn btn--small btn--ghost" id="talkClose">Close</button>
+        </div>
+        <div class="talk__body" id="talkBody"></div>
+        <div class="talk__foot">
+          <form class="ask" id="askForm">
+            <input id="askInput" type="text" autocomplete="off"
+                   placeholder="Ask a question (e.g. why do you do it that way?)" />
+            <button type="submit" class="btn btn--small btn--primary">Ask</button>
+          </form>
+          <div class="hintrow">
+            <button type="button" class="btn btn--small btn--ghost" data-ask="Why do you do it that way?">Why</button>
+            <button type="button" class="btn btn--small btn--ghost" data-ask="Are there exceptions?">Exceptions</button>
+            <button type="button" class="btn btn--small btn--ghost" data-ask="Who decides that?">Who decides</button>
+            <button type="button" class="btn btn--small btn--ghost" data-ask="What is eating your time?">Bottleneck</button>
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="panel" aria-label="Work">
+      <div class="tabs" role="tablist">
+        <button type="button" class="tab" role="tab" data-tab="assign" aria-selected="true">Directives</button>
+        <button type="button" class="tab" role="tab" data-tab="inbox" aria-selected="false">Decisions<span class="tab__badge" id="inboxBadge" hidden>0</span></button>
+        <button type="button" class="tab" role="tab" data-tab="out" aria-selected="false">Deliverables</button>
+        <button type="button" class="tab" role="tab" data-tab="log" aria-selected="false">Activity</button>
+      </div>
+      <div class="panel__scroll" id="rail"></div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>Prototype. Employee replies are scripted — no LLM or backend behind them.</span>
+    <span>Production wires this to the 100_avater hearing API and work-knowledge graph.</span>
+    <span>Characters are pixel sprites built deterministically from each id — no photos, no real likenesses.</span>
+  </footer>
+</div>
+
+<div class="intro" id="intro">
+  <div class="intro__card" role="dialog" aria-modal="true" aria-labelledby="introTitle">
+    <p class="intro__eyebrow">Company simulator</p>
+    <h2 class="intro__title" id="introTitle">You are the CEO. Now run the company.</h2>
+    <p class="intro__lead">
+      The floor is your real org chart. Nobody moves on their own — people start working when you assign
+      something, and they stop at the point where only you can decide.
+    </p>
+    <ol class="steps">
+      <li class="step">
+        <span class="step__n">1</span>
+        <div>
+          <p class="step__t">Assign the work</p>
+          <p class="step__d">Pick a problem from Directives and hand it to a director. He walks to his specialist's desk to hand it off.</p>
+        </div>
+      </li>
+      <li class="step">
+        <span class="step__n">2</span>
+        <div>
+          <p class="step__t">People start moving</p>
+          <p class="step__d">The specialist begins. When they hit something they can't decide, they stop and a "?" appears above them.</p>
+        </div>
+      </li>
+      <li class="step">
+        <span class="step__n">3</span>
+        <div>
+          <p class="step__t">Walk over and decide</p>
+          <p class="step__d">You can clear it from the Decisions tray. Walk over instead and they'll tell you the reason the tray never shows.</p>
+        </div>
+      </li>
+    </ol>
+    <p class="intro__note">
+      The tray is fast and teaches you nothing about why the company works this way. Walking over surfaces
+      tacit knowledge and raises Visibility. That gap is the point of this simulator.
+    </p>
+    <div class="card__row" style="justify-content: flex-end">
+      <button type="button" class="btn btn--primary" id="introStart">Start</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" data-show="0" role="status"></div>
+
+<script>
+"use strict";
+
+/* =========================================================================
+   1. Floor — generated from room rectangles rather than hand-placed walls
+   ========================================================================= */
+
+/* One tile is 16 logical pixels, drawn at an integer zoom with nearest-neighbour
+   scaling, so the art stays true pixel art at any size. */
+const TILE = 16;
+
+const WALL = 0, FLOOR = 1, SOLID = 2, CORRIDOR = 3;
+
+/* The floorplan is GENERATED to fit the window rather than hand-placed at a
+   fixed size. A fixed map can never fill a variable-size stage — whatever is
+   left over shows up as a letterbox — so the room rectangles are computed from
+   however many tiles fit, and the rooms grow or shrink with the window.
+
+   Always eight rooms in two bands around a central corridor; only their size
+   changes. Wider windows get more desks per room, which leaves realistic empty
+   desks the way a real floorplan does. */
+const ROOM_PLAN = [
+  { id: 'exec',       name: 'Executive Office', band: 'top', floor: 'wood',   kind: 'office', seats: 0, deskRows: 1 },
+  { id: 'sales',      name: 'Sales',            band: 'top', floor: 'blue',   kind: 'office', seats: 3 },
+  { id: 'accounting', name: 'Accounting',       band: 'top', floor: 'green',  kind: 'office', seats: 1 },
+  { id: 'meeting',    name: 'Meeting Room',     band: 'top', floor: 'slate',  kind: 'meeting' },
+  { id: 'hr',         name: 'People',           band: 'bot', floor: 'violet', kind: 'office', seats: 2 },
+  { id: 'support',    name: 'Customer Support', band: 'bot', floor: 'amber',  kind: 'office', seats: 2 },
+  { id: 'admin',      name: 'Administration',   band: 'bot', floor: 'slate',  kind: 'office', seats: 2 },
+  { id: 'lounge',     name: 'Lounge',           band: 'bot', floor: 'wood',   kind: 'lounge' },
+];
+
+let COLS = 30, ROWS = 18;
+let W = COLS * TILE, H = ROWS * TILE;
+let ROOMS = [];
+let HALL = { x1: 1, y1: 8, x2: 28, y2: 9 };
+let FURNITURE = [];
+let LAMPS = [];
+let WINDOWS = [];
+let grid = [];
+let SPAWN = { x: 3, y: 9 };
+
+/** Rebuild the whole floor for a grid of cols x rows. */
+function planFloor(cols, rows) {
+  COLS = Math.max(26, cols);
+  ROWS = Math.max(16, rows);
+  W = COLS * TILE;
+  H = ROWS * TILE;
+
+  const hallH = ROWS >= 23 ? 3 : 2;
+  const topH = Math.floor((ROWS - 4 - hallH) / 2);
+  const botH = ROWS - 4 - hallH - topH;
+
+  const topY1 = 1, topY2 = topY1 + topH - 1;
+  const hallY1 = topY2 + 2, hallY2 = hallY1 + hallH - 1;
+  const botY1 = hallY2 + 2, botY2 = botY1 + botH - 1;
+
+  HALL = { x1: 1, y1: hallY1, x2: COLS - 2, y2: hallY2 };
+
+  // four rooms per band, separated by single wall columns
+  const usable = COLS - 2 - 3;
+  const base = Math.floor(usable / 4);
+  const extra = usable - base * 4;
+  const widths = [0, 1, 2, 3].map((i) => base + (i < extra ? 1 : 0));
+
+  ROOMS = [];
+  for (const band of ['top', 'bot']) {
+    let x = 1;
+    let i = 0;
+    for (const def of ROOM_PLAN.filter((r) => r.band === band)) {
+      const w = widths[i];
+      const y1 = band === 'top' ? topY1 : botY1;
+      const y2 = band === 'top' ? topY2 : botY2;
+      ROOMS.push({
+        ...def,
+        x1: x, x2: x + w - 1, y1, y2,
+        door: { x: x + Math.floor(w / 2), y: band === 'top' ? topY2 + 1 : botY1 - 1 },
+      });
+      x += w + 1;
+      i += 1;
+    }
+  }
+  ROOMS.sort((a, b) => ROOM_PLAN.findIndex((r) => r.id === a.id) - ROOM_PLAN.findIndex((r) => r.id === b.id));
+
+  // ---- grid ----
+  grid = [];
+  for (let y = 0; y < ROWS; y++) grid.push(new Array(COLS).fill(WALL));
+  const fill = (r, v) => {
+    for (let y = r.y1; y <= r.y2; y++) for (let x = r.x1; x <= r.x2; x++) grid[y][x] = v;
+  };
+  for (const r of ROOMS) { fill(r, FLOOR); grid[r.door.y][r.door.x] = FLOOR; }
+  fill(HALL, CORRIDOR);
+
+  // ---- furniture, derived from each room's own box ----
+  FURNITURE = [];
+  const add = (x, y, spr, solid) => FURNITURE.push({ x, y, spr, solid: solid ? 1 : 0 });
+
+  for (const r of ROOMS) {
+    const top = r.band === 'top';
+    // desks sit one row nearer the viewer than the seat, so people face us
+    const seatY = top ? r.y1 + 2 : r.y1 + 2;
+    const deskY = seatY + 1;
+    r.seatY = seatY;
+    r.slots = [];
+
+    if (r.kind === 'office') {
+      /* Desk spacing has to adapt: a narrow room at 3-tile spacing cannot seat
+         everyone who reports into it, and two people would land on one chair.
+         Tighten the spacing, then add a second row, until they all fit. */
+      const need = r.seats || 0;
+      const from = r.x1 + 1, to = Math.max(r.x1 + 1, r.x2 - 1);
+      const cap = (st) => Math.floor((to - from) / st) + 1;
+      const step = cap(3) >= need ? 3 : 2;
+      const rowYs = [seatY];
+      // A tall room gets further rows of desks, so the floor reads like a real
+      // open-plan office instead of one lonely row against a wall.
+      for (let sy = seatY + 3; sy + 1 <= r.y2 && rowYs.length < (r.deskRows || 3); sy += 3) rowYs.push(sy);
+
+      for (const sy of rowYs) {
+        for (let x = from; x <= to; x += step) {
+          r.slots.push({ x, y: sy });
+          add(x, sy + 1, 'desk', true);
+          add(x, sy, 'chair', false);
+        }
+      }
+      if (r.x2 - r.x1 >= 4) add(r.x2, r.y2, 'plant', true);
+      if (r.x2 - r.x1 >= 6) add(r.x1, r.y1, 'shelf', true);
+    } else if (r.kind === 'meeting') {
+      const cx = Math.floor((r.x1 + r.x2) / 2);
+      const cy = Math.floor((r.y1 + r.y2) / 2);
+      for (let x = cx - 1; x <= cx + 1; x++) {
+        add(x, cy, 'table', true);
+        add(x, cy + 1, 'table', true);
+        add(x, cy - 1, 'chair', false);
+        if (cy + 2 <= r.y2) add(x, cy + 2, 'chair', false);
+      }
+      r.visit = { x: cx, y: Math.min(cy + 2, r.y2) };
+      add(r.x2, r.y1, 'board', true);
+      add(r.x1, r.y2, 'plant', true);
+    } else {
+      const cy = Math.floor((r.y1 + r.y2) / 2);
+      add(r.x1 + 1, cy, 'sofaL', true);
+      add(r.x1 + 2, cy, 'sofaR', true);
+      add(r.x1 + 4, cy, 'table', true);
+      add(r.x1 + 4, cy - 1, 'chair', false);
+      add(r.x1 + 4, cy + 1, 'chair', false);
+      add(r.x2, r.y1, 'coffee', true);
+      add(r.x2, r.y2, 'plant', true);
+    }
+  }
+  // the corridor gets some life so it does not read as a dead grey band
+  for (let x = 4; x < COLS - 3; x += 7) add(x, HALL.y1, 'plant', true);
+  add(COLS - 2, HALL.y2, 'cooler', true);
+
+  for (const f of FURNITURE) if (f.solid) grid[f.y][f.x] = SOLID;
+
+  // ---- lighting and windows ----
+  LAMPS = [];
+  for (const r of ROOMS) {
+    for (let x = r.x1 + 1; x <= r.x2; x += 6) LAMPS.push({ x, y: r.y1 + 1 });
+  }
+  for (let x = 3; x < COLS - 2; x += 6) LAMPS.push({ x, y: HALL.y1 });
+
+  WINDOWS = [];
+  for (let x = 2; x < COLS - 2; x += 5) {
+    if (grid[0][x] === WALL) WINDOWS.push({ x, y: 0 });
+    if (grid[ROWS - 1][x] === WALL) WINDOWS.push({ x, y: ROWS - 1 });
+  }
+
+  const exec = ROOMS.find((r) => r.id === 'exec');
+  SPAWN = { x: exec.door.x, y: HALL.y1 + (hallH > 2 ? 1 : 0) };
+}
+
+const walkable = (x, y) =>
+  x >= 0 && y >= 0 && x < COLS && y < ROWS && (grid[y][x] === FLOOR || grid[y][x] === CORRIDOR);
+
+/** Breadth-first search. Returns a path that never crosses a wall. */
+function path(from, to) {
+  const key = (x, y) => y * COLS + x;
+  if (!walkable(to.x, to.y)) {
+    // Target is a desk or a wall — fall back to an adjacent walkable cell.
+    const alt = [[0, 1], [0, -1], [1, 0], [-1, 0]]
+      .map(([dx, dy]) => ({ x: to.x + dx, y: to.y + dy }))
+      .find((p) => walkable(p.x, p.y));
+    if (!alt) return [];
+    to = alt;
+  }
+  const prev = new Map();
+  const seen = new Set([key(from.x, from.y)]);
+  let queue = [from];
+  while (queue.length) {
+    const next = [];
+    for (const cur of queue) {
+      if (cur.x === to.x && cur.y === to.y) {
+        const out = [];
+        let k = key(cur.x, cur.y), p = cur;
+        while (prev.has(k)) { out.push(p); p = prev.get(k); k = key(p.x, p.y); }
+        return out.reverse();
+      }
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = cur.x + dx, ny = cur.y + dy, nk = key(nx, ny);
+        if (seen.has(nk) || !walkable(nx, ny)) continue;
+        seen.add(nk);
+        prev.set(nk, cur);
+        next.push({ x: nx, y: ny });
+      }
+    }
+    queue = next;
+  }
+  return [];
+}
+
+/* =========================================================================
+   2. People — desks follow departments, reporting lines don't.
+      Priya sits in Accounting but reports to the Administration director,
+      exactly the kind of mismatch a real org chart has.
+   ========================================================================= */
+
+const PEOPLE = [
+  { id: 'dir_sales',  name: 'Marcus Webb',   initials: 'MW', title: 'VP, Sales',                  dept: 'sales',      mgr: null,        rank: 'director', slot: 2 },
+  { id: 'stf_order',  name: 'Dana Reyes',    initials: 'DR', title: 'Order Processing Specialist', dept: 'sales',      mgr: 'dir_sales', rank: 'staff',    slot: 0 },
+  { id: 'stf_field',  name: 'Tom Baird',     initials: 'TB', title: 'Account Executive',           dept: 'sales',      mgr: 'dir_sales', rank: 'staff',    slot: 1 },
+  { id: 'dir_admin',  name: 'Grace Okafor',  initials: 'GO', title: 'Director, Administration',    dept: 'admin',      mgr: null,        rank: 'director', slot: 1 },
+  { id: 'stf_ap',     name: 'Priya Raman',   initials: 'PR', title: 'Accounts Payable',            dept: 'accounting', mgr: 'dir_admin', rank: 'staff',    slot: 0 },
+  { id: 'stf_buyer',  name: 'Victor Hale',   initials: 'VH', title: 'Procurement Buyer',           dept: 'admin',      mgr: 'dir_admin', rank: 'staff',    slot: 0 },
+  { id: 'dir_cs',     name: 'Nina Kaur',     initials: 'NK', title: 'Customer Support Manager',    dept: 'support',    mgr: null,        rank: 'director', slot: 1 },
+  { id: 'stf_cs',     name: 'Owen Cole',     initials: 'OC', title: 'Support, First Line',         dept: 'support',    mgr: 'dir_cs',    rank: 'staff',    slot: 0 },
+  { id: 'dir_hr',     name: 'Ruth Bello',    initials: 'RB', title: 'People Manager',              dept: 'hr',         mgr: null,        rank: 'director', slot: 1 },
+  { id: 'stf_rec',    name: 'Sam Delgado',   initials: 'SD', title: 'Recruiter',                   dept: 'hr',         mgr: 'dir_hr',    rank: 'staff',    slot: 0 },
+];
+
+/** Resolve everyone's desk from the generated plan. Called again whenever the
+    floor is re-planned, so a resize moves people to their new desks. */
+function assignSeats() {
+  const taken = new Set();
+  const key = (c) => `${c.x},${c.y}`;
+
+  for (const p of S.people) {
+    const room = ROOMS.find((r) => r.id === p.dept);
+    const slots = (room && room.slots) || [];
+    let spot = slots.find((c, i) => i >= p.slot && !taken.has(key(c)))
+            || slots.find((c) => !taken.has(key(c)));
+
+    // Last resort for a room too small for everyone in it: any free floor tile
+    // inside that room. Two people must never share a chair.
+    if (!spot && room) {
+      for (let y = room.y1; y <= room.y2 && !spot; y++) {
+        for (let x = room.x1; x <= room.x2 && !spot; x++) {
+          if (walkable(x, y) && !taken.has(`${x},${y}`)) spot = { x, y };
+        }
+      }
+    }
+    if (!spot) spot = { x: SPAWN.x, y: SPAWN.y };
+
+    taken.add(key(spot));
+    p.seat = { x: spot.x, y: spot.y };
+  }
+}
+
+/** Scripted replies. In production this is where the hearing API plugs in. */
+const VOICE = {
+  stf_order: {
+    why: 'Sales promises a date in their spreadsheet, then I retype it into the order system. Flip that order and sales cannot answer the customer.',
+    exception: 'For our three largest accounts I hold stock over the phone before I enter anything. That never shows up in the system.',
+    axis: 'I decide whether to pull a delivery date forward. Under three days I just do it and tell nobody.',
+    bottleneck: 'Typing the same numbers twice. About 25 hours a month.',
+  },
+  stf_ap: {
+    why: 'Invoices arrive on paper and as PDF, so I reconcile both before I post anything. With only one of them, things slip through.',
+    exception: 'The last three days of the month I release payment before the paper arrives. Waiting would miss the supplier close.',
+    axis: 'Anything over $10K needs the manager approval. Nobody has revisited that line in five years.',
+    bottleneck: 'Matching. Seven minutes an invoice, four hundred invoices a month.',
+  },
+  stf_buyer: {
+    why: 'Three competing quotes on everything, so we can defend the price if an auditor asks.',
+    exception: 'Repairs and emergency parts go single-source. The plant stops otherwise, so I write the paperwork afterwards.',
+    axis: 'The three-quote rule ignores value. I collect three quotes for a thousand-dollar desk.',
+    bottleneck: 'Waiting for quotes to come back. Every order parks 2.5 days there.',
+  },
+  stf_cs: {
+    why: 'I write the same answers by hand every time. We have templates, but I rework them for each customer.',
+    exception: 'Anything that mentions cancelling goes straight to Nina, whatever else it says.',
+    axis: 'Whether a ticket goes to engineering is my call. About five a day I genuinely cannot judge.',
+    bottleneck: 'Questions we have already answered. Six of every ten tickets.',
+  },
+  stf_rec: {
+    why: 'What the hiring manager wants and what the job post says do not match. Rewriting it pauses the listing, so we run it as is.',
+    exception: 'Referrals skip the requirements entirely. That route actually retains better.',
+    axis: 'I set the first-round bar. I have never aligned it with the people who run the interviews.',
+    bottleneck: 'Interview scheduling. Six emails per candidate.',
+  },
+  stf_field: {
+    why: 'I carry my own spreadsheet so I can answer on delivery dates at the customer table. They cannot see our system.',
+    exception: 'Repeat orders I take verbally and collect the paperwork later.',
+    axis: 'The delivery promise is mine. I check stock with Dana, but urgent ones I call myself.',
+    bottleneck: 'I cannot process an order while I am travelling.',
+  },
+  dir_sales: {
+    why: 'I see the numbers daily. Why they came out that way, I would have to ask the floor.',
+    exception: 'The exceptions live with the team. What reaches me is already too late to fix.',
+    axis: 'Credit and discounts are mine. Everything else sits with the account owner.',
+    bottleneck: 'The duplicate order entry. We know about it; nobody has a free hand to fix it.',
+  },
+  dir_admin: {
+    why: 'The close takes five days for two reasons — waiting on paper invoices, and approvals sitting idle. Both causes start outside my department.',
+    exception: 'At quarter end we let the close run a day late to make the numbers line up.',
+    axis: 'Manager approval above $10K. That threshold can move. Nobody has decided to move it.',
+    bottleneck: 'Idle approvals. If the approver is travelling, everything parks for two days.',
+  },
+  dir_cs: {
+    why: 'First-line response is entirely people. I cannot see a way to shrink it without losing quality.',
+    exception: 'Cancellations and anything legal come to me, regardless of content.',
+    axis: 'There is no written escalation rule. It is Owen judgement.',
+    bottleneck: 'Answering repeat questions. That is 60% of Owen time.',
+  },
+  dir_hr: {
+    why: 'We ask the hiring manager what they want, then translate it into our language for the posting. That is where it drifts.',
+    exception: 'Executive hires run through a different route and leave no record.',
+    axis: 'The hiring manager decides at the end, but we filter before they ever see a candidate.',
+    bottleneck: 'Agreeing requirements. Two weeks of back and forth.',
+  },
+};
+
+/* =========================================================================
+   3. Work — every item runs into a point only the CEO can settle
+   ========================================================================= */
+
+const ITEMS = [
+  {
+    id: 'wi_ap_map',
+    title: 'Map how accounts payable actually works',
+    brief: 'Trace the real steps from invoice arrival to payment. Right now nobody in the company can explain who decides what.',
+    dept: 'accounting', want: 'stf_ap', effort: 16,
+    friction: 'I am stuck reconciling paper against PDFs.',
+    checkpoints: [{
+      at: 0.5, kind: 'info', label: 'Information',
+      prompt: 'Invoices arrive twice — once on paper, once as a PDF. Which one is the record? I cannot make that call.',
+      options: [
+        { label: 'PDF is the record', detail: 'Paper becomes reference only. Everything gets searchable, but thirty suppliers need telling.',
+          effect: { visibility: 6, leadTime: -1, morale: -1 }, note: 'PDF is the system of record' },
+        { label: 'Paper is the record', detail: 'Nothing changes on the floor. We can map it, but the waste stays.',
+          effect: { visibility: 3 }, note: 'Paper stays the system of record' },
+        { label: 'Let the team decide', detail: 'Priya picks. Morale goes up, the rule drifts.',
+          effect: { morale: 3, visibility: 1 }, note: 'Record of truth delegated to the team' },
+      ],
+      tacit: '...for the last three days of every month we release payment before the paper even arrives. If we waited we would miss the supplier close. Nobody upstairs knows that.',
+    }],
+    output: { title: 'AP process map (12 steps)', kind: 'Process map' },
+    effect: { visibility: 10 },
+    unlocks: ['wi_ap_auto'],
+  },
+  {
+    id: 'wi_ap_auto',
+    title: 'Automate invoice matching',
+    brief: 'Four of the twelve mapped steps eat 60% of the time. Find out whether a machine can take them.',
+    dept: 'accounting', want: 'stf_ap', effort: 24,
+    friction: 'Running OCR accuracy tests. The quote came back.',
+    requires: { items: ['wi_ap_map'] },
+    checkpoints: [{
+      at: 0.6, kind: 'approval', label: 'Approval',
+      prompt: 'The OCR matching quote is in: $120K up front, $8K a month, and forty hours of manual work disappear every month. I need your approval.',
+      options: [
+        { label: 'Approve it', detail: 'Roll out to every invoice. The investment pays back and the human check stays.',
+          effect: { cash: -120, manualHours: -40, leadTime: -1, morale: 3 }, note: 'OCR matching approved for all invoices' },
+        { label: 'Approve a limited rollout', detail: 'Top ten suppliers only. A third of the cost, a third of the benefit.',
+          effect: { cash: -40, manualHours: -15, morale: 1 }, note: 'Limited rollout to the top ten suppliers' },
+        { label: 'Reject it', detail: 'No spend this year. The manual work stays.',
+          effect: { morale: -3 }, note: 'Automation rejected' },
+      ],
+      tacit: '...70% of the matching is the same three suppliers. You do not need all of them to get the benefit. That is not in the quote.',
+    }],
+    output: { title: 'Invoice matching automation plan', kind: 'Automation candidate' },
+    effect: { visibility: 4 },
+  },
+  {
+    id: 'wi_dup_entry',
+    title: 'Kill the duplicate order entry',
+    brief: 'The same figures get typed into a sales spreadsheet and the order system. Twenty-five hours a month. Nobody has decided to stop it.',
+    dept: 'sales', want: 'stf_order', effort: 20,
+    friction: 'Sales and the order desk disagree on which number is real.',
+    visitMeeting: true,
+    checkpoints: [{
+      at: 0.45, kind: 'decision', label: 'Decision',
+      prompt: 'We enter the same figures twice — the sales spreadsheet and the order system. Which one do we kill?',
+      options: [
+        { label: 'Kill the spreadsheet', detail: 'One record. The hours vanish, but sales can no longer quote dates at the customer table.',
+          effect: { manualHours: -25, leadTime: -1, morale: -2 }, note: 'Spreadsheet retired, system is the record' },
+        { label: 'Change the system to fit sales', detail: '$60K of development. Sales keeps working the way it works; only the double entry goes.',
+          effect: { cash: -60, manualHours: -18, morale: 2 }, note: 'System modified to match how sales works' },
+        { label: 'Leave it alone', detail: 'Do not touch it. The double entry stays.',
+          effect: { morale: -1 }, note: 'Duplicate entry continues' },
+      ],
+      tacit: '...the spreadsheet holds the delivery date we actually promised. The system has no field for it. Kill the spreadsheet and sales starts lying to customers.',
+    }],
+    output: { title: 'Duplicate order entry: options', kind: 'Automation candidate' },
+    effect: { visibility: 8 },
+  },
+  {
+    id: 'wi_faq',
+    title: 'Cut first-line support with an FAQ',
+    brief: 'Six of ten first-line tickets are questions we have answered before. Classify them and the queue stops needing a person.',
+    dept: 'support', want: 'stf_cs', effort: 18,
+    friction: 'Classifying past tickets. Forty-eight so far.',
+    checkpoints: [{
+      at: 0.55, kind: 'approval', label: 'Approval',
+      prompt: 'Publishing the FAQ should cut tickets 25%. The trade-off is that answer quality gets uneven. Do we publish?',
+      options: [
+        { label: 'Publish it externally', detail: 'Goes to customers. Largest effect, and our mistakes go public too.',
+          effect: { manualHours: -30, leadTime: -2, morale: 1 }, note: 'FAQ published externally' },
+        { label: 'Keep it internal', detail: 'Answer templates for the team. Half the effect, none of the exposure.',
+          effect: { manualHours: -12 }, note: 'FAQ kept as internal templates' },
+        { label: 'Hold off', detail: 'Take no quality risk.',
+          effect: { morale: -2 }, note: 'FAQ publication deferred' },
+      ],
+      tacit: '...five tickets a day are the ones I genuinely cannot judge. Those five generate 80% of the complaints. An FAQ will not touch them.',
+    }],
+    output: { title: 'Ticket taxonomy and FAQ v1 (48 entries)', kind: 'Process map' },
+    effect: { visibility: 7 },
+  },
+  {
+    id: 'wi_quotes',
+    title: 'Revisit the three-quote purchasing rule',
+    brief: 'Every purchase needs three competing quotes regardless of value. Each order parks 2.5 days waiting for them.',
+    dept: 'admin', want: 'stf_buyer', effort: 14,
+    friction: 'Sorting two years of purchase orders by value.',
+    checkpoints: [{
+      at: 0.5, kind: 'decision', label: 'Decision',
+      prompt: 'Three quotes on everything costs us 2.5 days per order. Do we change the rule?',
+      options: [
+        { label: 'One quote under $50K', detail: '80% of orders go single-quote. Controls stay where the money is.',
+          effect: { leadTime: -2, manualHours: -14, morale: 2 }, note: 'Single quote permitted under $50K' },
+        { label: 'One quote on everything', detail: 'Fastest possible. We also lose the ability to defend a price.',
+          effect: { leadTime: -3, manualHours: -20, morale: -4 }, note: 'Single quote on all purchases' },
+        { label: 'Keep all three', detail: 'No change. Audit-proof and slow.',
+          effect: { morale: -1 }, note: 'Three-quote rule retained' },
+      ],
+      tacit: '...the three-quote rule came from an audit finding five years ago. That finding was closed long ago. Nobody has decided to remove the rule.',
+    }],
+    output: { title: 'Purchasing policy revision (value thresholds)', kind: 'Policy change' },
+    effect: { visibility: 6 },
+  },
+  {
+    id: 'wi_hiring',
+    title: 'Shorten hiring lead time',
+    brief: 'Two weeks to agree requirements, six emails to schedule one interview. Candidates accept elsewhere while we are still talking.',
+    dept: 'hr', want: 'stf_rec', effort: 22,
+    friction: 'What the hiring manager wants and what the job post says do not match.',
+    checkpoints: [{
+      at: 0.45, kind: 'info', label: 'Information',
+      prompt: 'The job post does not match what the hiring manager actually wants. Which one is right?',
+      options: [
+        { label: 'The hiring manager version', detail: 'Rewrite the post. The listing goes dark for two weeks.',
+          effect: { leadTime: -3, visibility: 4, morale: 1 }, note: 'Hiring manager requirements take precedence' },
+        { label: 'The job post', detail: 'The listing keeps running. We absorb the gap at interview stage.',
+          effect: { morale: -2 }, note: 'Existing job post stands' },
+        { label: 'Put them in a room weekly', detail: 'More hours, but it stops recurring.',
+          effect: { manualHours: 6, leadTime: -4, visibility: 6, morale: 2 }, note: 'Weekly requirements alignment introduced' },
+      ],
+      tacit: '...referrals skip the requirements entirely, and they are the ones who stay. We have never measured that.',
+    }],
+    output: { title: 'Hiring requirements alignment process', kind: 'Process map' },
+    effect: { visibility: 6 },
+  },
+  {
+    id: 'wi_close',
+    title: 'Close the month in two days instead of five',
+    brief: 'Spans accounting and procurement. Two causes: waiting on paper invoices, and approvals sitting idle. Only a director can move both.',
+    dept: 'admin', want: 'dir_admin', effort: 32,
+    friction: 'Interviewing both accounting and procurement.',
+    visitMeeting: true,
+    requires: { visibility: 24 },
+    checkpoints: [
+      {
+        at: 0.3, kind: 'decision', label: 'Decision',
+        prompt: 'Two things stall the close. Which do we fix first? The floor cannot absorb both at once.',
+        options: [
+          { label: 'Paper invoices first', detail: 'Needs supplier cooperation. Worth two days.',
+            effect: { leadTime: -2, visibility: 3 }, note: 'Paper invoice wait tackled first' },
+          { label: 'Idle approvals first', detail: 'Entirely internal, so it moves fast. Worth a day and a half.',
+            effect: { leadTime: -1, visibility: 3, morale: 1 }, note: 'Approval delays tackled first' },
+          { label: 'Both at once', detail: 'Fastest, and it spikes the team workload.',
+            effect: { leadTime: -3, manualHours: 10, morale: -3 }, note: 'Both causes tackled simultaneously' },
+        ],
+        tacit: '...when an approver travels, everything parks for two days. We have a delegate mechanism, but it is not in the authority policy, so nobody uses it.',
+      },
+      {
+        at: 0.75, kind: 'approval', label: 'Approval',
+        prompt: 'We can automate the manager approval above $10K with a value threshold. Where do you set it? This changes the authority policy, so it is your call.',
+        options: [
+          { label: 'Raise it to $30K', detail: 'Approvals drop 70%. Controls stay in place.',
+            effect: { leadTime: -1, manualHours: -18, morale: 2 }, note: 'Approval threshold raised to $30K' },
+          { label: 'Leave it at $10K', detail: 'No policy change. The delay stays.',
+            effect: {}, note: 'Approval threshold unchanged' },
+          { label: 'Remove manager approval', detail: 'Fastest. Fraud detection becomes after-the-fact.',
+            effect: { leadTime: -2, manualHours: -26, morale: -5 }, note: 'Manager approval removed' },
+        ],
+        tacit: '...somebody set $10K five years ago and it has never been revisited. In today prices that is about $3K.',
+      },
+    ],
+    output: { title: 'Month-end close roadmap', kind: 'Improvement plan' },
+    effect: { visibility: 8, leadTime: -1 },
+  },
+  {
+    id: 'wi_ai_rank',
+    title: 'Rank what AI can take over',
+    brief: 'Line up every mapped process, decide what a machine can do, and put them in order. Everything produced so far feeds into this.',
+    dept: 'sales', want: 'dir_sales', effort: 30,
+    friction: 'Reconciling the deliverables from every department.',
+    requires: { visibility: 48 },
+    checkpoints: [{
+      at: 0.6, kind: 'decision', label: 'Decision',
+      prompt: 'Pick the ranking criterion. Change the criterion and the order changes.',
+      options: [
+        { label: 'Rank by hours saved', detail: 'Easy to defend as payback. The painful work waits.',
+          effect: { manualHours: -20, visibility: 4 }, note: 'Ranked by hours saved' },
+        { label: 'Rank by lead time', detail: 'Customers feel it. The hours stay.',
+          effect: { leadTime: -3, visibility: 4 }, note: 'Ranked by lead time' },
+        { label: 'Rank by where it hurts', detail: 'It sticks, and it is harder to defend with numbers.',
+          effect: { morale: 6, visibility: 6, manualHours: -8 }, note: 'Ranked by where the pain is' },
+      ],
+      tacit: '...ask the four directors separately and each names a different worst pain. Pick one company-wide winner and three departments will not accept it.',
+    }],
+    output: { title: 'AI opportunity ranking (12 processes)', kind: 'Improvement plan' },
+    effect: { visibility: 10 },
+    final: true,
+  },
+];
+
+/* =========================================================================
+   4. State
+   ========================================================================= */
+
+/** good: which direction is an improvement. Used to color deltas by meaning
+    rather than by sign — spending cash and cutting hours are both negative. */
+const METRICS = [
+  { key: 'cash',        label: 'Cash',           unit: '$K',   chipUnit: 'K',    good: 1,  max: 6000 },
+  { key: 'manualHours', label: 'Manual work',    unit: 'h/mo', chipUnit: 'h/mo', good: -1, max: 500 },
+  { key: 'leadTime',    label: 'Avg lead time',  unit: 'days', chipUnit: 'd',    good: -1, max: 20 },
+  { key: 'morale',      label: 'Morale',         unit: '/100', chipUnit: '',     good: 1,  max: 100 },
+  { key: 'visibility',  label: 'Visibility',     unit: '%',    chipUnit: '%',    good: 1,  max: 100 },
+];
+
+const S = {
+  day: 1,
+  hour: 9,
+  playing: true,
+  speed: 1,
+  tab: 'assign',
+  m: { cash: 4800, manualHours: 420, leadTime: 12, morale: 72, visibility: 6 },
+  people: PEOPLE.map((p) => ({
+    ...p,
+    seat: { x: 1, y: 1 },        // replaced by assignSeats() once the floor exists
+    pos: { x: 1, y: 1 },
+    path: [],
+    onArrive: null,
+    dir: 'up',        // seated people face their monitor
+    animT: 0,
+    state: 'idle',      // idle | working | blocked | walking | meeting
+    itemId: null,
+    cpIndex: -1,
+    metHours: 0,
+    asked: {},
+    encouragedDay: 0,
+  })),
+  items: ITEMS.map((w) => ({ ...w, done: 0, status: 'backlog', assignee: null, cps: w.checkpoints.map((c) => ({ ...c, resolved: false })) })),
+  ceo: { pos: { x: 3, y: 9 }, path: [], keys: new Set(), dir: 'down', animT: 0 },   // moved to SPAWN on first plan
+  near: null,
+  talkFor: null,
+  outputs: [],
+  log: [],
+};
+
+const byId = (id) => S.people.find((p) => p.id === id);
+const item = (id) => S.items.find((w) => w.id === id);
+const deptName = (id) => (ROOMS.find((r) => r.id === id) || { name: id }).name;
+
+/* Avatar colors are chosen deterministically from the id, matching the rule in
+   contracts/npcs.json: no photos, initials always shown alongside the color. */
+const AV_LIGHT = ['#2a55c9', '#0f7b6c', '#a8541c', '#6b46c1', '#1d6fb8', '#8a5a00', '#b3261e', '#3f6212'];
+const AV_DARK  = ['#5b82ea', '#2f9c8a', '#c9762f', '#8f6ee0', '#3f8fd6', '#b58325', '#d9564b', '#5f8f2a'];
+function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
+
+function isDark() {
+  const attr = document.documentElement.getAttribute('data-theme');
+  if (attr === 'dark') return true;
+  if (attr === 'light') return false;
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+/* Token lookups are cached: draw() runs every frame and must not call
+   getComputedStyle dozens of times per frame. */
+const varCache = new Map();
+function css(name) {
+  let v = varCache.get(name);
+  if (v === undefined) {
+    v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    varCache.set(name, v);
+  }
+  return v;
+}
+function avColor(id) {
+  const key = 'av:' + id;
+  let v = varCache.get(key);
+  if (v === undefined) {
+    const a = isDark() ? AV_DARK : AV_LIGHT;
+    v = a[hash(id) % a.length];
+    varCache.set(key, v);
+  }
+  return v;
+}
+/** Theme changed — drop cached colors, the baked floor layer, and redraw. */
+function invalidateTheme() { varCache.clear(); statik = null; render(); }
+
+function clockLabel() {
+  const h = Math.floor(S.hour);
+  const mi = Math.floor(((S.hour % 1) * 60) / 10) * 10;
+  return `D${S.day} ${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
+}
+
+function log(text, kind) {
+  S.log.unshift({ at: clockLabel(), text, kind: kind || '' });
+  if (S.log.length > 160) S.log.pop();
+}
+
+let toastTimer = null;
+/** tone 'signal' = a person is waiting on you; 'ok' = something landed. */
+function toast(text, tone) {
+  const el = document.getElementById('toast');
+  el.textContent = text;
+  el.dataset.tone = tone || 'ok';
+  el.dataset.show = '1';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.dataset.show = '0'; }, 4200);
+}
+
+/* =========================================================================
+   5. Company state changes
+   ========================================================================= */
+
+const deltas = {};
+function applyEffect(eff) {
+  if (!eff) return;
+  for (const k of Object.keys(eff)) {
+    if (!(k in S.m)) continue;
+    S.m[k] += eff[k];
+    deltas[k] = (deltas[k] || 0) + eff[k];
+  }
+  S.m.morale = Math.max(0, Math.min(100, S.m.morale));
+  S.m.visibility = Math.max(0, Math.min(100, S.m.visibility));
+  S.m.manualHours = Math.max(0, S.m.manualHours);
+  S.m.leadTime = Math.max(1, S.m.leadTime);
+  renderMetrics();
+}
+
+function fmtDelta(def, v) {
+  const a = Math.abs(v);
+  const sign = v > 0 ? '+' : '-';
+  return def.key === 'cash' ? `${sign}$${a}K` : `${sign}${a}${def.chipUnit}`;
+}
+
+function effectChips(eff) {
+  if (!eff || !Object.keys(eff).length) return '<span class="chip">No change</span>';
+  return Object.keys(eff).map((k) => {
+    const def = METRICS.find((m) => m.key === k);
+    if (!def) return '';
+    const good = Math.sign(eff[k]) === def.good;
+    return `<span class="chip chip--num ${good ? 'chip--good' : 'chip--bad'}">${def.label} ${fmtDelta(def, eff[k])}</span>`;
+  }).join('');
+}
+
+/* =========================================================================
+   6. Assign → hand off → work
+   ========================================================================= */
+
+function unlocked(w) {
+  if (!w.requires) return true;
+  if (w.requires.visibility && S.m.visibility < w.requires.visibility) return false;
+  if (w.requires.items && !w.requires.items.every((id) => item(id).status === 'done')) return false;
+  return true;
+}
+
+function lockReason(w) {
+  if (w.requires?.visibility && S.m.visibility < w.requires.visibility)
+    return `Unlocks at ${w.requires.visibility}% visibility (now ${Math.round(S.m.visibility)}%)`;
+  if (w.requires?.items) {
+    const missing = w.requires.items.filter((id) => item(id).status !== 'done').map((id) => item(id).title);
+    return `Needs "${missing[0]}" first`;
+  }
+  return '';
+}
+
+/** Through the reporting line: the director physically walks to the
+    specialist's desk to hand the work over, so the org chart is visible. */
+function assignViaManager(w, director) {
+  const staff = byId(w.want);
+  w.status = 'assigned';
+  w.assignee = staff.id;
+  director.state = 'walking';
+  director.itemId = w.id;
+  director.path = path(director.pos, { x: staff.seat.x, y: staff.seat.y });
+  log(`Directive to ${director.name}: "${w.title}"`, '');
+  director.onArrive = () => {
+    log(`${director.name} handed off to ${staff.name}`, '');
+    director.itemId = null;
+    director.state = 'walking';
+    director.path = path(director.pos, director.seat);
+    director.onArrive = () => { director.state = 'idle'; };
+    startWork(staff, w);
+  };
+  render();
+}
+
+/** Straight to the specialist: faster, but their director is now blind to it. */
+function assignDirect(w, person) {
+  w.status = 'assigned';
+  w.assignee = person.id;
+  const mgr = person.mgr ? byId(person.mgr) : null;
+  startWork(person, w);
+  if (mgr) {
+    applyEffect({ morale: -3 });
+    log(`${person.name} assigned directly. ${mgr.name} does not know about it`, 'note');
+  } else {
+    log(`Directive to ${person.name}: "${w.title}"`, '');
+  }
+  render();
+}
+
+function startWork(person, w) {
+  person.state = 'working';
+  person.itemId = w.id;
+  w.status = 'active';
+  if (person.pos.x !== person.seat.x || person.pos.y !== person.seat.y) {
+    person.state = 'walking';
+    person.path = path(person.pos, person.seat);
+    person.onArrive = () => { person.state = 'working'; };
+  }
+  log(`${person.name} started "${w.title}"`, '');
+}
+
+function block(person, w, cpIndex) {
+  person.state = 'blocked';
+  person.cpIndex = cpIndex;
+  w.status = 'blocked';
+  log(`${person.name} stopped, waiting on you: ${w.cps[cpIndex].label}`, 'signal');
+  toast(`${person.name} is waiting on a decision. Use the tray, or walk over and ask.`, 'signal');
+  render();
+}
+
+/** Settle a decision. Done in person, the tacit knowledge comes out too. */
+function resolve(w, cpIndex, optIndex, inPerson) {
+  const cp = w.cps[cpIndex];
+  if (cp.resolved) return;
+  const opt = cp.options[optIndex];
+  cp.resolved = true;
+  cp.choice = opt.label;
+  cp.inPerson = !!inPerson;
+  applyEffect(opt.effect);
+  log(`Decided: ${w.title} → ${opt.label}`, 'ok');
+
+  if (inPerson) {
+    applyEffect({ visibility: 2, morale: 2 });
+    log(`Recorded tacit knowledge from ${byId(w.assignee).name} (decided in person)`, 'tacit');
+  } else {
+    applyEffect({ morale: -1 });
+    log('Handled from the tray. You did not get the context', 'note');
+  }
+
+  const person = byId(w.assignee);
+  person.state = 'working';
+  person.cpIndex = -1;
+  w.status = 'active';
+  w.decisions = w.decisions || [];
+  w.decisions.push({ label: cp.label, choice: opt.label, note: opt.note, inPerson: !!inPerson, tacit: inPerson ? cp.tacit : null });
+  render();
+}
+
+function complete(person, w) {
+  w.status = 'done';
+  applyEffect(w.effect);
+  const stops = w.checkpoints.length;
+  const provenance = [
+    `${person.name} — ${w.effort} hours of work, ${stops} decision stop${stops === 1 ? '' : 's'}`,
+    ...(w.decisions || []).map((d) => `CEO decision: ${d.choice} (${d.inPerson ? 'in person' : 'from the tray'})`),
+    ...(w.decisions || []).filter((d) => d.tacit).map(() => 'One piece of tacit knowledge, from talking in person'),
+  ];
+  S.outputs.unshift({
+    ...w.output, itemTitle: w.title, dept: w.dept, day: S.day, provenance,
+    tacit: (w.decisions || []).filter((d) => d.tacit).map((d) => d.tacit),
+  });
+  person.state = 'idle';
+  person.itemId = null;
+  log(`Deliverable: "${w.output.title}"`, 'ok');
+  toast(`Deliverable ready: ${w.output.title} — see its provenance under Deliverables`, 'ok');
+  (w.unlocks || []).forEach((id) => {
+    const nx = item(id);
+    if (nx && unlocked(nx)) log(`"${nx.title}" is now available`, '');
+  });
+  if (w.final) {
+    log('AI opportunity ranking complete. This is where the work-knowledge graph begins', 'ok');
+    toast('AI opportunity ranking complete — the company finally has a shape');
+  }
+  render();
+}
+
+/* =========================================================================
+   7. Simulation
+   ========================================================================= */
+
+/* At ×1 one working day (nine hours) takes about fifteen seconds, so a
+   sixteen-hour job spans nearly two days. Faster than this and only the day
+   counter moves — a day stops meaning anything. */
+const HOURS_PER_SEC = 0.6;
+const DAY_END = 18, DAY_START = 9;
+const FIXED_COST_PER_DAY = 18;
+
+function tick(dt) {
+  if (!S.playing) return;
+  const hours = dt * HOURS_PER_SEC * S.speed;
+  S.hour += hours;
+
+  if (S.hour >= DAY_END) {
+    S.day += 1;
+    S.hour = DAY_START;
+    applyEffect({ cash: -FIXED_COST_PER_DAY });
+    log(`Day ${S.day} begins (fixed costs -$${FIXED_COST_PER_DAY}K)`, '');
+  }
+
+  for (const p of S.people) {
+    if (p.state === 'meeting') {
+      p.metHours += hours;
+      if (p.metHours >= 2) {
+        p.metHours = 0;
+        p.state = 'walking';
+        p.path = path(p.pos, p.seat);
+        p.onArrive = () => { p.state = 'working'; };
+      }
+      continue;
+    }
+    if (p.state !== 'working' || !p.itemId) continue;
+
+    const w = item(p.itemId);
+    if (!w || w.status === 'blocked') continue;
+
+    // Directors carry the work more slowly — they still have a department to run.
+    w.done += hours * (p.rank === 'director' ? 0.8 : 1);
+    const progress = w.done / w.effort;
+
+    // Cross-department work needs a meeting before it can go further.
+    if (w.visitMeeting && !w.visited && progress > 0.2) {
+      w.visited = true;
+      const room = ROOMS.find((r) => r.id === 'meeting');
+      p.state = 'walking';
+      p.path = path(p.pos, room.visit || { x: room.x1 + 1, y: room.y2 });
+      p.onArrive = () => { p.state = 'meeting'; p.metHours = 0; };
+      log(`${p.name} went to the meeting room (cross-department check)`, '');
+      continue;
+    }
+
+    const nextCp = w.cps.findIndex((c) => !c.resolved && progress >= c.at);
+    if (nextCp >= 0) { block(p, w, nextCp); continue; }
+
+    if (w.done >= w.effort) complete(p, w);
+  }
+}
+
+/* Movement along a BFS path, interpolated between tile centers. Facing and the
+   walk-cycle clock come from the direction actually travelled. */
+function step(actor, tilesPerSec, dt) {
+  if (!actor.path || !actor.path.length) {
+    if (actor.onArrive) { const f = actor.onArrive; actor.onArrive = null; f(); }
+    return;
+  }
+  const target = actor.path[0];
+  const dx = target.x - actor.pos.x, dy = target.y - actor.pos.y;
+  const dist = Math.hypot(dx, dy);
+  const move = tilesPerSec * dt;
+
+  if (Math.abs(dx) > 0.01 || Math.abs(dy) > 0.01) {
+    actor.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+    actor.animT = (actor.animT || 0) + dt;
+  }
+
+  if (dist <= move) {
+    actor.pos.x = target.x; actor.pos.y = target.y;
+    actor.path.shift();
+    if (!actor.path.length && actor.onArrive) { const f = actor.onArrive; actor.onArrive = null; f(); }
+  } else {
+    actor.pos.x += (dx / dist) * move;
+    actor.pos.y += (dy / dist) * move;
+  }
+}
+
+function moveCeo(dt) {
+  const k = S.ceo.keys;
+  let dx = 0, dy = 0;
+  if (k.has('a') || k.has('arrowleft')) dx -= 1;
+  if (k.has('d') || k.has('arrowright')) dx += 1;
+  if (k.has('w') || k.has('arrowup')) dy -= 1;
+  if (k.has('s') || k.has('arrowdown')) dy += 1;
+
+  if (dx || dy) {
+    S.ceo.path = [];
+    const sp = 5.2 * dt;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = S.ceo.pos.x + (dx / len) * sp;
+    const ny = S.ceo.pos.y + (dy / len) * sp;
+    // Look 0.3 tiles ahead so the sprite never sinks half-way into a wall.
+    const clear = 0.3;
+    if (walkable(Math.round(nx + clear * Math.sign(dx)), Math.round(S.ceo.pos.y))) S.ceo.pos.x = nx;
+    if (walkable(Math.round(S.ceo.pos.x), Math.round(ny + clear * Math.sign(dy)))) S.ceo.pos.y = ny;
+    S.ceo.dir = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'down' : 'up');
+    S.ceo.animT += dt;
+    S.ceo.walking = true;
+  } else {
+    S.ceo.walking = S.ceo.path.length > 0;
+    step(S.ceo, 5.2, dt);
+  }
+}
+
+/** Proximity opens and closes the conversation, same rule as A-05 in the app. */
+const TALK_RANGE = 1.9;
+function updateNear() {
+  let best = null, bestD = Infinity;
+  for (const p of S.people) {
+    const d = Math.hypot(p.pos.x - S.ceo.pos.x, p.pos.y - S.ceo.pos.y);
+    if (d < bestD) { bestD = d; best = p; }
+  }
+  const near = bestD <= TALK_RANGE ? best : null;
+  if ((near && near.id) !== (S.near && S.near.id)) {
+    S.near = near;
+    if (near) openTalk(near.id); else closeTalk();
+    const chip = document.getElementById('nearChip');
+    chip.textContent = near ? `Talking with ${near.name} — ${near.title}` : 'Nobody nearby';
+    chip.className = near ? 'chip chip--info' : 'chip';
+  }
+}
+
+/* =========================================================================
+   8. Pixel art
+
+   Everything on the floor is authored as pixel art and painted one pixel at a
+   time into an offscreen buffer at 1x, then scaled up with smoothing off. The
+   canvas commits to a single fixed palette like a game does — the surrounding
+   UI is what follows the light / dark theme, not the artwork.
+   ========================================================================= */
+
+/** Shared palette for props. Character colours come from personPalette(). */
+const ART = {
+  '#': '#20242e',   // hard outline
+  'o': '#39404f',   // soft outline
+  'w': '#8a5a3b',   // wood
+  'W': '#a5714b',   // wood light
+  'v': '#63402c',   // wood dark
+  'g': '#7d8698',   // metal
+  'G': '#a3adbe',   // metal light
+  'd': '#4e5666',   // metal dark
+  'n': '#dfe5ee',   // paper / white plastic
+  'N': '#f6f8fb',   // highlight
+  'b': '#2f5bd0',   // screen
+  'B': '#7fa4ff',   // screen glow
+  'e': '#2e7d50',   // leaf
+  'E': '#48a86c',   // leaf light
+  'r': '#a4552a',   // terracotta
+  'R': '#c06d3d',   // terracotta light
+  'f': '#3f5b8c',   // fabric
+  'F': '#5379b5',   // fabric light
+  'k': '#171a21',   // near black
+};
+
+/** Floor palettes, keyed by the room's floor style. */
+const FLOORS = {
+  wood:   { a: '#8a6647', b: '#7f5c3f', c: '#745338', seam: '#63472f' },
+  blue:   { a: '#3c4a63', b: '#38455d', c: '#425072', seam: '#313c51' },
+  green:  { a: '#3a5a4b', b: '#365446', c: '#3f6151', seam: '#2e4a3d' },
+  slate:  { a: '#454b5a', b: '#414755', c: '#4b5262', seam: '#383d4a' },
+  violet: { a: '#4a4265', b: '#453e5f', c: '#514870', seam: '#3b3552' },
+  amber:  { a: '#5e4c36', b: '#584833', c: '#66533b', seam: '#4b3d2c' },
+  hall:   { a: '#2f333d', b: '#2c303a', c: '#343943', seam: '#262a33' },
+};
+
+/** Walls are drawn 2.5D: a lit cap on top, a shaded face, a dark skirting. */
+const WALLC = { cap: '#767f92', capLip: '#8d97ab', face: '#4c5464', faceLo: '#3d4453', base: '#2b313d' };
+
+const PROPS = {
+  desk: [
+    '................',
+    '................',
+    '.....######.....',
+    '.....#gGGg#.....',
+    '.....#bBBb#.....',
+    '.....#bBBb#.....',
+    '.....#gggg#.....',
+    '.......##.......',
+    '......dggd......',
+    'WWWWWWWWWWWWWWWW',
+    'wwwwnnnnnnwwwwww',
+    'wwwwwwwwwwwwwwww',
+    'vvvvvvvvvvvvvvvv',
+    '..v..........v..',
+    '..v..........v..',
+    '..k..........k..',
+  ],
+  chair: [
+    '................',
+    '................',
+    '................',
+    '................',
+    '.....dddddd.....',
+    '....dggggggd....',
+    '....dgGGGGgd....',
+    '....dggggggd....',
+    '....dddddddd....',
+    '.....dddddd.....',
+    '.......gg.......',
+    '.....g#gg#g.....',
+    '.....gg..gg.....',
+    '................',
+    '................',
+    '................',
+  ],
+  plant: [
+    '................',
+    '................',
+    '......e..e......',
+    '.....eEeeEe.....',
+    '....eEEEEEEe....',
+    '...eEEEEEEEEe...',
+    '....eEEEEEEe....',
+    '.....eEEEEe.....',
+    '......eEEe......',
+    '.......ee.......',
+    '.......ee.......',
+    '.....oRRRRo.....',
+    '.....orrrro.....',
+    '.....orrrro.....',
+    '......oooo......',
+    '................',
+  ],
+  sofaL: [
+    '................',
+    '................',
+    '.....ooooooooooo',
+    '....offfffffffff',
+    '....offFFFFFFFFF',
+    '....offFFFFFFFFF',
+    '....offFFFFFFFFF',
+    '....offfffffffff',
+    '....offFFFFFFFFF',
+    '....offFFFFFFFFF',
+    '....offFFFFFFFFF',
+    '....offfffffffff',
+    '....oooooooooooo',
+    '.....k.........k',
+    '................',
+    '................',
+  ],
+  sofaR: [
+    '................',
+    '................',
+    'ooooooooooo.....',
+    'fffffffffffo....',
+    'FFFFFFFFFffo....',
+    'FFFFFFFFFffo....',
+    'FFFFFFFFFffo....',
+    'fffffffffffo....',
+    'FFFFFFFFFffo....',
+    'FFFFFFFFFffo....',
+    'FFFFFFFFFffo....',
+    'fffffffffffo....',
+    'oooooooooooo....',
+    'k.........k.....',
+    '................',
+    '................',
+  ],
+  table: [
+    'wwwwwwwwwwwwwwww',
+    'wwwwwwwwwwwwwwww',
+    'WWWWWWWWWWWWWWWW',
+    'wwwwwwwwwwwwwwww',
+    'wwwwwwwwwwwwwwww',
+    'wwwwwwwwwwwwwwww',
+    'wwwwwwwwwwwwwwww',
+    'wwwwwwwwwwwwwwww',
+    'wwwwwwwwwwwwwwww',
+    'WWWWWWWWWWWWWWWW',
+    'wwwwwwwwwwwwwwww',
+    'wwwwwwwwwwwwwwww',
+    'wwwwwwwwwwwwwwww',
+    'wwwwwwwwwwwwwwww',
+    'wwwwwwwwwwwwwwww',
+    'wwwwwwwwwwwwwwww',
+  ],
+  shelf: [
+    '................',
+    '.oooooooooooooo.',
+    '.ovvvvvvvvvvvvo.',
+    '.ovnnvnnvnnvnvo.',
+    '.ovnnvnnvnnvnvo.',
+    '.ovvvvvvvvvvvvo.',
+    '.ovnnvnnvnnvnvo.',
+    '.ovnnvnnvnnvnvo.',
+    '.ovvvvvvvvvvvvo.',
+    '.ovnnvnbbvnnvvo.',
+    '.ovnnvnbbvnnvvo.',
+    '.ovvvvvvvvvvvvo.',
+    '.oooooooooooooo.',
+    '..o............o',
+    '................',
+    '................',
+  ],
+  board: [
+    '................',
+    '.##############.',
+    '.#NNNNNNNNNNNN#.',
+    '.#NbbbNNNNNNNN#.',
+    '.#NNNNNNNbbbNN#.',
+    '.#NNbbNNNNNNNN#.',
+    '.#NNNNNNNNbbNN#.',
+    '.#NNNNbbNNNNNN#.',
+    '.#NNNNNNNNNNNN#.',
+    '.##############.',
+    '.....g....g.....',
+    '.....g....g.....',
+    '.....g....g.....',
+    '....gg....gg....',
+    '................',
+    '................',
+  ],
+  cooler: [
+    '................',
+    '......oooo......',
+    '.....oBBBBo.....',
+    '.....oBBBBo.....',
+    '.....oBBBBo.....',
+    '......oBBo......',
+    '.....onnnno.....',
+    '.....onnnno.....',
+    '.....on..no.....',
+    '.....onnnno.....',
+    '.....onnnno.....',
+    '.....onnnno.....',
+    '.....oooooo.....',
+    '.....k....k.....',
+    '................',
+    '................',
+  ],
+  coffee: [
+    '................',
+    '.....######.....',
+    '.....#dddd#.....',
+    '.....#dnnd#.....',
+    '.....#dnnd#.....',
+    '.....#dddd#.....',
+    '.....#d##d#.....',
+    '.....#dNNd#.....',
+    '.....#dNNd#.....',
+    '.....#dddd#.....',
+    '.....######.....',
+    '.....gggggg.....',
+    '.....gggggg.....',
+    '......oooo......',
+    '................',
+    '................',
+  ],
+};
+
+/* --- Characters. 10 wide x 16 tall.
+
+       The scale matches world/src/actors.ts, where ACTOR_TILE is 32 on a 32px
+       tile grid: a character's box is one tile, and the figure fills about half
+       a tile across. Here the tile is 16px, so 10x16 gives the same proportion
+       against the furniture — at zoom 2 that is 20x32 on screen, the same size
+       the Phaser world draws its Kenney sprites.
+
+       At this size eye whites no longer fit, so eyes are single pixels like the
+       reference art. Kept: hair highlight, hair framing the face, blush, and
+       outlines tinted per material.
+
+       Palette keys: j/h/H hair dark/base/highlight, l/s/S skin outline/base/
+       shade, e eye, c blush, u/t/T cloth outline/base/shade, p/P trousers,
+       b/B shoe base/shade. --- */
+const BODY = {
+  down: [
+    '...hhhh...',
+    '..hhhhhh..',
+    '.hhhhhhhh.',
+    '.hhHHHHhh.',
+    '.hssssssh.',
+    '.hsessesh.',
+    '.hssccssh.',
+    '..lssssl..',
+    '.uttttttu.',
+    '.uttttttu.',
+    '.uttttttu.',
+    '.usttttsu.',
+    '.uTTTTTTu.',
+    '.uppppppu.',
+  ],
+  up: [
+    '...hhhh...',
+    '..hhhhhh..',
+    '.hhhhhhhh.',
+    '.hhHHHHhh.',
+    '.hhhhhhhh.',
+    '.hhhhhhhh.',
+    '.hhhhhhhh.',
+    '..jhhhhj..',
+    '.uttttttu.',
+    '.uttttttu.',
+    '.uttttttu.',
+    '.usttttsu.',
+    '.uTTTTTTu.',
+    '.uppppppu.',
+  ],
+  side: [
+    '...hhhh...',
+    '..hhhhhh..',
+    '.hhhhhhhh.',
+    '.hhhHHHhh.',
+    '.hhlsssss.',
+    '.hhssesss.',
+    '.hhscssss.',
+    '..lssssl..',
+    '.uttttttu.',
+    '.uttttttu.',
+    '.uttttttu.',
+    '.utttttts.',
+    '.uTTTTTTu.',
+    '.uppppppu.',
+  ],
+};
+
+/** Legs are the last 2 rows and get swapped per animation frame. */
+const LEGS = [
+  ['.upp..ppu.', '.ubb..bbu.'],   // standing
+  ['.pp....pp.', '.bb....bb.'],   // stride
+  ['...pppp...', '...bbbb...'],   // passing
+];
+
+/** Long hair, painted over the body; '.' leaves the body showing. */
+const LONG_HAIR = {
+  front: [
+    '..........', '..........', '..........', '..........',
+    '..........', '..........', '..........',
+    '.hh....hh.',
+    '.hh....hh.',
+    '.hh....hh.',
+    '..h....h..',
+    '..........', '..........', '..........',
+  ],
+  side: [
+    '..........', '..........', '..........', '..........',
+    '..........', '..........', '..........',
+    '.hh.......',
+    '.hh.......',
+    '.hh.......',
+    '..h.......',
+    '..........', '..........', '..........',
+  ],
+};
+
+/* Warmer, more saturated pools than the first pass, where flat mid-greys were
+   what made everyone look drab. Each entry is [base, shade/highlight, outline]. */
+const SKINS = [
+  ['#f6d3ae', '#e2b087', '#a06c46'], ['#eec49a', '#d3a173', '#915c38'],
+  ['#d8a273', '#bb8355', '#7e4b2c'], ['#b07d51', '#94643c', '#603c21'],
+  ['#8a5a37', '#6f4527', '#462b17'], ['#5f3d26', '#4a2d1a', '#2d1b10'],
+];
+const HAIRS = [
+  ['#6b4426', '#8a5c34', '#422915'], ['#2f2a2f', '#453d45', '#1a171a'],
+  ['#d9a94e', '#efc873', '#a97c2c'], ['#8f3f28', '#ad5636', '#5c2517'],
+  ['#a9a6a2', '#c6c3bf', '#726f6c'], ['#3f6f7a', '#54909c', '#28474f'],
+];
+const TOPS = [
+  ['#3f6fd8', '#2f55a8', '#1f3a75'], ['#2f9e78', '#22785b', '#175340'],
+  ['#d8683f', '#ad4f2e', '#7a351d'], ['#8b5cc7', '#6d449e', '#4b2e6e'],
+  ['#d24a4a', '#a83636', '#742323'], ['#5f8f3a', '#4a712c', '#31491d'],
+  ['#e0b13f', '#b88c2c', '#80601c'], ['#4a5568', '#39424f', '#262c36'],
+];
+const PANTS = [
+  ['#4a5a78', '#39465e', '#26303f'], ['#6b5340', '#544032', '#372a20'],
+  ['#3f4654', '#313743', '#20242c'],
+];
+const SHOES = [['#4a3526', '#2f2118'], ['#3a3a42', '#23232a'], ['#5a3f2a', '#38261a']];
+
+/** The CEO wears the accent colour so you can always find yourself. */
+const PALETTE_OVERRIDE = {
+  you: { t: '#3f6fd8', T: '#2f55a8', u: '#1f3a75' },
+};
+
+/* Every choice comes from the id hash, so a person's look is stable across
+   sessions and nobody's actual likeness is being depicted. */
+function personPalette(id) {
+  const h = hash(id);
+  const skin = SKINS[h % SKINS.length];
+  const hair = HAIRS[Math.floor(h / 7) % HAIRS.length];
+  const top = TOPS[Math.floor(h / 13) % TOPS.length];
+  const pant = PANTS[Math.floor(h / 31) % PANTS.length];
+  const shoe = SHOES[Math.floor(h / 53) % SHOES.length];
+  return {
+    '.': null,
+    'j': hair[2], 'h': hair[0], 'H': hair[1],
+    'l': skin[2], 's': skin[0], 'S': skin[1],
+    'w': '#f7f4ef', 'e': '#2b2430', 'c': '#dd8f84',
+    'u': top[2], 't': top[0], 'T': top[1],
+    'p': pant[0], 'P': pant[1],
+    'b': shoe[0], 'B': shoe[1],
+    ...(PALETTE_OVERRIDE[id] || {}),
+  };
+}
+
+/** Roughly half the cast gets long hair, also from the hash. */
+function hasLongHair(id) { return Math.floor(hash(id) / 97) % 2 === 1; }
+
+/** Paint one pixel-art grid into a 2d context at (ox, oy). */
+function paint(g, rows, ox, oy, pal) {
+  for (let y = 0; y < rows.length; y++) {
+    const row = rows[y];
+    for (let x = 0; x < row.length; x++) {
+      const c = pal[row[x]];
+      if (!c) continue;
+      g.fillStyle = c;
+      g.fillRect(ox + x, oy + y, 1, 1);
+    }
+  }
+}
+
+/** A character sheet: 4 directions x 3 frames, 16x30 each. */
+const DIRS = ['down', 'up', 'left', 'right'];
+const FRAMES = 3;
+const SPR_W = 10, SPR_H = 16;
+const sheets = new Map();
+
+function characterSheet(id) {
+  let sheet = sheets.get(id);
+  if (sheet) return sheet;
+
+  const pal = personPalette(id);
+  const long = hasLongHair(id);
+  const c = document.createElement('canvas');
+  c.width = SPR_W * FRAMES;
+  c.height = SPR_H * DIRS.length;
+  const g = c.getContext('2d');
+
+  DIRS.forEach((dir, row) => {
+    const profile = dir === 'left' || dir === 'right';
+    const body = BODY[profile ? 'side' : dir];
+    const hair = long ? LONG_HAIR[profile ? 'side' : 'front'] : null;
+
+    for (let f = 0; f < FRAMES; f++) {
+      let rows = body.concat(LEGS[f]);
+      let overlay = hair;
+      if (dir === 'left') {
+        // Mirror the right-facing art so both profiles stay pixel-exact.
+        rows = rows.map((r) => r.split('').reverse().join(''));
+        if (overlay) overlay = overlay.map((r) => r.split('').reverse().join(''));
+      }
+      paint(g, rows, f * SPR_W, row * SPR_H, pal);
+      if (overlay) paint(g, overlay, f * SPR_W, row * SPR_H, pal);
+    }
+  });
+
+  sheet = { canvas: c, pal };
+  sheets.set(id, sheet);
+  return sheet;
+}
+
+/** Head-and-shoulders crop used for the avatars in the panels. */
+function portrait(id, zoom) {
+  const key = `pt:${id}:${zoom}`;
+  let url = varCache.get(key);
+  if (url !== undefined) return url;
+  const src = characterSheet(id).canvas;
+  const c = document.createElement('canvas');
+  c.width = 10 * zoom;
+  c.height = 10 * zoom;
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = false;
+  // the head block from the down-facing frame
+  g.drawImage(src, 0, 0, 10, 10, 0, 0, 10 * zoom, 10 * zoom);
+  url = c.toDataURL();
+  varCache.set(key, url);
+  return url;
+}
+
+/* =========================================================================
+   9. Drawing
+   ========================================================================= */
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+/** The world is drawn at 1x here, then blown up with smoothing off. */
+const world = document.createElement('canvas');
+const wctx = world.getContext('2d');
+let statik = null;
+let zoom = 2;
+
+/** Fit the office to the stage: choose an integer zoom, then plan a floor with
+    exactly as many tiles as fit at that zoom, so the canvas fills the stage and
+    there is no letterbox around it. */
+function sizeCanvas() {
+  const stage = cv.parentElement;
+  const availW = Math.max(320, stage.clientWidth);
+  const availH = Math.max(220, stage.clientHeight);
+
+  // Bigger windows get a bigger zoom, not only more tiles — otherwise people
+  // end up looking like ants on a huge floor.
+  zoom = availW >= 1500 && availH >= 700 ? 3 : availW >= 620 ? 2 : 1;
+  let cols = Math.floor(availW / (TILE * zoom));
+  let rows = Math.floor(availH / (TILE * zoom));
+
+  // If the smallest sensible floor will not fit at this zoom, step down.
+  while (zoom > 1 && (cols < 26 || rows < 16)) {
+    zoom -= 1;
+    cols = Math.floor(availW / (TILE * zoom));
+    rows = Math.floor(availH / (TILE * zoom));
+  }
+
+  planFloor(cols, rows);
+  assignSeats();
+  reseat();
+
+  world.width = W;
+  world.height = H;
+
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = Math.round(W * zoom * dpr);
+  cv.height = Math.round(H * zoom * dpr);
+  cv.style.width = `${W * zoom}px`;
+  cv.style.height = `${H * zoom}px`;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  statik = null;
+}
+
+/** After a re-plan, put everyone back on their desk. Anyone mid-errand has their
+    arrival callback fired now, so a delegation in flight still lands. */
+function reseat() {
+  for (const p of S.people) {
+    p.path = [];
+    if (p.onArrive) { const f = p.onArrive; p.onArrive = null; f(); }
+    p.path = [];
+    p.pos = { x: p.seat.x, y: p.seat.y };
+    if (p.state === 'walking') p.state = p.itemId ? 'working' : 'idle';
+  }
+  if (!walkable(Math.round(S.ceo.pos.x), Math.round(S.ceo.pos.y))) {
+    S.ceo.pos = { x: SPAWN.x, y: SPAWN.y };
+    S.ceo.path = [];
+  }
+}
+
+/* ---------- Tiles ---------- */
+
+/** Deterministic speckle so carpet has texture without a noise texture. */
+function speck(x, y) { return (((x * 73856093) ^ (y * 19349663)) >>> 0) % 13; }
+
+function paintFloor(g, tx, ty, pal, wood) {
+  const ox = tx * TILE, oy = ty * TILE;
+  g.fillStyle = pal.a;
+  g.fillRect(ox, oy, TILE, TILE);
+
+  if (wood) {
+    // Floorboards run the whole way across; only every fourth tile gets an end
+    // joint, otherwise the staggered joints read as brickwork.
+    g.fillStyle = pal.b;
+    g.fillRect(ox, oy + 5, TILE, 5);
+    g.fillStyle = pal.c;
+    g.fillRect(ox, oy + 11, TILE, 5);
+    g.fillStyle = pal.seam;
+    g.fillRect(ox, oy + 4, TILE, 1);
+    g.fillRect(ox, oy + 10, TILE, 1);
+    g.fillRect(ox, oy + 15, TILE, 1);
+    if (tx % 4 === 1) { g.fillRect(ox + 6, oy, 1, 4); g.fillRect(ox + 6, oy + 11, 1, 4); }
+    if (tx % 4 === 3) g.fillRect(ox + 10, oy + 5, 1, 5);
+    g.fillStyle = pal.a;               // faint grain
+    g.fillRect(ox + 3, oy + 7, 6, 1);
+    g.fillRect(ox + 9, oy + 13, 5, 1);
+  } else {
+    // Carpet: two-tone speckle plus a faint tile grid.
+    for (let y = 0; y < TILE; y++) {
+      for (let x = 0; x < TILE; x++) {
+        const n = speck(ox + x, oy + y);
+        if (n === 0) { g.fillStyle = pal.b; g.fillRect(ox + x, oy + y, 1, 1); }
+        else if (n === 5) { g.fillStyle = pal.c; g.fillRect(ox + x, oy + y, 1, 1); }
+      }
+    }
+    g.fillStyle = pal.seam;
+    g.fillRect(ox, oy, TILE, 1);
+    g.fillRect(ox, oy, 1, TILE);
+  }
+}
+
+function paintWall(g, tx, ty) {
+  const ox = tx * TILE, oy = ty * TILE;
+  g.fillStyle = WALLC.face;
+  g.fillRect(ox, oy, TILE, TILE);
+  g.fillStyle = WALLC.faceLo;
+  g.fillRect(ox, oy + 11, TILE, 3);
+  g.fillStyle = WALLC.base;
+  g.fillRect(ox, oy + 14, TILE, 2);
+  g.fillStyle = WALLC.cap;
+  g.fillRect(ox, oy, TILE, 4);
+  g.fillStyle = WALLC.capLip;
+  g.fillRect(ox, oy, TILE, 1);
+  g.fillStyle = 'rgba(0,0,0,0.16)';
+  g.fillRect(ox + 7, oy + 4, 1, 10);
+}
+
+/** A window in a wall tile: frame, cold sky, and a sill catching the light. */
+function paintWindow(g, tx, ty) {
+  const ox = tx * TILE, oy = ty * TILE;
+  g.fillStyle = '#2b313d';
+  g.fillRect(ox + 2, oy + 4, 12, 9);
+  g.fillStyle = '#6f8fb0';
+  g.fillRect(ox + 3, oy + 5, 10, 7);
+  g.fillStyle = '#9dbdd8';
+  g.fillRect(ox + 3, oy + 5, 10, 3);
+  g.fillStyle = '#2b313d';
+  g.fillRect(ox + 8, oy + 5, 1, 7);
+  g.fillStyle = '#8d97ab';
+  g.fillRect(ox + 1, oy + 12, 14, 2);
+}
+
+/** A doorway: room floor, with the wall's jamb left standing either side. */
+function paintDoor(g, tx, ty, pal, wood) {
+  paintFloor(g, tx, ty, pal, wood);
+  const ox = tx * TILE, oy = ty * TILE;
+  g.fillStyle = WALLC.base;
+  g.fillRect(ox, oy, 2, TILE);
+  g.fillRect(ox + TILE - 2, oy, 2, TILE);
+  g.fillStyle = WALLC.capLip;
+  g.fillRect(ox, oy, 2, 2);
+  g.fillRect(ox + TILE - 2, oy, 2, 2);
+}
+
+/** The floor never changes, so bake it once at 1x. */
+function buildStatic() {
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = false;
+
+  for (let y = 0; y < ROWS; y++) {
+    for (let x = 0; x < COLS; x++) if (grid[y][x] === WALL) paintWall(g, x, y);
+  }
+  for (const win of WINDOWS) if (grid[win.y][win.x] === WALL) paintWindow(g, win.x, win.y);
+
+  for (const r of ROOMS) {
+    const pal = FLOORS[r.floor];
+    const wood = r.floor === 'wood';
+    for (let y = r.y1; y <= r.y2; y++) {
+      for (let x = r.x1; x <= r.x2; x++) paintFloor(g, x, y, pal, wood);
+    }
+    paintDoor(g, r.door.x, r.door.y, pal, wood);
+  }
+  for (let y = HALL.y1; y <= HALL.y2; y++) {
+    for (let x = HALL.x1; x <= HALL.x2; x++) paintFloor(g, x, y, FLOORS.hall, false);
+  }
+
+  // Warm pools under the ceiling lamps, then a soft vignette at the edges.
+  g.globalCompositeOperation = 'lighter';
+  for (const L of LAMPS) {
+    const cx = L.x * TILE + TILE / 2, cy = L.y * TILE + TILE / 2;
+    const pool = g.createRadialGradient(cx, cy, 2, cx, cy, TILE * 2.6);
+    pool.addColorStop(0, 'rgba(255, 226, 160, 0.16)');
+    pool.addColorStop(0.55, 'rgba(255, 214, 140, 0.06)');
+    pool.addColorStop(1, 'rgba(255, 214, 140, 0)');
+    g.fillStyle = pool;
+    g.fillRect(cx - TILE * 3, cy - TILE * 3, TILE * 6, TILE * 6);
+  }
+  g.globalCompositeOperation = 'source-over';
+
+  const vig = g.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.34, W / 2, H / 2, W * 0.62);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.34)');
+  g.fillStyle = vig;
+  g.fillRect(0, 0, W, H);
+
+  statik = c;   // props are NOT baked here — they depth-sort against people
+}
+
+/* Props are blitted every frame so a desk can be drawn over the legs of the
+   person sitting behind it. Pre-render them once into an atlas; painting them
+   pixel-by-pixel each frame would be far too slow. */
+const PROP_KEYS = Object.keys(PROPS);
+const PROP_INDEX = new Map(PROP_KEYS.map((k, i) => [k, i]));
+let propAtlas = null;
+
+function buildPropAtlas() {
+  const c = document.createElement('canvas');
+  c.width = 16 * PROP_KEYS.length;
+  c.height = 16;
+  const g = c.getContext('2d');
+  PROP_KEYS.forEach((k, i) => paint(g, PROPS[k], i * 16, 0, ART));
+  propAtlas = c;
+}
+
+function blitProp(g, spr, tx, ty, solid) {
+  const i = PROP_INDEX.get(spr);
+  if (i === undefined) return;
+  if (solid) {           // contact shadow: without it, furniture floats
+    g.fillStyle = 'rgba(0,0,0,0.22)';
+    g.fillRect(tx * TILE + 2, ty * TILE + TILE - 2, TILE - 4, 2);
+  }
+  g.drawImage(propAtlas, i * 16, 0, 16, 16, tx * TILE, ty * TILE, 16, 16);
+}
+
+function roundRect(g, x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+const STATE_LABEL = {
+  idle: 'Idle', working: 'Working', blocked: 'Needs decision',
+  walking: 'Walking', meeting: 'In meeting',
+};
+
+/* ---------- Characters ---------- */
+
+const WALK_CYCLE = [0, 1, 0, 2];
+
+function dirTowards(from, to) {
+  const dx = to.x - from.x, dy = to.y - from.y;
+  if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 'right' : 'left';
+  return dy > 0 ? 'down' : 'up';
+}
+
+/** Which way a stationary person is turned. People face their monitor while
+    working, turn around to ask you something, and look at you while talking. */
+function poseFor(p) {
+  if (p.path && p.path.length) return p.dir;
+  if (S.talkFor === p.id) return dirTowards(p.pos, S.ceo.pos);
+  return 'down';   // desks sit in front of people, so working faces the viewer
+}
+
+function drawSprite(g, actor, id) {
+  const sheet = characterSheet(id);
+  const row = Math.max(0, DIRS.indexOf(actor.dir || 'down'));
+  const moving = (actor.path && actor.path.length) || actor.walking;
+  const frame = moving ? WALK_CYCLE[Math.floor((actor.animT || 0) * 7) % WALK_CYCLE.length] : 0;
+  const px = Math.round(actor.pos.x * TILE + TILE / 2) - 5;
+  const py = Math.round(actor.pos.y * TILE + TILE / 2) - 13;
+
+  g.fillStyle = 'rgba(0,0,0,0.25)';
+  g.fillRect(px + 2, py + 16, 6, 1);
+  g.drawImage(sheet.canvas, frame * SPR_W, row * SPR_H, SPR_W, SPR_H, px, py, SPR_W, SPR_H);
+  return { px, py };
+}
+
+/* ---------- Frame ---------- */
+
+/** Text is drawn on the scaled-up layer, not into the pixel buffer: a 6px
+    bitmap font would be illegible, and Gather draws its name tags the same way.
+    These colours are fixed rather than themed, because the artwork is. */
+const BEAM = '#f2c46b';   // the one amber, shared with the CSS token
+const INK = { label: 'rgba(255,255,255,0.92)', labelBg: 'rgba(18,20,26,0.72)', room: 'rgba(226,232,242,0.5)' };
+
+function draw() {
+  if (!statik) buildStatic();
+  if (!propAtlas) buildPropAtlas();
+
+  // --- pixel layer, 1x ---
+  wctx.imageSmoothingEnabled = false;
+  wctx.clearRect(0, 0, W, H);
+  wctx.drawImage(statik, 0, 0);
+
+  // A soft pool of light showing how close you must be to talk.
+  const cx = S.ceo.pos.x * TILE + TILE / 2, cy = S.ceo.pos.y * TILE + TILE / 2;
+  const glow = wctx.createRadialGradient(cx, cy, 2, cx, cy, TALK_RANGE * TILE);
+  glow.addColorStop(0, 'rgba(255, 236, 170, 0.16)');
+  glow.addColorStop(1, 'rgba(255, 236, 170, 0)');
+  wctx.fillStyle = glow;
+  wctx.fillRect(cx - 40, cy - 40, 80, 80);
+
+  // Standing still next to someone, you turn to face them.
+  const busy = S.ceo.path.length || S.ceo.walking;
+  if (!busy && S.near) S.ceo.dir = dirTowards(S.ceo.pos, S.near.pos);
+
+  /* Draw props and people in one list ordered back-to-front. Anything one row
+     nearer the viewer overlaps what is behind it, which is what makes a person
+     read as sitting *behind* their desk. Ties go to the prop. */
+  const cast = [...S.people];
+  const layers = [];
+  for (const f of FURNITURE) layers.push({ y: f.y, rank: 0, f });
+  for (const p of cast) layers.push({ y: p.pos.y, rank: 1, p });
+  layers.push({ y: S.ceo.pos.y, rank: 1, me: true });
+  layers.sort((a, b) => (a.y - b.y) || (a.rank - b.rank));
+
+  for (const L of layers) {
+    if (L.f) blitProp(wctx, L.f.spr, L.f.x, L.f.y, L.f.solid);
+    else if (L.me) drawSprite(wctx, S.ceo, 'you');
+    else { L.p.dir = poseFor(L.p); drawSprite(wctx, L.p, L.p.id); }
+  }
+
+  // --- scaled blit ---
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, W * zoom, H * zoom);
+  ctx.drawImage(world, 0, 0, W, H, 0, 0, W * zoom, H * zoom);
+
+  // --- crisp text layer ---
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.font = `600 ${9 + zoom}px ${css('--font')}`;
+  for (const r of ROOMS) {
+    const lx = r.x1 * TILE * zoom + 3, ly = r.y1 * TILE * zoom + 2;
+    ctx.fillStyle = 'rgba(12,14,18,0.75)';          // shadow, so the label reads
+    ctx.fillText(r.name.toUpperCase(), lx + 1, ly + 1);
+    ctx.fillStyle = INK.room;
+    ctx.fillText(r.name.toUpperCase(), lx, ly);
+  }
+
+  ctx.textAlign = 'center';
+  for (const p of cast) nameTag(p, p.name.split(' ')[0]);
+  nameTag(S.ceo, 'You', true);
+}
+
+function nameTag(actor, label, isMe) {
+  const x = (actor.pos.x * TILE + TILE / 2) * zoom;
+  const feet = (actor.pos.y * TILE + TILE / 2 + 4) * zoom;
+  const size = 8 + zoom;
+
+  ctx.font = `700 ${size}px ${css('--font')}`;
+  const w = ctx.measureText(label).width + 8;
+  ctx.fillStyle = isMe ? 'rgba(42,85,201,0.92)' : INK.labelBg;
+  roundRect(ctx, x - w / 2, feet, w, size + 5, 3);
+  ctx.fill();
+  ctx.fillStyle = INK.label;
+  ctx.textBaseline = 'top';
+  ctx.fillText(label, x, feet + 2);
+
+  if (isMe) return;
+
+  // Progress and the "needs you" flag ride above the head.
+  const head = (actor.pos.y * TILE + TILE / 2 - 14) * zoom;
+  if (actor.itemId && (actor.state === 'working' || actor.state === 'blocked')) {
+    const w2 = item(actor.itemId);
+    const done = Math.min(1, w2.done / w2.effort);
+    const bw = 20 * zoom / 2 + 8;
+    ctx.fillStyle = 'rgba(18,20,26,0.75)';
+    roundRect(ctx, x - bw / 2 - 1, head - 6, bw + 2, 5, 2);
+    ctx.fill();
+    ctx.fillStyle = actor.state === 'blocked' ? BEAM : '#7fa4ff';
+    roundRect(ctx, x - bw / 2, head - 5, Math.max(2, bw * done), 3, 1.5);
+    ctx.fill();
+  }
+  if (actor.state === 'blocked') {
+    const r = 6 + zoom;
+    ctx.fillStyle = BEAM;
+    ctx.beginPath();
+    ctx.arc(x + 11 * zoom / 2 + 2, head - 10, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#20242e';
+    ctx.font = `700 ${size + 1}px ${css('--font')}`;
+    ctx.textBaseline = 'middle';
+    ctx.fillText('?', x + 11 * zoom / 2 + 2, head - 9);
+    ctx.textBaseline = 'top';
+  }
+}
+
+
+/* =========================================================================
+   10. Panels
+   ========================================================================= */
+
+function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+/* Rebuilding innerHTML destroys focus and selection, so each panel only
+   redraws when its own contents actually changed. */
+const sigs = {};
+function changed(key, sig) {
+  if (sigs[key] === sig) return false;
+  sigs[key] = sig;
+  return true;
+}
+const pct = (w) => Math.round((w.done / w.effort) * 100);
+
+function renderClock() {
+  document.getElementById('clockDay').textContent = `Day ${S.day}`;
+  const h = Math.floor(S.hour), mi = Math.floor(((S.hour % 1) * 60) / 10) * 10;
+  document.getElementById('clockTime').textContent =
+    `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
+}
+
+function renderMetrics() {
+  const host = document.getElementById('metrics');
+  if (!host.children.length) {
+    host.innerHTML = METRICS.map((m) => `
+      <div class="metric" data-metric="${m.key}">
+        <span class="metric__delta" data-show="0"></span>
+        <p class="metric__label">${m.label}</p>
+        <div class="metric__row">
+          <span class="metric__value">0</span><span class="metric__unit">${m.unit === '/100' ? '' : m.unit}</span>
+        </div>
+        <div class="bar"><i style="width:0%"></i></div>
+      </div>`).join('');
+  }
+  for (const m of METRICS) {
+    const el = host.querySelector(`[data-metric="${m.key}"]`);
+    const v = S.m[m.key];
+    el.querySelector('.metric__value').textContent =
+      m.key === 'cash' ? Math.round(v).toLocaleString('en-US') : Math.round(v * 10) / 10;
+    el.querySelector('.bar > i').style.width = `${Math.max(0, Math.min(100, (v / m.max) * 100))}%`;
+    el.dataset.tone =
+      m.key === 'morale' ? (v < 45 ? 'err' : v < 60 ? 'warn' : 'ok') :
+      m.key === 'visibility' ? (v >= 48 ? 'ok' : v >= 24 ? 'warn' : '') :
+      m.key === 'cash' ? (v < 1000 ? 'err' : '') : '';
+
+    const d = deltas[m.key];
+    const badge = el.querySelector('.metric__delta');
+    if (d) {
+      badge.textContent = fmtDelta(m, d);
+      badge.dataset.good = Math.sign(d) === m.good ? '1' : '0';
+      badge.dataset.show = '1';
+      clearTimeout(badge._t);
+      badge._t = setTimeout(() => { badge.dataset.show = '0'; delete deltas[m.key]; }, 2600);
+    }
+  }
+}
+
+function renderOrg(force) {
+  const sig = S.people.map((p) => `${p.state}${p.itemId ? pct(item(p.itemId)) : ''}`).join('|') + S.talkFor;
+  if (!changed('org', sig) && !force) return;
+
+  const host = document.getElementById('org');
+  const directors = S.people.filter((p) => p.rank === 'director');
+  const row = (p, sub) => {
+    const w = p.itemId ? item(p.itemId) : null;
+    const task = p.state === 'blocked' ? `Needs you: ${w ? w.title : ''}`
+      : w ? `${w.title} — ${pct(w)}%`
+      : p.state === 'walking' ? 'Walking' : p.state === 'meeting' ? 'In a meeting' : 'Free right now';
+    return `
+      <button type="button" class="person ${sub ? 'person--sub' : ''}" data-goto="${p.id}"
+              data-selected="${S.talkFor === p.id ? 1 : 0}" data-waiting="${p.state === 'blocked' ? 1 : 0}"
+              title="Click to walk over to their desk">
+        <span class="av" style="background-color:${avColor(p.id)};background-image:url(${portrait(p.id, 3)})">${p.initials}</span>
+        <span class="person__body">
+          <span class="person__name">${esc(p.name)}</span>
+          <span class="person__role">${esc(p.title)}</span>
+          <span class="person__task">${esc(task)}</span>
+        </span>
+        <span class="dot dot--${p.state}"></span>
+      </button>`;
+  };
+
+  host.innerHTML = `
+    <div class="org__me">
+      <span class="av" style="background-color:var(--accent);background-image:url(${portrait('you', 3)})">You</span>
+      <span class="person__body">
+        <span class="person__name">You</span>
+        <span class="person__role">Chief Executive</span>
+      </span>
+    </div>
+    ${directors.map((d) => `
+      <div class="org__group">
+        <p class="org__dept">${esc(deptName(d.dept))}</p>
+        ${row(d, false)}
+        ${S.people.filter((p) => p.mgr === d.id).map((p) => row(p, true)).join('')}
+      </div>`).join('')}
+    <p class="org__note">Desks follow departments, lines follow reporting. Priya sits in Accounting but
+    reports to the Administration director.</p>`;
+}
+
+function railAssign() {
+  const running = S.items.filter((w) => w.status === 'assigned' || w.status === 'active' || w.status === 'blocked');
+  const list = S.items.filter((w) => w.status === 'backlog');
+
+  const runningHtml = running.length ? `
+    <p class="org__dept">In progress — ${running.length}</p>
+    ${running.map((w) => {
+      const p = w.assignee ? byId(w.assignee) : null;
+      const state = w.status === 'blocked' ? 'Needs you' : w.status === 'assigned' ? 'Handing off' : 'Working';
+      return `
+        <div class="card">
+          <div class="card__top">
+            ${p ? `<span class="av" style="background-color:${avColor(p.id)};background-image:url(${portrait(p.id, 3)})">${p.initials}</span>` : ''}
+            <div style="min-width:0;flex:1">
+              <p class="card__title" style="font-size:12.5px">${esc(w.title)}</p>
+              <p class="person__role">${p ? esc(p.name) : 'Being handed over'} — ${pct(w)}%</p>
+            </div>
+            <span class="chip ${w.status === 'blocked' ? 'chip--warn' : 'chip--info'}">${state}</span>
+          </div>
+          <div class="bar" style="margin-top:6px"><i style="width:${pct(w)}%"></i></div>
+        </div>`;
+    }).join('')}
+    <p class="org__dept" style="margin-top:10px">Available directives</p>` : '';
+
+  if (!list.length) return `${runningHtml}<p class="empty">No directives available.<br />Finish what is in progress.</p>`;
+
+  return runningHtml + list.map((w) => {
+    const open = unlocked(w);
+    const staff = byId(w.want);
+    const director = staff.mgr ? byId(staff.mgr) : staff;
+    const busy = staff.state !== 'idle';
+    return `
+      <div class="card ${open ? '' : 'card--locked'}">
+        <div class="card__top">
+          <span class="chip chip--dept" style="background:var(--accent-weak);color:var(--accent)">${esc(deptName(w.dept))}</span>
+          <span class="chip chip--num">${w.effort}h</span>
+          ${w.visitMeeting ? '<span class="chip">Cross-department</span>' : ''}
+        </div>
+        <p class="card__title">${esc(w.title)}</p>
+        <p class="card__brief">${esc(w.brief)}</p>
+        ${open ? `
+          <div class="card__row">
+            ${director.id !== staff.id ? `
+              <button type="button" class="btn btn--small btn--primary" data-assign="${w.id}" data-via="mgr" ${busy ? 'disabled' : ''}>
+                Hand to ${esc(director.name)} (through the line)
+              </button>` : ''}
+            <button type="button" class="btn btn--small ${staff.mgr ? '' : 'btn--primary'}"
+                    data-assign="${w.id}" data-via="direct" ${busy ? 'disabled' : ''}>
+              ${staff.mgr ? `Give ${esc(staff.name)} directly (morale -3)` : `Give it to ${esc(staff.name)}`}
+            </button>
+          </div>
+          ${busy ? `<p class="card__brief">${esc(staff.name)} is not free right now.</p>` : ''}
+        ` : `<div class="card__row"><span class="chip chip--plain">${esc(lockReason(w))}</span></div>`}
+      </div>`;
+  }).join('');
+}
+
+function railInbox() {
+  const list = S.items.filter((w) => w.status === 'blocked');
+  if (!list.length) return `<p class="empty">Nothing waiting on you.</p>`;
+  return list.map((w) => {
+    const p = byId(w.assignee);
+    const cp = w.cps[p.cpIndex];
+    return `
+      <div class="card card--alert">
+        <div class="card__top">
+          <span class="av" style="background-color:${avColor(p.id)};background-image:url(${portrait(p.id, 3)})">${p.initials}</span>
+          <div style="min-width:0">
+            <p class="card__title" style="font-size:12.5px">${esc(p.name)}</p>
+            <p class="person__role">${esc(w.title)}</p>
+          </div>
+          <span class="chip chip--warn" style="margin-left:auto">${cp.label}</span>
+        </div>
+        <div class="quote">${esc(cp.prompt)}</div>
+        ${cp.options.map((o, i) => `
+          <button type="button" class="opt" data-resolve="${w.id}" data-cp="${p.cpIndex}" data-opt="${i}">
+            <span class="opt__label">${esc(o.label)}</span>
+            <span class="opt__detail">${esc(o.detail)}</span>
+            <span class="opt__cost">${effectChips(o.effect)}</span>
+          </button>`).join('')}
+        <div class="card__row">
+          <button type="button" class="btn btn--small" data-goto="${p.id}">Walk over and ask (visibility +2, morale +2)</button>
+        </div>
+        <p class="card__brief">Deciding here costs 1 morale, and no reason gets recorded.</p>
+      </div>`;
+  }).join('');
+}
+
+function railOut() {
+  if (!S.outputs.length) return `<p class="empty">No deliverables yet.<br />Assign work and they collect here.</p>`;
+  return S.outputs.map((o) => `
+    <div class="card">
+      <div class="card__top">
+        <span class="chip chip--ok">${esc(o.kind)}</span>
+        <span class="chip chip--num">Day ${o.day}</span>
+      </div>
+      <p class="card__title">${esc(o.title)}</p>
+      <p class="card__brief">From: ${esc(o.itemTitle)}</p>
+      <div class="card__row" style="gap:4px;flex-direction:column;align-items:stretch">
+        <p class="person__role">Provenance — what this came from</p>
+        ${o.provenance.map((x) => `<span class="chip" style="justify-content:flex-start">${esc(x)}</span>`).join('')}
+      </div>
+      ${o.tacit.map((t) => `<div class="quote quote--tacit"><span class="chip chip--tacit">Tacit knowledge</span> ${esc(t)}</div>`).join('')}
+    </div>`).join('');
+}
+
+function railLog() {
+  if (!S.log.length) return `<p class="empty">Nothing has happened yet.</p>`;
+  return `<div class="log">${S.log.map((l) => `
+    <div class="log__row" data-kind="${l.kind}">
+      <span class="log__at">${l.at}</span>
+      <span class="log__text">${esc(l.text)}</span>
+    </div>`).join('')}</div>`;
+}
+
+function renderRail(force) {
+  const sig = S.tab + '|' + S.items.map((w) => `${w.status}${pct(w)}`).join() + '|' +
+    S.people.map((p) => p.state + p.cpIndex).join() + '|' + S.outputs.length + '|' + S.log.length +
+    '|' + Math.round(S.m.visibility);
+  if (!changed('rail', sig) && !force) return;
+
+  document.getElementById('rail').innerHTML =
+    S.tab === 'assign' ? railAssign() :
+    S.tab === 'inbox' ? railInbox() :
+    S.tab === 'out' ? railOut() : railLog();
+
+  const n = S.items.filter((w) => w.status === 'blocked').length;
+  const badge = document.getElementById('inboxBadge');
+  badge.hidden = n === 0;
+  badge.textContent = String(n);
+}
+
+/* ---------- Conversation ---------- */
+
+function openTalk(id) {
+  S.talkFor = id;
+  const p = byId(id);
+  document.getElementById('talk').dataset.open = '1';
+  const av = document.getElementById('talkAv');
+  av.textContent = p.initials;
+  av.style.backgroundColor = avColor(p.id);
+  av.style.backgroundImage = `url(${portrait(p.id, 4)})`;
+  document.getElementById('talkName').textContent = p.name;
+  document.getElementById('talkRole').textContent = `${p.title} — ${deptName(p.dept)}`;
+  renderTalk(true);
+}
+
+function closeTalk() {
+  S.talkFor = null;
+  sigs.talk = null;
+  document.getElementById('talk').dataset.open = '0';
+  document.getElementById('talkBody').innerHTML = '';
+}
+
+function renderTalk(force) {
+  if (!S.talkFor) return;
+  const p = byId(S.talkFor);
+  const w = p.itemId ? item(p.itemId) : null;
+  const sig = `${p.id}${p.state}${p.cpIndex}${w ? pct(w) : ''}${(p.answers || []).length}${p.encouragedDay}${S.items.filter((x) => x.status === 'backlog').length}`;
+  if (!changed('talk', sig) && !force) return;
+
+  const chip = document.getElementById('talkState');
+  chip.textContent = STATE_LABEL[p.state];
+  chip.className = 'chip ' + (p.state === 'blocked' ? 'chip--warn' : p.state === 'working' ? 'chip--info' : '');
+
+  const body = document.getElementById('talkBody');
+  let html = '';
+
+  if (p.state === 'blocked' && w) {
+    const cp = w.cps[p.cpIndex];
+    html += `
+      <div class="card card--alert">
+        <div class="card__top"><span class="chip chip--warn">${cp.label}</span><span class="chip">${esc(w.title)}</span></div>
+        <div class="quote">${esc(cp.prompt)}</div>
+        ${cp.tacit ? `<div class="quote quote--tacit"><span class="chip chip--tacit">Says this only in person</span> ${esc(cp.tacit)}</div>` : ''}
+        ${cp.options.map((o, i) => `
+          <button type="button" class="opt" data-resolve="${w.id}" data-cp="${p.cpIndex}" data-opt="${i}" data-inperson="1">
+            <span class="opt__label">${esc(o.label)}</span>
+            <span class="opt__detail">${esc(o.detail)}</span>
+            <span class="opt__cost">${effectChips(o.effect)}</span>
+          </button>`).join('')}
+      </div>`;
+  } else if (w) {
+    html += `
+      <div class="card">
+        <div class="card__top"><span class="chip chip--info">Working on</span><span class="chip chip--num">${pct(w)}%</span></div>
+        <p class="card__title">${esc(w.title)}</p>
+        <div class="bar" style="margin-top:6px"><i style="width:${pct(w)}%"></i></div>
+        <div class="quote">${esc(w.friction)}</div>
+      </div>`;
+  } else {
+    const open = S.items.filter((x) => x.status === 'backlog' && unlocked(x) && (x.want === p.id || byId(x.want).mgr === p.id));
+    html += `
+      <div class="card">
+        <div class="card__top"><span class="chip">Idle</span></div>
+        <p class="card__title">Free right now</p>
+        <div class="quote">${esc(VOICE[p.id]?.bottleneck || 'Give me something and I will start.')}</div>
+        ${open.length ? `<p class="card__brief">Work you can hand over right here:</p>${open.map((x) => `
+          <button type="button" class="opt" data-assign="${x.id}" data-via="${x.want === p.id ? 'direct-here' : 'mgr'}">
+            <span class="opt__label">${esc(x.title)}</span>
+            <span class="opt__detail">${x.effort} hours — ${esc(deptName(x.dept))}</span>
+          </button>`).join('')}` : ''}
+      </div>`;
+  }
+
+  if (p.answers && p.answers.length) {
+    html += p.answers.map((a) => `
+      <div class="card">
+        <div class="card__top"><span class="chip">${esc(a.q)}</span></div>
+        <div class="quote ${a.tacit ? 'quote--tacit' : ''}">${esc(a.a)}</div>
+      </div>`).join('');
+  }
+
+  html += `
+    <div class="card">
+      <div class="card__top"><span class="chip">You can</span></div>
+      <div class="card__row">
+        <button type="button" class="btn btn--small" data-encourage="${p.id}" ${p.encouragedDay === S.day ? 'disabled' : ''}>
+          Encourage them (morale +1, once a day)
+        </button>
+        ${w ? `<button type="button" class="btn btn--small btn--ghost" data-drop="${w.id}">Stop this work</button>` : ''}
+      </div>
+    </div>`;
+
+  body.innerHTML = html;
+}
+
+/* The four questions that matter: why, exceptions, who decides, bottleneck.
+   The first three are where tacit knowledge lives, so they raise Visibility. */
+const ASK_MAP = [
+  { keys: ['why', 'reason', 'because'], slot: 'why', label: 'Why', tacit: true },
+  { keys: ['exception', 'edge', 'irregular', 'unusual', 'special'], slot: 'exception', label: 'Exceptions', tacit: true },
+  { keys: ['who decide', 'decides', 'judg', 'criteri', 'rule', 'threshold', 'approve'], slot: 'axis', label: 'Who decides', tacit: true },
+  { keys: ['time', 'bottleneck', 'slow', 'stuck', 'long', 'eating'], slot: 'bottleneck', label: 'Bottleneck', tacit: false },
+];
+
+function ask(text) {
+  if (!S.talkFor) return;
+  const p = byId(S.talkFor);
+  const v = VOICE[p.id] || {};
+  const q = text.toLowerCase();
+  const hit = ASK_MAP.find((m) => m.keys.some((k) => q.includes(k)));
+  p.answers = p.answers || [];
+
+  if (!hit) {
+    p.answers.unshift({
+      q: text.slice(0, 28),
+      a: '(Not in the prototype script. Try why, exceptions, who decides, or bottleneck.)',
+    });
+    renderTalk(true);
+    return;
+  }
+  const answer = v[hit.slot] || '(No script written for this person yet.)';
+  const first = !p.asked[hit.slot];
+  p.asked[hit.slot] = true;
+  p.answers.unshift({ q: hit.label, a: answer, tacit: hit.tacit });
+  if (first && hit.tacit) {
+    applyEffect({ visibility: 2 });
+    log(`Recorded "${hit.label}" from ${p.name} (visibility +2)`, 'tacit');
+  }
+  renderTalk(true);
+  renderOrg(true);
+}
+
+function render() {
+  renderClock();
+  renderMetrics();
+  renderOrg(true);
+  renderRail(true);
+  renderTalk(true);
+}
+
+/* =========================================================================
+   11. Input
+   ========================================================================= */
+
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT') return;
+  const k = e.key.toLowerCase();
+  if (k === ' ') { e.preventDefault(); togglePlay(); return; }
+  if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) {
+    e.preventDefault();
+    S.ceo.keys.add(k);
+  }
+});
+document.addEventListener('keyup', (e) => S.ceo.keys.delete(e.key.toLowerCase()));
+window.addEventListener('blur', () => S.ceo.keys.clear());
+
+cv.addEventListener('click', (e) => {
+  const rect = cv.getBoundingClientRect();
+  const scale = rect.width / W;
+  const x = Math.floor((e.clientX - rect.left) / scale / TILE);
+  const y = Math.floor((e.clientY - rect.top) / scale / TILE);
+  const p = S.people.find((q) => Math.abs(q.pos.x - x) < 1 && Math.abs(q.pos.y - y) < 1);
+  if (p) { walkTo(p.id); return; }   // clicking a person walks you next to them
+  S.ceo.path = path({ x: Math.round(S.ceo.pos.x), y: Math.round(S.ceo.pos.y) }, { x, y });
+});
+
+/** Stop beside someone, never on their cell — overlapping avatars hide them. */
+function walkTo(id) {
+  const p = byId(id);
+  const from = { x: Math.round(S.ceo.pos.x), y: Math.round(S.ceo.pos.y) };
+  const anchor = { x: Math.round(p.pos.x), y: Math.round(p.pos.y) };
+  const taken = (x, y) => S.people.some((q) => q !== p && Math.round(q.pos.x) === x && Math.round(q.pos.y) === y);
+  const spot = [[0, 1], [1, 0], [-1, 0], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]]
+    .map(([dx, dy]) => ({ x: anchor.x + dx, y: anchor.y + dy }))
+    .find((c) => walkable(c.x, c.y) && !taken(c.x, c.y));
+  S.ceo.path = path(from, spot || anchor);
+  if (!S.ceo.path.length) S.ceo.path = path(from, p.seat);
+}
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-goto],[data-assign],[data-resolve],[data-encourage],[data-drop],[data-ask],[data-speed],[data-tab]');
+  if (!t) return;
+
+  if (t.dataset.tab) {
+    S.tab = t.dataset.tab;
+    document.querySelectorAll('.tab').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.tab === S.tab)));
+    renderRail(true);
+    return;
+  }
+  if (t.dataset.speed) {
+    S.speed = Number(t.dataset.speed);
+    document.querySelectorAll('[data-speed]').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.speed) === S.speed)));
+    return;
+  }
+  if (t.dataset.goto) { walkTo(t.dataset.goto); return; }
+  if (t.dataset.ask) { ask(t.dataset.ask); return; }
+
+  if (t.dataset.assign) {
+    const w = item(t.dataset.assign);
+    if (!w || w.status !== 'backlog' || !unlocked(w)) return;
+    const staff = byId(w.want);
+    if (staff.state !== 'idle') { toast(`${staff.name} is not free right now.`); return; }
+    if (t.dataset.via === 'mgr' && staff.mgr) assignViaManager(w, byId(staff.mgr));
+    else assignDirect(w, staff);
+    return;
+  }
+
+  if (t.dataset.resolve) {
+    resolve(item(t.dataset.resolve), Number(t.dataset.cp), Number(t.dataset.opt), t.dataset.inperson === '1');
+    return;
+  }
+
+  if (t.dataset.encourage) {
+    const p = byId(t.dataset.encourage);
+    if (p.encouragedDay === S.day) return;
+    p.encouragedDay = S.day;
+    applyEffect({ morale: 1 });
+    log(`Encouraged ${p.name}`, '');
+    render();
+    return;
+  }
+
+  if (t.dataset.drop) {
+    const w = item(t.dataset.drop);
+    const p = byId(w.assignee);
+    w.status = 'backlog';
+    w.assignee = null;
+    p.state = 'idle';
+    p.itemId = null;
+    p.cpIndex = -1;
+    applyEffect({ morale: -2 });
+    log(`Stopped "${w.title}" — ${pct(w)}% of progress is kept`, 'note');
+    render();
+  }
+});
+
+document.getElementById('askForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const input = document.getElementById('askInput');
+  const v = input.value.trim();
+  if (!v) return;
+  ask(v);
+  input.value = '';
+});
+
+document.getElementById('talkClose').addEventListener('click', closeTalk);
+
+function togglePlay() {
+  S.playing = !S.playing;
+  const b = document.getElementById('btnPlay');
+  b.textContent = S.playing ? '⏸ Pause' : '▶ Resume';
+  b.setAttribute('aria-pressed', String(S.playing));
+}
+document.getElementById('btnPlay').addEventListener('click', togglePlay);
+
+document.getElementById('introStart').addEventListener('click', () => {
+  document.getElementById('intro').hidden = true;
+});
+document.getElementById('btnHelp').addEventListener('click', () => {
+  document.getElementById('intro').hidden = false;
+});
+
+/* The stage must be measured after layout settles — at first paint the metrics
+   strip is still empty, so an early measurement is too tall and the floor gets
+   clipped. A ResizeObserver fires once on observe and again on every change,
+   which covers both. Re-fitting the canvas never changes the stage's own size,
+   so this cannot feed back on itself. */
+let lastFit = '';
+const refit = () => {
+  const stage = cv.parentElement;
+  const size = `${stage.clientWidth}x${stage.clientHeight}`;
+  if (size === lastFit) return;      // guard, so this cannot chatter
+  lastFit = size;
+  sizeCanvas();
+  draw();
+};
+// Synchronous on purpose: a requestAnimationFrame hop never runs in a
+// background tab, which would leave the floor fitted to a stale measurement.
+new ResizeObserver(refit).observe(cv.parentElement);
+window.addEventListener('resize', refit);
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', invalidateTheme);
+new MutationObserver(invalidateTheme)
+  .observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+
+/* =========================================================================
+   12. Loop
+   ========================================================================= */
+
+let last = performance.now();
+let uiAcc = 0;
+
+function frame(now) {
+  // Clamped so returning to a backgrounded tab does not jump the clock.
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+
+  tick(dt);
+  moveCeo(dt);
+  for (const p of S.people) if (p.state === 'walking') step(p, 2.8, dt);
+  updateNear();
+  draw();
+
+  uiAcc += dt;
+  if (uiAcc > 0.5) {
+    uiAcc = 0;
+    renderClock();
+    renderOrg();
+    renderRail();
+    renderTalk();
+  }
+  requestAnimationFrame(frame);
+}
+
+sizeCanvas();
+document.getElementById('orgCount').textContent = String(S.people.length);
+log('Company OS started. Visibility 6% — you know almost nothing about how this company works.', '');
+render();
+requestAnimationFrame(frame);
+</script>
