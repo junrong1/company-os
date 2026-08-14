@@ -1,0 +1,102 @@
+.shell {
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 3rem 1.5rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.4rem;
+  letter-spacing: 0.02em;
+}
+
+.sub {
+  margin: 0.35rem 0 2rem;
+  color: #7d8494;
+}
+
+.card {
+  border: 1px solid #262b35;
+  border-left-width: 3px;
+  border-radius: 2px;
+  padding: 1rem 1.25rem;
+  background: #14171d;
+}
+
+.card.ok {
+  border-left-color: #4f9d6a;
+}
+
+.card.bad {
+  border-left-color: #b4543f;
+}
+
+.card h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.card h3 {
+  margin: 1.25rem 0 0.5rem;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #7d8494;
+}
+
+.pill {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  color: #7d8494;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: 10rem 1fr;
+  gap: 0.25rem 1rem;
+  margin: 0;
+}
+
+dt {
+  color: #7d8494;
+}
+
+dd {
+  margin: 0;
+}
+
+ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+li.up::marker {
+  color: #4f9d6a;
+}
+
+li.down::marker {
+  color: #b4543f;
+}
+
+.hint {
+  color: #7d8494;
+  margin-bottom: 0;
+}
+
+code {
+  background: #1c212a;
+  padding: 0.1rem 0.3rem;
+  border-radius: 2px;
+}
+
+em {
+  color: #7d8494;
+  font-style: normal;
+}

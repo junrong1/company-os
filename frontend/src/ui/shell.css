@@ -1,0 +1,509 @@
+/* The console around the office.
+ *
+ * The office glows in traditional pigment colour; the console stays ink. A night-shift control
+ * room reads as consequence — which is the framing the product chose, over a sunny village
+ * that reads as play.
+ *
+ * Every value here comes from docs/design/art-direction.html. The tokens that any canvas also
+ * needs live in src/design/tokens.ts; these are the ones only CSS uses. */
+
+:root {
+  --ganglan: #0f1423;
+  --yanhanlan: #131824;
+  --gangqing: #142334;
+  --qinghui: #2b333e;
+  --jingyuhui: #475164;
+  --yueyingbai: #c0c4c3;
+  --xinghui: #b2bbbe;
+  --shilv: #57c3c2;
+  --cuilv: #20a162;
+  --zhuhong: #ed5126;
+  --tacit: #c4b1ff;
+  --text: #e9edf4;
+  --text-muted: #a2abbb;
+  --text-faint: #737d8e;
+  --rule: #262b36;
+}
+
+.shell {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto auto;
+  background: radial-gradient(120% 80% at 50% 0%, var(--yanhanlan), var(--ganglan) 70%);
+  color: var(--text);
+}
+
+/* ---- top bar ---------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.topbar h1 {
+  margin: 0;
+  font-size: 0.95rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.stage-toggle,
+.rates {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.rates {
+  margin-left: auto;
+}
+
+.stage-toggle button,
+.rates button {
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.6rem;
+  cursor: pointer;
+}
+
+.stage-toggle button[data-active='true'],
+.rates button[data-active='true'] {
+  border-color: var(--shilv);
+  color: var(--shilv);
+}
+
+.topbar .hint {
+  color: var(--text-faint);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+}
+
+.banner {
+  margin: 0;
+  padding: 0.5rem 1.25rem;
+  background: var(--gangqing);
+  border-bottom: 1px solid var(--rule);
+  color: var(--zhuhong);
+  font-size: 0.8rem;
+}
+
+/* ---- HUD -------------------------------------------------------------- */
+
+.hud {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: 0.5rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.tile {
+  flex: 1 1 8rem;
+  min-width: 8rem;
+  padding: 0.5rem 0.7rem;
+  background: var(--gangqing);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+}
+
+.tile--fixed {
+  border-left: 2px solid var(--jingyuhui);
+}
+
+.tile--wide {
+  flex: 2 1 16rem;
+}
+
+.tile__label {
+  margin: 0 0 0.2rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.tile__row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+
+.tile__value {
+  font-size: 1.35rem;
+  line-height: 1.1;
+}
+
+.tile__unit,
+.tile__foot {
+  font-size: 0.7rem;
+  color: var(--text-faint);
+}
+
+.tile__foot {
+  margin: 0.3rem 0 0;
+}
+
+.tile__delta {
+  margin-left: auto;
+  font-size: 0.7rem;
+}
+
+.spark {
+  display: block;
+  width: 100%;
+  height: 1.4rem;
+  margin: 0.3rem 0 0.2rem;
+}
+
+.bar {
+  height: 3px;
+  background: var(--qinghui);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.bar > i {
+  display: block;
+  height: 100%;
+  background: var(--jingyuhui);
+}
+
+/* Load bleed: capacity slides across rather than snapping. A soft ceiling should feel soft. */
+.heat {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.7rem;
+  margin-top: 0.25rem;
+}
+
+.heat__name {
+  flex: 0 0 5rem;
+  color: var(--text-muted);
+}
+
+.heat__track {
+  flex: 1;
+  height: 6px;
+  background: var(--qinghui);
+  border-radius: 1px;
+  overflow: hidden;
+}
+
+.heat__track > i {
+  display: block;
+  height: 100%;
+  transition: width 800ms ease-in-out, background 800ms ease-in-out;
+}
+
+.heat__value {
+  flex: 0 0 2.5rem;
+  text-align: right;
+  color: var(--text-faint);
+}
+
+.heat[data-over='true'] .heat__value {
+  color: var(--zhuhong);
+}
+
+.composer {
+  flex: 0 0 auto;
+  align-self: center;
+  font-size: 0.7rem;
+  color: var(--text-faint);
+}
+
+.composer summary {
+  cursor: pointer;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.composer label {
+  display: block;
+  padding: 0.1rem 0;
+  color: var(--text-muted);
+}
+
+.composer label[data-fixed='true'] {
+  color: var(--text-faint);
+}
+
+.composer__refusal {
+  max-width: 18rem;
+  color: var(--zhuhong);
+}
+
+/* ---- the stage -------------------------------------------------------- */
+
+.stage {
+  position: relative;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 0.75rem;
+  min-height: 18rem;
+}
+
+.office,
+.dag-host {
+  image-rendering: pixelated;
+}
+
+.office[data-hidden='true'],
+.dag-host[data-hidden='true'] {
+  /* Hidden, not unmounted: unmounting the canvas would tear down the sprite sheets and the
+     frame loop and rebuild them on the way back, and the office has to be rendering unchanged
+     when you return to it. */
+  display: none;
+}
+
+.dag {
+  display: block;
+  image-rendering: pixelated;
+}
+
+/* ---- the chain strip -------------------------------------------------- */
+
+.strip {
+  padding: 0.4rem 1.25rem;
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+  background: var(--yanhanlan);
+  overflow-x: auto;
+}
+
+.strip canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+
+/* ---- panels ----------------------------------------------------------- */
+
+.panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.75rem;
+  padding: 0.75rem 1.25rem 1.5rem;
+  align-items: start;
+}
+
+.panel {
+  background: var(--gangqing);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  padding: 0.6rem 0.8rem;
+}
+
+.panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.panel .hint {
+  color: var(--text-faint);
+  font-size: 0.75rem;
+  margin: 0;
+}
+
+.line {
+  margin-bottom: 0.5rem;
+}
+
+.person {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.25rem 0.3rem;
+  background: transparent;
+  border: 0;
+  border-radius: 2px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.75rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.person:hover {
+  background: var(--qinghui);
+}
+
+.person--sub {
+  padding-left: 1.2rem;
+}
+
+.person__stripe {
+  flex: 0 0 3px;
+  align-self: stretch;
+  border-radius: 1px;
+}
+
+.person__body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.person__task {
+  color: var(--text-faint);
+  font-size: 0.7rem;
+}
+
+/* The one reserved signal: a person is waiting on your decision. Nothing else may use it. */
+.person__beam {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-radius: 50%;
+  animation: beam-breath 1600ms ease-in-out infinite;
+}
+
+@keyframes beam-breath {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .person__beam {
+    /* Falls back to full opacity: the signal never disappears, only the motion does. */
+    animation: none;
+    opacity: 1;
+  }
+
+  .heat__track > i {
+    transition: none;
+  }
+}
+
+.item,
+.decision,
+.output {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--rule);
+  font-size: 0.75rem;
+}
+
+.item:first-of-type,
+.decision:first-of-type,
+.output:first-of-type {
+  border-top: 0;
+}
+
+.decision,
+.output {
+  flex-direction: column;
+}
+
+.item__stripe {
+  flex: 0 0 3px;
+  border-radius: 1px;
+}
+
+.item__body {
+  min-width: 0;
+}
+
+.item__title,
+.decision__item,
+.output__title {
+  margin: 0;
+}
+
+.item__meta,
+.item__locked,
+.output__meta {
+  margin: 0.15rem 0 0;
+  color: var(--text-faint);
+  font-size: 0.7rem;
+}
+
+.item[data-available='false'] .item__title {
+  color: var(--text-faint);
+}
+
+.item__actions,
+.decision__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.3rem;
+}
+
+.item__actions button,
+.decision__actions button {
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--shilv);
+  font: inherit;
+  font-size: 0.7rem;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+}
+
+.item__actions button:disabled,
+.decision__actions button:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.decision__prompt {
+  margin: 0.2rem 0 0.4rem;
+  color: var(--text-muted);
+}
+
+.option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.1rem 0.4rem;
+  padding: 0.2rem 0;
+  cursor: pointer;
+}
+
+.option__label {
+  color: var(--text);
+}
+
+.option__detail {
+  grid-column: 2;
+  color: var(--text-faint);
+  font-size: 0.7rem;
+}
+
+.decision__cost {
+  margin: 0.3rem 0 0;
+  font-size: 0.7rem;
+}
+
+.output__provenance,
+.output__tacit {
+  margin: 0.25rem 0 0;
+  padding-left: 1rem;
+  font-size: 0.7rem;
+  color: var(--text-faint);
+}
