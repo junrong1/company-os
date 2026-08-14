@@ -26,9 +26,11 @@ from __future__ import annotations
 import queue
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import Engine, create_engine, event, func, insert, select, update
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
 from contracts.envelope import Envelope, EventKind, build
@@ -115,7 +117,16 @@ def make_engine(url: str, echo: bool = False) -> Engine:
     silently disagrees with Postgres on three things that matter here: it emits its own
     implicit BEGIN in the wrong places (which breaks SAVEPOINT and makes isolation differ),
     it leaves foreign keys off, and it journals in a mode where a reader blocks a writer.
+
+    A file-backed SQLite store also has its directory created here. The default URL points at
+    `var/`, which is git-ignored and therefore absent from a fresh clone — and SQLite reports a
+    missing parent directory as `unable to open database file`, which reads as a corrupt or
+    locked store rather than as a directory that was never there.
     """
+    parsed = make_url(url)
+    if parsed.drivername.startswith("sqlite") and parsed.database not in (None, "", ":memory:"):
+        Path(parsed.database).parent.mkdir(parents=True, exist_ok=True)
+
     engine = create_engine(url, echo=echo, future=True)
 
     if engine.dialect.name != "sqlite":
