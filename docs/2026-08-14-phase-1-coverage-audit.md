@@ -19,7 +19,13 @@ not.
 
 ## Open gaps
 
-### 1. Staff do not move on the client (R13, R17) — the largest hole
+### 1. Staff do not move on the client (R13, R17) — deferred by decision
+
+**Deferred on 2026-08-14: staff movement is not needed for this phase.** The verdict this
+phase exists to produce is about whether the in-person loop is worth playing, and that is
+reachable with a static floor — the CEO moves, the beam marks who is waiting, and the
+conversation carries the mechanic. Recorded here rather than closed, because the requirement
+is still unmet and the next phase should know it inherited this rather than solved it.
 
 **Verified.** No event carries a person's position, path, or state. Reproduced:
 
@@ -168,10 +174,11 @@ naming:
 
 ## What this suggests doing next
 
-1. **Emit staff movement as intent.** Gap 1 is the one that changes what the product feels like,
-   the design is already written (R13), and the client half exists and is golden-tested. Everything
-   else on this list is smaller or already knowingly deferred.
-2. **Then decide about compose.** Gap 2 is a real blocker for anyone who is not the author, and it
-   is the difference between "clone and run" and "clone, read the launcher, and run the launcher".
-3. **R41's marking is cheap** and the brainstorm argues it is load-bearing for credibility. It is a
+1. **Decide about compose.** Gap 2 is a real blocker for anyone who is not the author, and it is
+   the difference between "clone and run" and "clone, read the launcher, and run the launcher".
+2. **R41's marking is cheap** and the brainstorm argues it is load-bearing for credibility. It is a
    line of copy per surface.
+3. **Staff movement (gap 1) when the loop has earned it.** Deferred for this phase by decision, not
+   by oversight. The design is already written (R13) and the client half exists and is
+   golden-tested, so it stays cheap to pick up — but it is the phase after the verdict, not before
+   it.

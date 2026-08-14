@@ -63,10 +63,11 @@ than starting a second one. Opening `?run=<id>` directly — for example
 gateway cannot be reached, the page falls back to its status report, which is the
 useful thing to see when there is nothing to render.
 
-**Staff do not move on screen yet.** The kernel walks them — a director really does
-carry work to a specialist's desk — but no event carries a person's position or
-path, so the client draws everyone at their seat. Only the CEO moves. See
-`docs/2026-08-14-phase-1-coverage-audit.md`.
+**Staff do not move on screen, deliberately.** The kernel walks them — a director really
+does carry work to a specialist's desk — but no event carries a person's position or
+path, so the client draws everyone at their seat and only the CEO moves. Left that way
+for this phase: the question this phase answers is whether the in-person loop is worth
+playing, and a static floor answers it. See `docs/2026-08-14-phase-1-coverage-audit.md`.
 
 **Compose cannot reach the kernel yet, and that is the remaining gap.** The gateway
 talks to a `KernelClient`, and only one implementation exists — the in-process one
