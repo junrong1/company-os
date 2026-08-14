@@ -16,6 +16,13 @@ answered with the original outcome rather than applied twice (R30).
 tempting implementation waits for the next boundary, which never comes, and the client sees a
 request that neither succeeds nor fails. Instead the command is rejected with a reason that says
 what to do, and the caller decides whether to resume the clock.
+
+That rejection has one exemption, and without it the guard is a trap: `set_rate` is the only
+command that can lift a pause, so rejecting it on a paused run makes the pause permanent and the
+advice in the rejection impossible to follow. The exemption is sound rather than a special case,
+because the guard's own premise does not hold for `set_rate` — it never waits for a boundary. It
+writes at the current tick and appends `RATE_CHANGED`, which is exactly why it can restart a clock
+that is not running.
 """
 
 from __future__ import annotations
@@ -26,6 +33,12 @@ from typing import Any, Protocol
 from servicekit import logging as svclog
 
 log = svclog.get_logger("gateway")
+
+
+#: Commands that do not need a tick boundary, and are therefore accepted on a paused run.
+#: `set_rate` is the only one: it writes at the current tick rather than waiting for the next,
+#: and it is the sole way to lift a pause — guarding it would make a paused run unrecoverable.
+NEEDS_NO_TICK_BOUNDARY = frozenset({"set_rate"})
 
 
 class Outcome:
@@ -175,14 +188,15 @@ def submit(
             ),
         )
 
-    if status.get("rate", 0) == 0:
-        # Stated explicitly rather than waiting for a boundary that will not arrive.
+    if status.get("rate", 0) == 0 and kind not in NEEDS_NO_TICK_BOUNDARY:
+        # Stated explicitly rather than waiting for a boundary that will not arrive. `set_rate`
+        # is exempt: it is what lifts the pause, so guarding it would strand the run here.
         return CommandResult(
             status=Outcome.RUN_PAUSED,
             reason=(
-                "the run is paused, so there is no tick boundary to apply this at. Set a "
-                "non-zero rate and submit again — the command was not queued, so nothing will "
-                "happen unexpectedly later."
+                "the run is paused, so there is no tick boundary to apply this at. Submit "
+                "set_rate with a non-zero rate to resume, then send this again — the command "
+                "was not queued, so nothing will happen unexpectedly later."
             ),
         )
 

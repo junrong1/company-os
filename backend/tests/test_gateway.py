@@ -196,6 +196,24 @@ def test_a_command_submitted_while_paused_resolves_rather_than_hanging(api) -> N
     assert body["produced_seq"] == []
 
 
+def test_set_rate_is_accepted_while_paused_so_a_pause_is_not_a_one_way_door(api) -> None:
+    """The guard must not reject the one command that can lift the pause.
+
+    Guarding `set_rate` alongside everything else makes a paused run permanently unreachable —
+    and, because rate is run state (R18), a restart reloads it still paused. The rejection would
+    even tell the caller to set a non-zero rate, which is the request it just refused.
+    """
+    command(api, "set_rate", {"rate": 0}, "pause")
+
+    resumed = command(api, "set_rate", {"rate": 1}, "resume").json()
+
+    assert resumed["status"] == Outcome.APPLIED, resumed["reason"]
+
+    # And the run is genuinely driveable again, not merely reported as resumed.
+    assigned = command(api, "assign_work", {"item": "wi_faq", "person": "stf_cs"}, "k1").json()
+    assert assigned["status"] != Outcome.RUN_PAUSED
+
+
 def test_a_command_after_termination_is_rejected_and_mutates_nothing(composed) -> None:
     runtime, client = composed
     run = runtime.runs[RUN]

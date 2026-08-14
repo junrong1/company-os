@@ -40,11 +40,16 @@ to someone to talk, `Space` pauses. `×1` / `×3` change the clock speed.
 ## Run the Phase 1 system
 
 ```bash
-docker compose up             # seven services, client included
+COMPOSE_PROFILES=demo docker compose up    # seven services, client included
 ```
 
 Then open <http://127.0.0.1:8790>. Nothing needs provisioning first; the store
 initialises itself and the read-only reporting role on first boot.
+
+**The profile is required, not decorative.** `web` declares `profiles: ['demo']`,
+and Compose starts a profiled service only when its profile is named — so a bare
+`docker compose up` brings up the six backend services and no client, which looks
+like a crashed container and is actually a service that was never selected.
 
 **What this gives you today.** The seven services start, each answers a structured
 status endpoint, and the client renders a run: the office, the HUD, the decision
@@ -87,8 +92,13 @@ The clock starts with the run, and a restart picks it back up — rate is run st
 
 | Profile | Command | Services | Use |
 |---|---|---|---|
-| `demo` (default) | `docker compose up` | 7, including `web` | Nothing on the host but Docker |
+| `demo` | `COMPOSE_PROFILES=demo docker compose up` | 7, including `web` | Nothing on the host but Docker |
 | `dev` | `COMPOSE_PROFILES=dev docker compose up` | 6, no `web` | Client work; run Vite on the host |
+| *(none)* | `docker compose up` | 6, no `web` | Same six as `dev`; `web` is never selected |
+
+There is no default profile. `web` is the only profiled service, so naming a
+profile is what decides whether a client comes up — omitting one is the same as
+asking for `dev`.
 
 Under `dev`, start the client yourself:
 
