@@ -75,9 +75,14 @@ export function Shell({ runId, makeStream }: ShellProps) {
   const [stage, setStage] = useState<Stage>('office')
   const [rejection, setRejection] = useState<string | null>(null)
 
-  // Per run, so starting a second one does not inherit the first one's position or its
-  // scheduled inputs.
-  const prediction = useMemo(() => new CeoPrediction(), [runId])
+  // Rebuilt when the run changes, so starting a second run does not inherit the first one's
+  // position or its scheduled inputs. Keyed during render rather than reset in an effect: the
+  // very first frame of the new run must not draw the old run's CEO.
+  const predictionRef = useRef<{ runId: string; value: CeoPrediction } | null>(null)
+  if (predictionRef.current === null || predictionRef.current.runId !== runId) {
+    predictionRef.current = { runId, value: new CeoPrediction() }
+  }
+  const prediction = predictionRef.current.value
 
   const connection = useRunStore((state) => state.connection)
   const sequenceGap = useRunStore((state) => state.sequenceGap)
