@@ -1,16 +1,27 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { PersonView } from '../src/net/store'
+import type { EventFrame, PersonView } from '../src/net/store'
 import {
   CLOSE_RADIUS_MILLI,
+  FROM_TRAY_COST,
+  IN_PERSON_COST,
   OPEN_RADIUS_MILLI,
   SWITCH_MARGIN_MILLI,
   conversationHeader,
   distanceMilli,
+  resolvePayload,
   selectConversation,
+  stoppedCard,
+  tacitKey,
 } from '../src/ui/conversation-model'
 import { useRunStore } from './helpers/store-helpers'
-import { genesisFixture, genesisFrame } from './helpers/frames'
+import {
+  catalogFixture,
+  genesisFixture,
+  genesisFrame,
+  itemFrame,
+  metricsFrame,
+} from './helpers/frames'
 
 /**
  * The conversation's rules, asserted without a panel.
@@ -263,5 +274,208 @@ describe('the conversation and the clock', () => {
     const people = floorOf([person('stf_ap', 100, 0)])
     expect(selectConversation(ORIGIN, people, 'stf_ap')).toBe('stf_ap')
     expect(conversationHeader('stf_ap', state.genesis?.roster ?? {}, people)).not.toBeNull()
+  })
+})
+
+// =========================================================================
+// R7-R10: deciding in person, and what the tray must never show
+// =========================================================================
+
+const RAISED_TACIT = 'The rule ignores value. I collect three quotes for a thousand-dollar desk.'
+
+/** A CHECKPOINT_RAISED frame, as the kernel now sends it. */
+function raisedFrame(options: {
+  seq: number
+  item: string
+  person: string
+  cpIndex?: number
+  tacit?: string
+}): EventFrame {
+  return {
+    kind: 'CHECKPOINT_RAISED',
+    seq: String(options.seq),
+    tick: '600',
+    schema_ver: 3,
+    rules_ver: 'test',
+    run_id: 'run-1',
+    command_id: '',
+    request_id: '',
+    payload: {
+      tick: 600,
+      item: options.item,
+      item_status: 'blocked',
+      person: options.person,
+      cp_index: options.cpIndex ?? 0,
+      label: 'Approval',
+      kind: 'approval',
+      tacit: options.tacit ?? RAISED_TACIT,
+    },
+  }
+}
+
+/** The first catalogue item that actually has a checkpoint to stop at. */
+function itemWithCheckpoint(): { id: string; want: string } {
+  const entry = catalogFixture().find((candidate) => candidate.checkpoints.length > 0)
+  if (entry === undefined) throw new Error('no authored item has a checkpoint')
+  return { id: entry.id, want: entry.want }
+}
+
+describe('deciding in person', () => {
+  it('shows the prompt, the options and the line said only in person (R7)', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+
+    const state = useRunStore.getState()
+    const card = stoppedCard(want, state.tray, state.genesis?.catalog ?? [], state.tacitLines)
+
+    expect(card).not.toBeNull()
+    expect(card?.prompt).toBeTruthy()
+    expect(card?.options.length).toBeGreaterThan(0)
+    expect(card?.tacit).toBe(RAISED_TACIT)
+  })
+
+  it('states its cost before the choice is made (R10)', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+
+    const state = useRunStore.getState()
+    const card = stoppedCard(want, state.tray, state.genesis?.catalog ?? [], state.tacitLines)
+
+    expect(card?.cost).toBe(IN_PERSON_COST)
+    // Both routes say what they cost, and they do not say the same thing.
+    expect(FROM_TRAY_COST).not.toBe(IN_PERSON_COST)
+  })
+
+  it('sends the in-person flag, and the tray sends it unset (R9, AE2, AE3)', () => {
+    expect(resolvePayload('wi_ap_map', 0, 1, true)).toEqual({
+      item: 'wi_ap_map',
+      cp_index: 0,
+      option_index: 1,
+      in_person: true,
+    })
+    expect(resolvePayload('wi_ap_map', 0, 1, false).in_person).toBe(false)
+  })
+
+  it('offers no card for a person who is not stopped', () => {
+    useRunStore.getState().apply(genesisFrame())
+    const state = useRunStore.getState()
+
+    expect(stoppedCard('stf_ap', state.tray, state.genesis?.catalog ?? [], {})).toBeNull()
+    expect(stoppedCard(null, state.tray, state.genesis?.catalog ?? [], {})).toBeNull()
+  })
+
+  it('picks the decision belonging to this person, not the first one waiting', () => {
+    const catalogue = catalogFixture().filter((entry) => entry.checkpoints.length > 0)
+    if (catalogue.length < 2) return
+
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore
+      .getState()
+      .apply(raisedFrame({ seq: 2, item: catalogue[0].id, person: 'stf_ap' }))
+    useRunStore
+      .getState()
+      .apply(raisedFrame({ seq: 3, item: catalogue[1].id, person: 'stf_buyer' }))
+
+    const state = useRunStore.getState()
+    const card = stoppedCard('stf_buyer', state.tray, state.genesis?.catalog ?? [], state.tacitLines)
+
+    expect(card?.itemId).toBe(catalogue[1].id)
+  })
+
+  it('renders the decision even when the kernel sent no tacit line for it', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want, tacit: '' }))
+
+    const state = useRunStore.getState()
+    const card = stoppedCard(want, state.tray, state.genesis?.catalog ?? [], state.tacitLines)
+
+    // A missing line is a missing line, not a reason to hide the decision.
+    expect(card).not.toBeNull()
+    expect(card?.tacit).toBe('')
+    expect(card?.options.length).toBeGreaterThan(0)
+  })
+})
+
+// =========================================================================
+// R8: the line is unreachable from anywhere but the floor
+// =========================================================================
+
+describe('what the tray can and cannot reach', () => {
+  it('keeps the tacit line off the tray entries entirely (R8, AE3)', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+
+    const state = useRunStore.getState()
+    expect(state.tray).toHaveLength(1)
+
+    // Structural, not a convention: the tray renders from these entries, so a tacit line the
+    // entry does not carry is a line the tray cannot leak however its card is later edited.
+    for (const entry of state.tray) {
+      expect(Object.values(entry).map(String).join(' ')).not.toContain(RAISED_TACIT)
+      expect('tacit' in entry).toBe(false)
+    }
+  })
+
+  it('keeps it out of the genesis catalog, so it is not on the wire before it is earned (R8)', () => {
+    for (const entry of catalogFixture()) {
+      for (const checkpoint of entry.checkpoints) {
+        expect('tacit' in checkpoint).toBe(false)
+      }
+    }
+  })
+
+  it('holds it where only the conversation looks', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+
+    expect(useRunStore.getState().tacitLines[tacitKey(id, 0)]).toBe(RAISED_TACIT)
+  })
+})
+
+// =========================================================================
+// R20, R21, R22: being summoned
+// =========================================================================
+
+describe('being summoned to a decision', () => {
+  it('puts the person in the tray and marks them waiting on the floor (R20, R21)', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+
+    const state = useRunStore.getState()
+    expect(state.tray.map((entry) => entry.personId)).toContain(want)
+    expect(state.items[id].status).toBe('blocked')
+  })
+
+  it('leaves progress where it was while the decision is unresolved (R22, AE9)', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    const stalled = useRunStore.getState().items[id].doneUnits
+
+    // Time passes — a day's costs land — with nobody deciding anything.
+    useRunStore.getState().apply(metricsFrame({ seq: 3, tick: 1080 }))
+
+    expect(useRunStore.getState().items[id].doneUnits).toBe(stalled)
+    expect(useRunStore.getState().items[id].status).toBe('blocked')
+    expect(useRunStore.getState().tick).toBe(1080n)
+  })
+
+  it('clears the tray entry once the item is no longer blocked', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    expect(useRunStore.getState().tray).toHaveLength(1)
+
+    useRunStore.getState().apply(
+      itemFrame({ seq: 3, kind: 'DECISION_RESOLVED', item: id, status: 'active', person: want }),
+    )
+
+    expect(useRunStore.getState().tray).toHaveLength(0)
   })
 })

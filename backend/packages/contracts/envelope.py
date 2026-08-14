@@ -108,7 +108,10 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     # 2: U13/U14 added `item_status`, the status the item landed in. Every kind that moves
     # an item now says where it moved it to, so a read-side consumer updates its node from
     # the event instead of keeping its own copy of the rule for what each kind does to work.
-    EventKind.CHECKPOINT_RAISED: 2,  # U4
+    # 3: Phase 2 added `tacit`, the line surfaced only by resolving in person. It arrives when
+    # the checkpoint is raised rather than at genesis, so the script is not on the wire before
+    # anybody has stopped at anything.
+    EventKind.CHECKPOINT_RAISED: 3,  # U4
     EventKind.DECISION_RESOLVED: 2,  # U4
     EventKind.WORK_ASSIGNED: 2,  # U4
     EventKind.WORK_REASSIGNED: 2,  # U4

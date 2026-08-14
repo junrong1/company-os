@@ -18,7 +18,7 @@
  * from both positions every frame rather than only when the CEO moves.
  */
 
-import type { PersonView, RosterEntry } from '../net/store'
+import type { CatalogEntry, PersonView, RosterEntry, TrayEntry } from '../net/store'
 
 /** Within this, a conversation opens. The prototype's `TALK_RANGE`, in milli-tiles. */
 export const OPEN_RADIUS_MILLI = 1900
@@ -147,4 +147,88 @@ export function conversationHeader(
     waiting: person.waiting,
     itemId: person.itemId,
   }
+}
+
+// =========================================================================
+// The stopped card: a decision taken in person
+// =========================================================================
+
+/** The key a raised checkpoint's tacit line is held under. */
+export function tacitKey(itemId: string, cpIndex: number): string {
+  return `${itemId}:${cpIndex}`
+}
+
+/**
+ * What each route costs, stated before the choice rather than after it (R10).
+ *
+ * The kernel prices both — in person yields the tacit line, morale +2 and visibility +2; from
+ * the tray, morale −1 and no tacit line — and these sentences are that price in words. A cost
+ * you only discover in the report is not a choice you were offered.
+ */
+export const IN_PERSON_COST = 'Deciding here surfaces what they know, and they will remember it.'
+export const FROM_TRAY_COST =
+  'Settling from the tray records no tacit line, and it costs morale.'
+
+export interface DecisionOption {
+  label: string
+  detail: string
+}
+
+/** A person stopped at a decision, as the conversation shows it. */
+export interface StoppedCard {
+  itemId: string
+  itemTitle: string
+  cpIndex: number
+  label: string
+  prompt: string
+  options: DecisionOption[]
+  /**
+   * The line they say only in person. Empty when the kernel has not sent one, which is a
+   * missing line rather than a reason to hide the decision.
+   */
+  tacit: string
+  cost: string
+}
+
+/**
+ * The decision this person is stopped at, or `null` when they are not stopped at one.
+ *
+ * Reads the raised checkpoint out of the tray — the same list the tray panel renders — because
+ * that is what the kernel actually said is waiting, and re-deriving "which checkpoint are they
+ * at" from progress would be a second implementation of the kernel's threshold rule.
+ */
+export function stoppedCard(
+  personId: string | null,
+  tray: TrayEntry[],
+  catalog: CatalogEntry[],
+  tacitLines: Record<string, string>,
+): StoppedCard | null {
+  if (personId === null) return null
+
+  const entry = tray.find((candidate) => candidate.personId === personId)
+  if (entry === undefined) return null
+
+  const item = catalog.find((candidate) => candidate.id === entry.itemId)
+  const checkpoint = item?.checkpoints[entry.cpIndex]
+
+  return {
+    itemId: entry.itemId,
+    itemTitle: item?.title ?? entry.itemId,
+    cpIndex: entry.cpIndex,
+    label: entry.label,
+    prompt: checkpoint?.prompt ?? entry.label,
+    options: checkpoint?.options ?? [],
+    tacit: tacitLines[tacitKey(entry.itemId, entry.cpIndex)] ?? '',
+    cost: IN_PERSON_COST,
+  }
+}
+
+/** The payload that resolves a decision, by whichever route (R9). */
+export function resolvePayload(
+  itemId: string,
+  cpIndex: number,
+  optionIndex: number,
+  inPerson: boolean,
+): Record<string, unknown> {
+  return { item: itemId, cp_index: cpIndex, option_index: optionIndex, in_person: inPerson }
 }

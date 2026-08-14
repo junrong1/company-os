@@ -22,6 +22,7 @@ import { useShallow } from 'zustand/react/shallow'
 
 import { PAL, RESERVED_BEAM, deptColour } from '../design/tokens'
 import { type CatalogEntry, type ItemStatus, type TrayEntry, useRunStore } from '../net/store'
+import { FROM_TRAY_COST, resolvePayload } from './conversation-model'
 import { STATUS_LABEL, lockReason, progressPercent } from './panels-model'
 
 export interface CommandSender {
@@ -285,18 +286,19 @@ function TrayCard({
           type="button"
           disabled={chosen === null}
           onClick={() =>
-            onResolve?.('resolve_checkpoint', {
-              item: entry.itemId,
-              cp_index: entry.cpIndex,
-              option_index: chosen,
-              in_person: false,
-            })
+            chosen !== null &&
+            onResolve?.(
+              'resolve_checkpoint',
+              // The same payload builder the conversation uses, with the flag the other way
+              // round. One place to read what distinguishes the two routes (R9).
+              resolvePayload(entry.itemId, entry.cpIndex, chosen, false),
+            )
           }
         >
           Settle from here
         </button>
         <p className="decision__cost" style={{ color: PAL.textFaint }}>
-          Settling from here records no tacit line. Walk over to hear what they know.
+          {FROM_TRAY_COST} Walk over to hear what they know.
         </p>
       </div>
     </article>

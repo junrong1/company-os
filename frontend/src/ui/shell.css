@@ -572,3 +572,65 @@
 .conversation__meta {
   font-size: 0.7rem;
 }
+
+.conversation__decision {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--rule);
+}
+
+.conversation__item {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.conversation__prompt {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+/* The line only a visit surfaces. Violet is the tacit slot, spent on nothing else. */
+.conversation__tacit {
+  margin: 0;
+  padding: 0.4rem 0.5rem;
+  background: rgb(196 177 255 / 8%);
+  border-left: 2px solid var(--tacit);
+  border-radius: 2px;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.conversation__badge {
+  display: block;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--tacit);
+  margin-bottom: 0.2rem;
+}
+
+.conversation__decision button {
+  background: transparent;
+  border: 1px solid var(--shilv);
+  border-radius: 2px;
+  color: var(--shilv);
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+
+.conversation__decision button:disabled {
+  border-color: var(--rule);
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.conversation__cost {
+  margin: 0;
+  font-size: 0.68rem;
+  line-height: 1.4;
+}

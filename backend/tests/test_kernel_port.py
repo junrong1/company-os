@@ -145,6 +145,33 @@ def test_a_checkpoint_is_raised_at_its_threshold(run: sim.State) -> None:
     assert payload["done_units"] * 100 >= spec.checkpoints[0].at_percent * spec.effort_units
 
 
+def test_a_raised_checkpoint_carries_the_line_said_only_in_person(run: sim.State) -> None:
+    """R7: the conversation has to be able to show it before the CEO chooses.
+
+    Carried on the raise rather than in the genesis catalog, so the whole script is not on
+    the wire before anybody has stopped at anything.
+    """
+    sim.assign_direct(run, "wi_ap_map", "stf_ap")
+    events = run_until(run, lambda s: s.items["wi_ap_map"].status == sim.STATUS_BLOCKED)
+
+    raised = [e for e in events if e.kind.name == "CHECKPOINT_RAISED"]
+    assert raised[0].payload["tacit"] == work.spec("wi_ap_map").checkpoints[0].tacit
+    assert raised[0].payload["tacit"]
+
+
+def test_the_genesis_catalog_ships_no_tacit_lines() -> None:
+    """R8: nothing that is only earned in person may arrive before it is earned."""
+    for entry in work.catalog_to_state():
+        for checkpoint in entry["checkpoints"]:
+            assert "tacit" not in checkpoint
+
+
+def test_every_authored_checkpoint_has_a_line_worth_walking_for() -> None:
+    for spec in work.ITEMS:
+        for index, checkpoint in enumerate(spec.checkpoints):
+            assert checkpoint.tacit, f"{spec.id} checkpoint {index} has no tacit line"
+
+
 def test_work_resumes_after_the_decision(run: sim.State) -> None:
     sim.assign_direct(run, "wi_ap_map", "stf_ap")
     run_until(run, lambda s: s.items["wi_ap_map"].status == sim.STATUS_BLOCKED)

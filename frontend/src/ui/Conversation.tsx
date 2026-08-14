@@ -11,22 +11,29 @@
  * is asserted without a DOM, which is what makes the mechanic testable rather than the markup.
  */
 
+import { useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
-import { PAL } from '../design/tokens'
-import { deptColour } from '../design/tokens'
+import { PAL, deptColour } from '../design/tokens'
 import { useRunStore } from '../net/store'
-import { conversationHeader } from './conversation-model'
+import type { CommandSender } from './Panels'
+import { type StoppedCard, conversationHeader, resolvePayload, stoppedCard } from './conversation-model'
 
 export interface ConversationProps {
   /** Who the CEO is standing next to, decided by the model from both parties' positions. */
   personId: string | null
+  onCommand?: CommandSender
 }
 
-export function Conversation({ personId }: ConversationProps) {
+export function Conversation({ personId, onCommand }: ConversationProps) {
   const header = useRunStore(
     useShallow((state) =>
       conversationHeader(personId, state.genesis?.roster ?? {}, state.people),
+    ),
+  )
+  const stopped = useRunStore(
+    useShallow((state) =>
+      stoppedCard(personId, state.tray, state.genesis?.catalog ?? [], state.tacitLines),
     ),
   )
 
@@ -51,6 +58,66 @@ export function Conversation({ personId }: ConversationProps) {
           </span>
         </span>
       </header>
+
+      {stopped !== null && (
+        <Decision key={`${stopped.itemId}:${stopped.cpIndex}`} card={stopped} onCommand={onCommand} />
+      )}
     </aside>
+  )
+}
+
+/**
+ * A decision, taken standing there.
+ *
+ * The tacit line is rendered above the options rather than after the choice, because R10 is
+ * that each route states its cost *before* it is taken — and the whole cost of the tray route
+ * is not hearing this. Keyed on the checkpoint by the caller, so moving to a different decision
+ * clears the selected option instead of carrying it across.
+ */
+function Decision({ card, onCommand }: { card: StoppedCard; onCommand?: CommandSender }) {
+  const [chosen, setChosen] = useState<number | null>(null)
+
+  return (
+    <section className="conversation__decision">
+      <p className="conversation__item">{card.itemTitle}</p>
+      <p className="conversation__prompt">{card.prompt}</p>
+
+      {card.tacit !== '' && (
+        <p className="conversation__tacit" style={{ color: PAL.tacit }}>
+          <span className="conversation__badge">Only in person</span>
+          {card.tacit}
+        </p>
+      )}
+
+      {card.options.map((option, index) => (
+        <label key={option.label} className="option" data-chosen={chosen === index}>
+          <input
+            type="radio"
+            name={`talk:${card.itemId}:${card.cpIndex}`}
+            checked={chosen === index}
+            onChange={() => setChosen(index)}
+          />
+          <span className="option__label">{option.label}</span>
+          <span className="option__detail">{option.detail}</span>
+        </label>
+      ))}
+
+      <button
+        type="button"
+        disabled={chosen === null}
+        onClick={() =>
+          chosen !== null &&
+          onCommand?.(
+            'resolve_checkpoint',
+            resolvePayload(card.itemId, card.cpIndex, chosen, true),
+          )
+        }
+      >
+        Decide here
+      </button>
+      <p className="conversation__cost" style={{ color: PAL.textFaint }}>
+        {card.cost}
+      </p>
+    </section>
   )
 }

@@ -232,6 +232,16 @@ export interface RunStore {
   tray: TrayEntry[]
   deliverables: DeliverableView[]
   terminal: { reason: string; tick: bigint } | null
+  /**
+   * The line said only in person, per raised checkpoint, keyed `item:cpIndex`.
+   *
+   * R8 kept structurally rather than by convention. The obvious home for this is a field on
+   * `TrayEntry`, and that is precisely what must not happen: the tray renders from those
+   * entries, so a tacit line living on one is a line the tray *can* show, and the guarantee
+   * would then rest on nobody ever adding it to the card. Held apart, the tray has nothing to
+   * leak — the only reader is the conversation.
+   */
+  tacitLines: Record<string, string>
   /** Where the wire last said the CEO is. What the stage's prediction seeds from. */
   ceo: CeoView
   /** The last position echo, or `null` before one has arrived. Reconciled against, not drawn. */
@@ -270,6 +280,7 @@ function emptyRun(): Omit<
     tray: [],
     deliverables: [],
     terminal: null,
+    tacitLines: {},
     ceo: { xMilli: 0, yMilli: 0, facing: 'down' },
     ceoEcho: null,
     diverged: false,
@@ -547,6 +558,12 @@ function applyEvent(set: Setter, get: Getter, frame: EventFrame, seq: bigint): v
         atSeq: seq,
       },
     ]
+
+    // Deliberately not on the entry above. See `tacitLines` on the store.
+    const tacit = toStr(payload.tacit)
+    if (tacit !== '') {
+      patch.tacitLines = { ...state.tacitLines, [`${itemId}:${cpIndex}`]: tacit }
+    }
   }
 
   if (frame.kind === 'DECISION_RESOLVED') {

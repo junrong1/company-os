@@ -392,7 +392,7 @@ export function Shell({ runId, makeStream }: ShellProps) {
 
         {/* Only over the office. On the chain view there is no floor to be standing on, and a
             conversation panel there would claim a proximity the stage is not showing. */}
-        {stage === 'office' && <Conversation personId={nearby} />}
+        {stage === 'office' && <Conversation personId={nearby} onCommand={command} />}
       </div>
 
       {/* Persists in both modes: a severed chain shows violet while you are still standing in

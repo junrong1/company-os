@@ -1060,6 +1060,15 @@ def _block(
                 "at_percent": checkpoint.at_percent,
                 "done_units": item.done_units,
                 "item_status": item.status,
+                # The line this person says only in person. Carried here rather than in the
+                # genesis catalog on purpose: shipping every tacit line at genesis would put
+                # the whole script on the wire before anyone had stopped at anything, whereas
+                # this arrives exactly when someone *is* stopped, holding it.
+                #
+                # That the tray never shows it stays a client-side guarantee, which is the
+                # known hole this phase accepts: the kernel cannot tell where the CEO is
+                # standing when it decides what to send.
+                "tacit": checkpoint.tacit,
             },
         )
     ]
