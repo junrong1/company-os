@@ -120,9 +120,12 @@ export function personActivity(
   items: Record<string, { status: string; assignee: string }>,
   recorded: string,
 ): { state: string; waiting: boolean } {
-  // The tray is the live signal; a resync's `blocked` is the authoritative one. Either is a
-  // person standing at a decision, and dropping the second would lose what a reattach knows.
-  if (recorded === 'blocked' || tray.some((entry) => entry.personId === personId)) {
+  // The tray alone, and deliberately not the recorded state. A resync rebuilds the tray from
+  // exactly the items it reports as blocked, so it is already covered — while trusting the
+  // recorded value would leave a person reading as waiting for the rest of the run, because
+  // nothing ever clears it: no event carries person state, which is the whole reason this
+  // function exists.
+  if (tray.some((entry) => entry.personId === personId)) {
     return { state: 'blocked', waiting: true }
   }
 
@@ -134,8 +137,11 @@ export function personActivity(
   if (holding) return { state: 'working', waiting: false }
 
   // Nothing the wire contradicts, so whatever was last stated stands — which is `idle` for
-  // everyone until a person-state event exists.
-  return { state: recorded, waiting: false }
+  // everyone until a person-state event exists. Except `blocked`: the tray is the authority on
+  // who is stopped and has just said this person is not, so a recorded `blocked` here is known
+  // to be stale, and carrying it through would label somebody as waiting while reporting that
+  // they are not.
+  return { state: recorded === 'blocked' ? 'idle' : recorded, waiting: false }
 }
 
 /** The header every conversation carries, whatever card sits under it (R6). */
@@ -290,6 +296,8 @@ export interface AssignableItem {
   dept: string
   /** Who would end up doing the work. The person being talked to, or one of their reports. */
   wantId: string
+  /** True when the item wants the person being talked to, rather than one of their reports. */
+  direct: boolean
   /** True when handing it over goes around the specialist's director. */
   bypassesDirector: boolean
   /** The director who would be left uninformed, or an empty string. */
@@ -345,6 +353,7 @@ export function assignableWork(
       brief: entry.brief,
       dept: entry.dept,
       wantId: want,
+      direct,
       bypassesDirector: bypassed !== '',
       uninformed: bypassed,
       payload: direct
@@ -362,6 +371,12 @@ export function assignableWork(
 export function assignCost(item: AssignableItem): string {
   if (item.bypassesDirector) {
     return `Straight to ${item.wantId}. ${item.uninformed} will not know about it.`
+  }
+  // Three cases, not two. Handing an item to the director it was written for is direct — there
+  // is nobody above them to go around — and telling them it goes "through you" to themselves
+  // reads as a bug.
+  if (item.direct) {
+    return 'Straight to you. There is no reporting line to cross.'
   }
   return `Through you to ${item.wantId}, so the reporting line stays informed.`
 }

@@ -1426,6 +1426,14 @@ def submit_ceo_input(state: State, bitmask: int, at_tick: int) -> list[Emitted]:
             f"(now {state.tick})"
         )
 
+    # Supersession follows *submission* order, not tick order. The two can disagree: the
+    # client's lead is a wall-time budget converted at the current rate, so changing rate
+    # mid-hold can tag a release for an earlier tick than the press it supersedes. With only
+    # "the most recent input at or before this tick", the release would pass and the older
+    # press would then resurrect — the CEO walking off on a key nobody is holding.
+    for scheduled in [tick for tick in state.ceo_inputs if tick >= at_tick]:
+        del state.ceo_inputs[scheduled]
+
     state.ceo_inputs[at_tick] = bitmask
     return [
         Emitted(
@@ -1448,6 +1456,12 @@ def ask_person(state: State, person_id: str, question: str) -> list[Emitted]:
     what this command exists to be.
     """
     person = state.person(person_id)
+
+    if person_id in state.departed:
+        # They left. Their desk is still on the floor and their runtime is kept so the log
+        # stays interpretable, but a company cannot go on learning from someone who resigned —
+        # and Visibility is the metric that would otherwise keep paying out for it.
+        raise CommandRejected(f"{person_id} has left the company")
 
     if len(question) > MAX_QUESTION_CHARS:
         raise CommandRejected(

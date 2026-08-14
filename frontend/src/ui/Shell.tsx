@@ -66,6 +66,7 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
   const stageRef = useRef<HTMLDivElement | null>(null)
   const [stage, setStage] = useState<Stage>('office')
   const [rejection, setRejection] = useState<string | null>(null)
+  const [startingRun, setStartingRun] = useState(false)
 
   // Who the CEO is standing next to. Held as React state because a panel renders from it, but
   // *decided* in the frame loop, because it depends on the predicted position — which React
@@ -128,7 +129,10 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
         const echo = runState().ceoEcho
         if (echo !== null && echo !== seenEcho) {
           seenEcho = echo
-          if (prediction.reconcile(echo)) runState().markDiverged(true)
+          // Cleared as well as set. One disagreeing echo used to latch the banner for the rest
+          // of the run, so a single transient correction left a permanent claim that the
+          // client and kernel disagree — long after they had stopped.
+          runState().markDiverged(prediction.reconcile(echo))
         }
 
         // Recomputed every frame from *both* parties' positions: staff walk to desks and to
@@ -142,6 +146,11 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
         }
       },
     })
+
+    // The clock is the client's best estimate of the tick the kernel is on, so it is also what
+    // an input is tagged against. Published through a ref rather than state: `sendInput` is a
+    // callback, and re-creating it on every tick would rebind the keyboard listeners.
+    readClockTick.current = () => renderer.clock.tick
 
     // Nothing fed the render clock, so it sat at its start tick reporting itself stalled. The
     // authority is the store's tick — moved by events, and between them by the position echo.
@@ -185,6 +194,7 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
 
     // Symmetric: everything `start`, `addListener`, `observe` and `subscribeTo` did, undone.
     return () => {
+      readClockTick.current = null
       unsubscribeTick()
       unsubscribeRate()
       unsubscribeCeo()
@@ -196,6 +206,8 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
   // --- CEO input --------------------------------------------------------
   const pressed = useRef(new Set<string>())
   const lastMask = useRef(0)
+  /** Reads the render clock's tick. Set by the renderer effect, which owns the clock. */
+  const readClockTick = useRef<(() => bigint) | null>(null)
 
   const sendInput = useCallback(
     (mask: number, force = false) => {
@@ -205,7 +217,14 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
       if (mask === lastMask.current && !force) return
       lastMask.current = mask
       const state = runState()
-      const atTick = state.tick + inputLeadTicks(state.rate)
+      // From the *render* clock, not the store's tick. The store's tick is the last one the
+      // kernel actually said out loud, and it says so rarely — events land on about five ticks
+      // in twelve hundred, and the position echo speaks once a sim-hour. Tagging from it puts
+      // most keypresses up to a full echo interval in the kernel's past, where they are
+      // rejected for not being in the future and the CEO does not move. The render clock is
+      // the smooth estimate that exists for exactly this.
+      const now = readClockTick.current?.() ?? state.tick
+      const atTick = now + inputLeadTicks(state.rate)
 
       // Predicted at the same tick the kernel is told to apply it at. Predicting it now
       // instead would feel a few ticks sharper and be wrong at every tick until the key was
@@ -377,8 +396,18 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
           {/* A finished run is a dead screen otherwise, and the whole point of a run this
               short is that two of them can be compared in one sitting (R26). */}
           {terminal !== null && onStartRun !== undefined && (
-            <button type="button" className="banner__action" onClick={onStartRun}>
-              Start another
+            <button
+              type="button"
+              className="banner__action"
+              // Disabled on the first press: creation is a round trip, and two presses would
+              // make two runs and orphan one of them.
+              disabled={startingRun}
+              onClick={() => {
+                setStartingRun(true)
+                onStartRun()
+              }}
+            >
+              {startingRun ? 'Starting…' : 'Start another'}
             </button>
           )}
         </p>

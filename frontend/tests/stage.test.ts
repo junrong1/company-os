@@ -579,8 +579,11 @@ describe('pausing and resuming', () => {
     expect(shouldRestateHeldInput(0, 3, INPUT_UP | INPUT_LEFT)).toBe(true)
   })
 
-  it('re-states nothing when no key is held', () => {
-    expect(shouldRestateHeldInput(0, 1, 0)).toBe(false)
+  it('re-states an empty mask too, because a release during the pause was refused as well', () => {
+    // A key let go while paused was rejected like every other command, so the kernel is still
+    // holding the old direction. Restating only a non-zero mask would leave the CEO walking
+    // off on resume with nothing pressed — restating zero is exactly that correction.
+    expect(shouldRestateHeldInput(0, 1, 0)).toBe(true)
   })
 
   it('re-states nothing when the run was not paused', () => {
@@ -621,5 +624,51 @@ describe('the held-direction bitmask', () => {
 
   it('ignores keys that are not directions', () => {
     expect(bitmaskFor(['q', 'Shift'])).toBe(0)
+  })
+})
+
+describe('scheduling held directions', () => {
+  it('lets a later submission supersede an earlier tagged tick', () => {
+    // The lead is a wall-time budget converted at the current rate, so a rate change mid-hold
+    // can tag a release for an earlier tick than the press. Mirrors the kernel.
+    const { prediction, open, spawn } = atSpawn()
+
+    prediction.hold(open, 20n)
+    prediction.hold(0, 5n)
+    prediction.advanceTo(60n)
+
+    expect(travelled(prediction, spawn)).toBe(0)
+  })
+
+  it('keeps the inputs a reconcile has to re-walk', () => {
+    // `heldAt` used to prune as it passed, like the kernel does — but the kernel only moves
+    // forward and this re-walks. Pruning during the forward pass deleted the very entries the
+    // snap-back needed, so the correction moved nothing and diverged again on the next echo.
+    const { prediction, open, spawn, clearTicks } = atSpawn()
+    const step = Number(CEO_STRAIGHT_MILLI_PER_TICK)
+    expect(clearTicks).toBeGreaterThan(10)
+
+    prediction.hold(open, 1n)
+    prediction.advanceTo(5n)
+    const atFive = prediction.pose()
+    // A second scheduled input, which is what used to evict the first one.
+    prediction.hold(open, 6n)
+    prediction.advanceTo(10n)
+    expect(travelled(prediction, spawn)).toBe(10 * step)
+
+    const towardsSpawn = (value: number, origin: number) =>
+      value === origin ? value : value + (value > origin ? -step : step)
+
+    expect(
+      prediction.reconcile({
+        xMilli: towardsSpawn(atFive.xMilli, spawn[0] * 1000),
+        yMilli: towardsSpawn(atFive.yMilli, spawn[1] * 1000),
+        tick: 5n,
+      }),
+    ).toBe(true)
+
+    // Snapped one step back, then ticks 6..10 re-walked on top. Under the old pruning this
+    // came out at 4 steps, because the re-walk found nothing held.
+    expect(travelled(prediction, spawn)).toBe(9 * step)
   })
 })

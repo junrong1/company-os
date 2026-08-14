@@ -488,7 +488,13 @@ function applyEvent(set: Setter, get: Getter, frame: EventFrame, seq: bigint): v
   const state = get()
   const payload = frame.payload
   const tick = toBig(payload.tick ?? frame.tick)
-  const patch: Partial<RunStore> = { appliedSeq: seq, tick }
+  const patch: Partial<RunStore> = { appliedSeq: seq }
+
+  // Monotonic, for the same reason the echo branch is: the echo is published from inside the
+  // kernel's batch while that batch's events are published after it, so an event can arrive
+  // carrying a tick the echo has already passed. `appliedSeq` carries the ordering guarantee
+  // for everything else; the clock must not go backwards under it.
+  if (tick > state.tick) patch.tick = tick
 
   if (frame.kind === 'GENESIS') {
     Object.assign(patch, readGenesis(payload), { runId: frame.run_id, tick })

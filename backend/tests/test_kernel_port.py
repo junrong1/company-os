@@ -1305,3 +1305,37 @@ def test_the_held_input_dict_stays_bounded_under_a_flood(run: sim.State) -> None
 
     # Everything the clock has passed is gone; nothing is scheduled beyond it.
     assert len(run.ceo_inputs) == 1
+
+
+def test_a_later_submission_supersedes_an_earlier_tagged_tick(run: sim.State) -> None:
+    """Supersession follows submission order, not tick order.
+
+    The client's lead is a wall-time budget converted at the current rate, so changing rate
+    mid-hold can tag a *release* for an earlier tick than the press it supersedes. Under
+    "the most recent input at or before this tick" alone, the release passes and the older
+    press then resurrects — the CEO walking off on a key nobody is holding.
+    """
+    x, y = run.ceo.tile
+    assert walkable(run.floor, x - 1, y)
+
+    # Press, tagged well ahead — as it would be at a fast rate.
+    sim.submit_ceo_input(run, sim.INPUT_LEFT, at_tick=run.tick + 20)
+    # Release, tagged nearer — as it would be after dropping to x1.
+    sim.submit_ceo_input(run, 0, at_tick=run.tick + 5)
+
+    start = run.ceo.x_milli
+    advance(run, 60)
+
+    assert run.ceo.x_milli == start, "the superseded press came back to life"
+    assert len(run.ceo_inputs) == 1
+
+
+def test_asking_someone_who_has_left_is_rejected(run: sim.State) -> None:
+    """A company cannot go on learning from someone who resigned."""
+    run.departed.append("stf_ap")
+    before = hashing.state_hash(sim.snapshot(run)).overall
+
+    with pytest.raises(sim.CommandRejected, match="has left"):
+        sim.ask_person(run, "stf_ap", "why?")
+
+    assert hashing.state_hash(sim.snapshot(run)).overall == before

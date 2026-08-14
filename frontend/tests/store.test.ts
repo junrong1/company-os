@@ -155,3 +155,26 @@ describe('the position echo', () => {
     expect(useRunStore.getState().ceoEcho).toBeNull()
   })
 })
+
+describe('the clock only moves forward', () => {
+  it('will not let an event rewind the tick either', () => {
+    // The mirror of the echo case: the echo is published from inside the kernel's batch while
+    // that batch's events are published after it, so an event can arrive carrying a tick the
+    // echo has already passed.
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply({
+      kind: 'POSITION_ECHO',
+      run_id: 'run-1',
+      tick: 900,
+      x_milli: 1000,
+      y_milli: 2000,
+    })
+    expect(useRunStore.getState().tick).toBe(900n)
+
+    useRunStore.getState().apply(metricsFrame({ seq: 2, tick: 600 }))
+
+    expect(useRunStore.getState().tick).toBe(900n)
+    // The event still applied — only the clock refused to go backwards.
+    expect(useRunStore.getState().appliedSeq).toBe(2n)
+  })
+})

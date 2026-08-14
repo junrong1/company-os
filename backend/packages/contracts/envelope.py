@@ -123,7 +123,10 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     EventKind.WORK_REASSIGNED: 2,  # U4
     EventKind.WORK_RETURNED_TO_BACKLOG: 2,  # U7
     EventKind.DELIVERABLE_PRODUCED: 2,  # U4
-    EventKind.ITEM_UNLOCKED: 1,  # U4
+    # 2: Phase 2 moved the announcement out of item completion and into the step, and dropped
+    # `because` with it — an unlock now follows from state rather than from one cause, and a
+    # Visibility gain from asking releases work no completed item can be blamed for.
+    EventKind.ITEM_UNLOCKED: 2,  # U4
     EventKind.METRICS_APPLIED: 1,  # U8/U11
     EventKind.LOAD_CHANGED: 1,  # U7
     EventKind.HIRE_REQUESTED: 1,  # U7

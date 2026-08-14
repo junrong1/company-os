@@ -63,9 +63,13 @@ export const MIN_INPUT_LEAD_TICKS = 4n
 export function shouldRestateHeldInput(
   previousRate: number,
   nextRate: number,
-  heldMask: number,
+  _heldMask: number,
 ): boolean {
-  return previousRate === 0 && nextRate !== 0 && heldMask !== 0
+  // Deliberately independent of the mask, including when it is zero. A key *released* during
+  // the pause was rejected like every other command, so the kernel is still holding the old
+  // direction — and restating only a non-zero mask would leave the CEO walking off on resume
+  // with nothing pressed. Restating zero is exactly the correction that case needs.
+  return previousRate === 0 && nextRate !== 0
 }
 
 /** How many ticks ahead to tag an input, at this clock rate. */
@@ -208,6 +212,13 @@ export class CeoPrediction {
    * disagreement that reconciliation exists to catch.
    */
   hold(mask: number, atTick: bigint): void {
+    // Supersession follows submission order, mirroring the kernel. The lead is a wall-time
+    // budget converted at the current rate, so a rate change mid-hold can tag a release for an
+    // earlier tick than the press it supersedes — and "the most recent at or before" would
+    // then resurrect the press once the release tick passed.
+    for (const scheduled of [...this.scheduled.keys()]) {
+      if (scheduled >= atTick) this.scheduled.delete(scheduled)
+    }
     this.scheduled.set(atTick, mask)
   }
 
@@ -223,20 +234,39 @@ export class CeoPrediction {
   /**
    * The held direction for `tick`: the most recent input at or before it.
    *
-   * The kernel's `_held_bitmask`, ported. Superseded entries are dropped as they are passed,
-   * for the same reason: ticks only move forward, so a past input can never apply again.
+   * The kernel's `_held_bitmask`, ported — but as a *pure read*, which the kernel's version
+   * does not need to be. The kernel only ever moves forward, so it can drop superseded inputs
+   * as it passes them. This one re-walks: `reconcile` snaps back to an echoed tick and replays
+   * from there, and pruning during the forward pass would have deleted the very entries that
+   * re-walk needs. The correction would then move nothing, and the client would diverge again
+   * on the next echo — a snap that quietly eats the input it was meant to preserve.
    */
   private heldAt(tick: bigint): number {
     let held: bigint | null = null
     for (const at of this.scheduled.keys()) {
       if (at <= tick && (held === null || at > held)) held = at
     }
-    if (held === null) return 0
+    return held === null ? 0 : (this.scheduled.get(held) ?? 0)
+  }
+
+  /**
+   * Drop scheduled inputs no re-walk can reach.
+   *
+   * Bounded by the same window the position history keeps, because that history is what
+   * decides how far back a reconcile can go. One entry older than the window is always kept:
+   * it may still be the direction currently held.
+   */
+  private pruneSchedule(tick: bigint): void {
+    const oldest = tick - PREDICTION_HISTORY_TICKS
+    let newestBefore: bigint | null = null
+    for (const at of this.scheduled.keys()) {
+      if (at < oldest && (newestBefore === null || at > newestBefore)) newestBefore = at
+    }
+    if (newestBefore === null) return
 
     for (const at of [...this.scheduled.keys()]) {
-      if (at < held) this.scheduled.delete(at)
+      if (at < newestBefore) this.scheduled.delete(at)
     }
-    return this.scheduled.get(held) ?? 0
   }
 
   /** Advance the prediction to `tick`, one tick at a time. */
@@ -259,6 +289,7 @@ export class CeoPrediction {
     for (let at = this.appliedThrough + 1n; at <= tick; at += 1n) this.stepOne(at)
     this.appliedThrough = tick
     this.prune(tick)
+    this.pruneSchedule(tick)
   }
 
   /** One tick of movement, matching `simcore.step._advance_ceo` axis for axis. */
@@ -389,7 +420,10 @@ export function actorsFromStore(ceo?: CeoPose): Actor[] {
     facing: person.facing as Facing,
     moving: person.state === 'walking',
     animTicks,
-    waiting: waiting.has(person.id) || person.waiting,
+    // The tray alone. `person.waiting` is set at genesis and by a resync and cleared by
+    // nothing, so folding it in here would leave a beam burning over someone whose decision
+    // was taken minutes ago.
+    waiting: waiting.has(person.id),
   }))
 
   // Nothing to draw before genesis: the floor has not arrived, so a CEO at the store's zeroed

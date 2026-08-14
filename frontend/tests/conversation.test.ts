@@ -207,20 +207,44 @@ describe('what the conversation says about them', () => {
   it('re-renders into the stopped shape when the person becomes blocked, without reopening', () => {
     useRunStore.getState().apply(genesisFrame())
     const roster = useRunStore.getState().genesis?.roster ?? {}
+    const floor = floorOf([person('stf_ap', 0, 0)])
 
-    const free = conversationHeader('stf_ap', roster, floorOf([person('stf_ap', 0, 0)]))
+    const free = conversationHeader('stf_ap', roster, floor, [], {})
     expect(free?.waiting).toBe(false)
     expect(free?.stateLabel).toBe('Free right now')
 
-    const stopped = conversationHeader(
-      'stf_ap',
-      roster,
-      floorOf([person('stf_ap', 0, 0, { state: 'blocked', waiting: true, itemId: 'w_ap' })]),
-    )
+    // Driven through the tray, which is how it actually happens: no event carries person
+    // state, so the tray is the only thing that ever says somebody stopped.
+    const tray = [
+      {
+        itemId: 'wi_ap_map',
+        personId: 'stf_ap',
+        cpIndex: 0,
+        label: 'Approval',
+        kind: 'approval',
+        atTick: 600n,
+        atSeq: 2n,
+      },
+    ]
+    const stopped = conversationHeader('stf_ap', roster, floor, tray, {})
+
     // Same person, same conversation: only the card under the header changes.
     expect(stopped?.id).toBe(free?.id)
     expect(stopped?.waiting).toBe(true)
     expect(stopped?.stateLabel).toBe('Waiting on your decision')
+  })
+
+  it('stops reading as waiting once the decision leaves the tray', () => {
+    // Nothing ever clears a recorded 'blocked', so trusting it would leave the beam burning
+    // over somebody whose decision was taken minutes ago.
+    useRunStore.getState().apply(genesisFrame())
+    const roster = useRunStore.getState().genesis?.roster ?? {}
+    const floor = floorOf([person('stf_ap', 0, 0, { state: 'blocked', waiting: true })])
+
+    const header = conversationHeader('stf_ap', roster, floor, [], {})
+
+    expect(header?.waiting).toBe(false)
+    expect(header?.stateLabel).toBe('Free right now')
   })
 
   it('is null rather than a placeholder for a person the run does not have', () => {
