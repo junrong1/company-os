@@ -1,0 +1,241 @@
+# Company OS — seven services.
+#
+#   docker compose up                        the demo: all seven, client included
+#   COMPOSE_PROFILES=dev docker compose up    six, without `web`, for client work
+#
+# Two rules shape this file.
+#
+# Exposure (R34): only `gateway` and `web` publish ports, and only on the host's
+# loopback interface. Everything else is reachable on the compose network alone.
+# Inside a container each service binds every interface, which servicekit.runtime
+# decides by looking for the container marker — a literal loopback bind inside a
+# container is unreachable from siblings and from a published port.
+#
+# Ordering: exactly one hard dependency edge, `postgres` -> {kernel, report}. The
+# kernel's first acts are a DDL check and lease acquisition, which are startup
+# failures rather than transients. The kernel does *not* declare a dependency on
+# `domain` or `agents`: a bidirectional depends_on is a cycle compose rejects, and
+# the cold-start path is the same code path as a service that never answers.
+
+name: company-os
+
+x-service-caps: &caps
+  # Seven Python services on an 8 GB laptop is a real constraint on the
+  # clone-and-run criterion, not a production concern. These caps are modest on
+  # purpose: enough headroom for a tick loop, low enough that the full stack fits.
+  # Rough expectation per Python service: ~90-140 MB resident once warm.
+  deploy:
+    resources:
+      limits:
+        cpus: '1.0'
+        memory: 384M
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: companyos
+      POSTGRES_PASSWORD: companyos
+      POSTGRES_DB: companyos
+      # Deterministic collation, so ordering never depends on the host locale.
+      POSTGRES_INITDB_ARGS: '--encoding=UTF8 --locale=C'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U companyos -d companyos']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  kernel:
+    build:
+      context: ./backend
+      target: kernel
+    # A fixed container name is what stops a second tick loop: with one set,
+    # `docker compose up --scale kernel=2` refuses to create more than one
+    # container for this service.
+    #
+    # Verified behaviour, and the nuance matters: compose emits a *warning* and
+    # starts **zero** instances of the service — it does not exit non-zero. So this
+    # prevents two writers, but it must not be leaned on as a CI gate, and a
+    # mis-scaled kernel presents as "the kernel never came up".
+    #
+    # This is the first line of defence only. From U6 a writer lease at the store,
+    # carrying owner identity, a heartbeat and a fencing token, is the actual
+    # enforcement — it also covers restarts, zombie resurrection, and a
+    # single-process kernel pointed at the compose store, none of which compose
+    # can see.
+    container_name: company-os-kernel
+    environment:
+      COMPANY_OS_STORE_URL: postgresql+psycopg://companyos:companyos@postgres:5432/companyos
+      COMPANY_OS_LOG_LEVEL: INFO
+      # Tick-level records are off by default: 36/s at x1, 108/s at x3.
+      COMPANY_OS_LOG_TICKS: '0'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # Capped low so a crash stays visible instead of hiding in a restart loop.
+    restart: on-failure:3
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8801/status', timeout=2).status == 200 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 5s
+      timeout: 4s
+      retries: 6
+      start_period: 5s
+    <<: *caps
+
+  gateway:
+    build:
+      context: ./backend
+      target: gateway
+    ports:
+      # The one backend port a human touches, on loopback only.
+      - '127.0.0.1:8800:8800'
+    environment:
+      COMPANY_OS_KERNEL_URL: http://kernel:8801
+      COMPANY_OS_LOG_LEVEL: INFO
+    depends_on:
+      # Started, not healthy. The gateway must come up and be able to report that
+      # the kernel is down; waiting for kernel health would make one outage two.
+      kernel:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8800/status', timeout=2).status == 200 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 5s
+      timeout: 4s
+      retries: 6
+      start_period: 5s
+    <<: *caps
+
+  domain:
+    build:
+      context: ./backend
+      target: domain
+    environment:
+      COMPANY_OS_LOG_LEVEL: INFO
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8802/status', timeout=2).status == 200 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 5s
+      timeout: 4s
+      retries: 6
+      start_period: 5s
+    <<: *caps
+
+  agents:
+    build:
+      context: ./backend
+      target: agents
+    environment:
+      COMPANY_OS_LOG_LEVEL: INFO
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8803/status', timeout=2).status == 200 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 5s
+      timeout: 4s
+      retries: 6
+      start_period: 5s
+    <<: *caps
+
+  report:
+    build:
+      context: ./backend
+      target: report
+    environment:
+      # The read-only role, provisioned by infra/postgres/init. The report folds
+      # the log and must not be able to append to it.
+      COMPANY_OS_STORE_URL: postgresql+psycopg://report_reader:report_reader@postgres:5432/companyos
+      COMPANY_OS_LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8804/status', timeout=2).status == 200 else 1)
+          except Exception:
+              sys.exit(1)
+      interval: 5s
+      timeout: 4s
+      retries: 6
+      start_period: 5s
+    <<: *caps
+
+  web:
+    build:
+      context: ./frontend
+      target: web
+    # Only in the demo. Under the dev profile the Vite dev server runs on the
+    # host and proxies to the published gateway port instead.
+    profiles: ['demo']
+    ports:
+      - '127.0.0.1:8790:8790'
+    depends_on:
+      gateway:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://127.0.0.1:8790/']
+      interval: 5s
+      timeout: 4s
+      retries: 6
+      start_period: 3s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+
+volumes:
+  postgres-data:
