@@ -4,6 +4,8 @@ import type { EventFrame, PersonView, RosterEntry } from '../src/net/store'
 import {
   CLOSE_RADIUS_MILLI,
   FROM_TRAY_COST,
+  askPayload,
+  askable,
   assignCost,
   assignableWork,
   IN_PERSON_COST,
@@ -16,6 +18,7 @@ import {
   stoppedCard,
   tacitKey,
 } from '../src/ui/conversation-model'
+import { typingTarget } from '../src/ui/stage'
 import { useRunStore } from './helpers/store-helpers'
 import {
   catalogFixture,
@@ -654,5 +657,167 @@ describe('handing work over in person', () => {
     // The work panel's own two buttons, verbatim.
     expect(direct?.payload).toEqual({ item: itemId, person: personId, via_manager: false })
     expect(routed?.payload).toEqual({ item: itemId, via_manager: true })
+  })
+})
+
+// =========================================================================
+// R15-R19: the ask box
+// =========================================================================
+
+/** A QUESTION_ANSWERED frame, as the kernel sends it. */
+function answeredFrame(options: {
+  seq: number
+  person: string
+  asked: string
+  question?: string
+  label?: string
+  answer: string
+  tacit?: boolean
+  firstTime?: boolean
+  tick?: number
+  visibility?: number
+}): EventFrame {
+  const matched = (options.question ?? '') !== ''
+  return {
+    kind: 'QUESTION_ANSWERED',
+    seq: String(options.seq),
+    tick: String(options.tick ?? 600),
+    schema_ver: 1,
+    rules_ver: 'test',
+    run_id: 'run-1',
+    command_id: '',
+    request_id: '',
+    payload: {
+      tick: options.tick ?? 600,
+      person: options.person,
+      asked: options.asked,
+      matched,
+      question: options.question ?? '',
+      label: options.label ?? '',
+      answer: options.answer,
+      tacit: options.tacit ?? false,
+      first_time: options.firstTime ?? false,
+      deltas: {},
+      metrics: { cash: 4800, manualHours: 340, leadTime: 12, morale: 72, visibility: options.visibility ?? 6 },
+    },
+  }
+}
+
+describe('asking a question', () => {
+  it('sends the typed text, not a matched intent (R15)', () => {
+    // Matching lives in the kernel, which is the side that charges for the answer.
+    expect(askPayload('stf_ap', 'why does it work that way?')).toEqual({
+      person: 'stf_ap',
+      question: 'why does it work that way?',
+    })
+  })
+
+  it('will not send an empty question', () => {
+    expect(askable('')).toBe(false)
+    expect(askable('   ')).toBe(false)
+    expect(askable('why')).toBe(true)
+  })
+
+  it('keeps what a person said, newest first (R18)', () => {
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(
+      answeredFrame({ seq: 2, person: 'stf_ap', asked: 'why?', question: 'why', label: 'Why', answer: 'First answer', tacit: true, firstTime: true }),
+    )
+    useRunStore.getState().apply(
+      answeredFrame({ seq: 3, person: 'stf_ap', asked: 'exceptions?', question: 'exception', label: 'Exceptions', answer: 'Second answer', tacit: true, firstTime: true }),
+    )
+
+    const said = useRunStore.getState().answers.stf_ap
+    expect(said.map((entry) => entry.answer)).toEqual(['Second answer', 'First answer'])
+  })
+
+  it('keeps each person answers separate, because the knowledge is theirs (R18)', () => {
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(
+      answeredFrame({ seq: 2, person: 'stf_ap', asked: 'why?', question: 'why', label: 'Why', answer: 'Priya reason' }),
+    )
+
+    expect(useRunStore.getState().answers.stf_ap).toHaveLength(1)
+    expect(useRunStore.getState().answers.stf_buyer).toBeUndefined()
+  })
+
+  it('renders a deflection as something they said, not as an error (R16)', () => {
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(
+      answeredFrame({ seq: 2, person: 'stf_ap', asked: 'the weather?', answer: 'That is above my desk.' }),
+    )
+
+    const [said] = useRunStore.getState().answers.stf_ap
+    expect(said.question).toBe('')
+    expect(said.answer).toBe('That is above my desk.')
+    expect(said.tacit).toBe(false)
+    expect(said.firstTime).toBe(false)
+  })
+
+  it('marks a first tacit answer, which is what the mechanic exists for (R17)', () => {
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(
+      answeredFrame({ seq: 2, person: 'stf_ap', asked: 'why?', question: 'why', label: 'Why', answer: 'A', tacit: true, firstTime: true, visibility: 8 }),
+    )
+    useRunStore.getState().apply(
+      answeredFrame({ seq: 3, person: 'stf_ap', asked: 'why again?', question: 'why', label: 'Why', answer: 'A', tacit: true, firstTime: false, visibility: 8 }),
+    )
+
+    const said = useRunStore.getState().answers.stf_ap
+    expect(said[0].firstTime).toBe(false)
+    expect(said[1].firstTime).toBe(true)
+    // The HUD reads visibility off the same event.
+    expect(useRunStore.getState().metrics.visibility).toBe(8)
+  })
+
+  it('rebuilds the answers when the run is replayed (R19, AE7)', () => {
+    const frames = [
+      genesisFrame(),
+      answeredFrame({ seq: 2, person: 'stf_ap', asked: 'why?', question: 'why', label: 'Why', answer: 'A', tacit: true, firstTime: true }),
+      answeredFrame({ seq: 3, person: 'dir_hr', asked: 'who decides?', question: 'axis', label: 'Who decides', answer: 'B', tacit: true, firstTime: true }),
+    ]
+
+    useRunStore.getState().applyAll(frames)
+    const live = useRunStore.getState().answers
+
+    // A reload is exactly this: a fresh client replaying the same log.
+    useRunStore.getState().reset()
+    useRunStore.getState().applyAll(frames)
+
+    expect(useRunStore.getState().answers).toEqual(live)
+    expect(useRunStore.getState().answers.stf_ap[0].answer).toBe('A')
+  })
+
+  it('drops the answers on reset, so a second run does not inherit them', () => {
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(
+      answeredFrame({ seq: 2, person: 'stf_ap', asked: 'why?', question: 'why', answer: 'A' }),
+    )
+
+    useRunStore.getState().reset()
+    expect(useRunStore.getState().answers).toEqual({})
+  })
+})
+
+describe('typing into the ask box', () => {
+  it('does not drive the CEO, though the questions are full of WASD', () => {
+    // "why", "who decides", "what is slow" — every one of them types movement keys.
+    const box = document.createElement('input')
+    expect(typingTarget(box)).toBe(true)
+
+    const textarea = document.createElement('textarea')
+    expect(typingTarget(textarea)).toBe(true)
+  })
+
+  it('still lets the stage take keys pressed on the floor', () => {
+    expect(typingTarget(document.createElement('canvas'))).toBe(false)
+    expect(typingTarget(document.createElement('div'))).toBe(false)
+    expect(typingTarget(null)).toBe(false)
+  })
+
+  it('leaves the tray radios and the composer toggles their own keys', () => {
+    expect(typingTarget(document.createElement('button'))).toBe(true)
+    expect(typingTarget(document.createElement('select'))).toBe(true)
+    expect(typingTarget(document.createElement('summary'))).toBe(true)
   })
 })

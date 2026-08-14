@@ -38,6 +38,7 @@ import {
   bitmaskFor,
   inputLeadTicks,
   shouldRestateHeldInput,
+  typingTarget,
 } from './stage'
 import './shell.css'
 
@@ -50,25 +51,6 @@ export interface ShellProps {
    * arrow would tear the socket down and reconnect on every render.
    */
   makeStream?: (runId: string, onFrame?: () => void) => { start(): void; stop(): void }
-}
-
-/**
- * Whether a key event belongs to a form control rather than to the stage.
- *
- * The tray's options are radios and the HUD composer's toggles are checkboxes, so Tab and the
- * arrow keys have a native meaning whenever one of them holds focus.
- */
-function typingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  const tag = target.tagName
-  return (
-    tag === 'INPUT' ||
-    tag === 'TEXTAREA' ||
-    tag === 'SELECT' ||
-    tag === 'BUTTON' ||
-    tag === 'SUMMARY' ||
-    target.isContentEditable
-  )
 }
 
 export function Shell({ runId, makeStream }: ShellProps) {

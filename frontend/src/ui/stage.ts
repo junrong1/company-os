@@ -87,6 +87,32 @@ export const KEY_BITS: Record<string, number> = {
   s: INPUT_DOWN,
 }
 
+/**
+ * Whether a key event belongs to a form control rather than to the stage.
+ *
+ * The tray's options are radios and the HUD composer's toggles are checkboxes, so Tab and the
+ * arrow keys have a native meaning whenever one of them holds focus. The ask box makes this
+ * load-bearing rather than merely polite: "why" and "who decides" are typed with W, A, S and D
+ * in them, so a stage that took its keys unconditionally would walk the CEO out of the
+ * conversation while the CEO was typing into it.
+ */
+export function typingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false
+  const tag = target.tagName
+  return (
+    tag === 'INPUT' ||
+    tag === 'TEXTAREA' ||
+    tag === 'SELECT' ||
+    tag === 'BUTTON' ||
+    tag === 'SUMMARY' ||
+    // Coerced rather than returned directly: `||` yields its last operand, and
+    // `isContentEditable` is absent on some elements and in jsdom, so the declared `boolean`
+    // return could hand back `undefined`. Harmless where the result is only ever tested for
+    // truthiness, and a trap for anything that compares it.
+    target.isContentEditable === true
+  )
+}
+
 /** The held-direction bitmask for a set of pressed keys. */
 export function bitmaskFor(pressed: Iterable<string>): number {
   let mask = 0

@@ -166,6 +166,27 @@ export interface CeoView {
   facing: string
 }
 
+/**
+ * One thing a person said when asked.
+ *
+ * Kept per person rather than as one stream, because R18 is that returning to somebody shows
+ * what *they* have already told you — the value of the mechanic is that knowledge is attached
+ * to a person you have to walk to, not to a transcript.
+ */
+export interface AnsweredQuestion {
+  /** The intent the kernel matched, or an empty string when it matched none. */
+  question: string
+  label: string
+  /** What the CEO actually typed. */
+  asked: string
+  answer: string
+  /** True for the three questions where undocumented knowledge lives. */
+  tacit: boolean
+  /** True when this was the first time this person answered this question. */
+  firstTime: boolean
+  tick: bigint
+}
+
 /** The kernel's own derived CEO position, as the last echo reported it. */
 export interface PositionEcho {
   xMilli: number
@@ -242,6 +263,14 @@ export interface RunStore {
    * leak — the only reader is the conversation.
    */
   tacitLines: Record<string, string>
+  /**
+   * What each person has said, newest first, keyed by person id.
+   *
+   * Folded out of the answer event rather than held in component state, which is what makes it
+   * survive closing the conversation, walking away, and a reload — the reload replays the
+   * events and rebuilds this from them (R18, R19).
+   */
+  answers: Record<string, AnsweredQuestion[]>
   /** Where the wire last said the CEO is. What the stage's prediction seeds from. */
   ceo: CeoView
   /** The last position echo, or `null` before one has arrived. Reconciled against, not drawn. */
@@ -281,6 +310,7 @@ function emptyRun(): Omit<
     deliverables: [],
     terminal: null,
     tacitLines: {},
+    answers: {},
     ceo: { xMilli: 0, yMilli: 0, facing: 'down' },
     ceoEcho: null,
     diverged: false,
@@ -575,6 +605,28 @@ function applyEvent(set: Setter, get: Getter, frame: EventFrame, seq: bigint): v
       patch.items = withItem(patch.items ?? state.items, itemId, {
         resolvedCount: existing.resolvedCount + 1,
       })
+    }
+  }
+
+  // --- what people said -------------------------------------------------
+  if (frame.kind === 'QUESTION_ANSWERED') {
+    const personId = toStr(payload.person)
+    if (personId !== '') {
+      const said: AnsweredQuestion = {
+        question: toStr(payload.question),
+        label: toStr(payload.label),
+        asked: toStr(payload.asked),
+        answer: toStr(payload.answer),
+        tacit: payload.tacit === true,
+        firstTime: payload.first_time === true,
+        tick,
+      }
+      // Newest first, as the prototype's panel shows it: the answer you just heard is the one
+      // you are reading, and a long conversation should not push it off the bottom.
+      patch.answers = {
+        ...state.answers,
+        [personId]: [said, ...(state.answers[personId] ?? [])],
+      }
     }
   }
 

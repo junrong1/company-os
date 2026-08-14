@@ -320,3 +320,24 @@ export function assignCost(item: AssignableItem): string {
   }
   return `Through you to ${item.wantId}, so the reporting line stays informed.`
 }
+
+// =========================================================================
+// The ask box
+// =========================================================================
+
+/**
+ * The payload that asks somebody something.
+ *
+ * The raw text goes to the kernel, not a matched intent. Matching lives there because that is
+ * the side that prices the answer — Visibility is charged once per person per question, so the
+ * kernel has to know which question was asked and cannot take the client's word for it. It is
+ * also where a hearing API will replace the script, and matching belongs with the producer.
+ */
+export function askPayload(personId: string, question: string): Record<string, unknown> {
+  return { person: personId, question }
+}
+
+/** Whether a typed question is worth sending at all. */
+export function askable(question: string): boolean {
+  return question.trim() !== ''
+}

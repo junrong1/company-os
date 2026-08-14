@@ -692,3 +692,82 @@
   font-size: 0.66rem;
   line-height: 1.4;
 }
+
+.conversation__ask {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--rule);
+}
+
+.conversation__ask form {
+  display: flex;
+  gap: 0.3rem;
+}
+
+.conversation__ask input {
+  flex: 1;
+  min-width: 0;
+  background: var(--ganglan);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.25rem 0.4rem;
+}
+
+.conversation__ask input:focus {
+  outline: none;
+  border-color: var(--shilv);
+}
+
+.conversation__ask button {
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.25rem 0.6rem;
+  cursor: pointer;
+}
+
+.conversation__ask button:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.said {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--rule);
+}
+
+/* A first tacit answer is the thing the mechanic exists for. It should look like it. */
+.said[data-tacit='true'] {
+  border-left-color: var(--tacit);
+}
+
+/* A miss still says something about them, so it is not styled as an error. */
+.said[data-matched='false'] {
+  border-left-style: dotted;
+}
+
+.said__q {
+  margin: 0;
+  font-size: 0.65rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.said__a {
+  margin: 0;
+  font-size: 0.73rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}

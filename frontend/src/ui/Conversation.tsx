@@ -15,17 +15,28 @@ import { useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { PAL, deptColour } from '../design/tokens'
-import { useRunStore } from '../net/store'
+import { type AnsweredQuestion, useRunStore } from '../net/store'
 import type { CommandSender } from './Panels'
 import {
   type AssignableItem,
   type StoppedCard,
+  askPayload,
+  askable,
   assignCost,
   assignableWork,
   conversationHeader,
   resolvePayload,
   stoppedCard,
 } from './conversation-model'
+
+/**
+ * The empty answer list, as one shared value.
+ *
+ * A fresh `[]` from the selector would be a new reference every call, and the store's equality
+ * check is `Object.is` on the selector's output — so an unasked person would re-render this
+ * panel forever.
+ */
+const EMPTY_ANSWERS: AnsweredQuestion[] = []
 
 export interface ConversationProps {
   /** Who the CEO is standing next to, decided by the model from both parties' positions. */
@@ -44,6 +55,12 @@ export function Conversation({ personId, onCommand }: ConversationProps) {
       stoppedCard(personId, state.tray, state.genesis?.catalog ?? [], state.tacitLines),
     ),
   )
+  // The array itself is replaced whenever this person answers, so reference equality is
+  // exactly the right check and no shallow comparison is needed.
+  const answers = useRunStore((state) =>
+    personId === null ? EMPTY_ANSWERS : (state.answers[personId] ?? EMPTY_ANSWERS),
+  )
+
   // Genesis is written once and never replaced, so these are stable by reference and need no
   // shallow comparison.
   const roster = useRunStore((state) => state.genesis?.roster)
@@ -111,7 +128,80 @@ export function Conversation({ personId, onCommand }: ConversationProps) {
           ))}
         </section>
       )}
+
+      {/* Askable in every state. Someone stopped at a decision is exactly who it is worth
+          asking why, and that is the mechanic rather than an oversight. */}
+      <Ask personId={header.id} answers={answers} onCommand={onCommand} />
     </aside>
+  )
+}
+
+/**
+ * The ask box, and what this person has already said.
+ *
+ * Free text rather than four buttons. Buttons would remove the guessing that fixed answers
+ * create, but free text needs no rework when a hearing API replaces the script — that change
+ * swaps the producer, not the surface. Misses are therefore expected, and each person has a
+ * line for one.
+ *
+ * The answers come from the store rather than from state held here, which is what makes them
+ * survive walking away and coming back, and survive a reload.
+ */
+function Ask({
+  personId,
+  answers,
+  onCommand,
+}: {
+  personId: string
+  answers: AnsweredQuestion[]
+  onCommand?: CommandSender
+}) {
+  const [question, setQuestion] = useState('')
+
+  const send = () => {
+    if (!askable(question)) return
+    onCommand?.('ask_person', askPayload(personId, question))
+    setQuestion('')
+  }
+
+  return (
+    <section className="conversation__ask">
+      <form
+        onSubmit={(event) => {
+          event.preventDefault()
+          send()
+        }}
+      >
+        <input
+          type="text"
+          value={question}
+          placeholder="Ask them something…"
+          aria-label={`Ask ${personId} a question`}
+          onChange={(event) => setQuestion(event.target.value)}
+        />
+        <button type="submit" disabled={!askable(question)}>
+          Ask
+        </button>
+      </form>
+
+      {answers.length === 0 && (
+        <p className="hint">Try why, exceptions, who decides, or where the time goes.</p>
+      )}
+
+      {answers.map((said, index) => (
+        <article
+          // Indexed because the same question asked twice is two entries with identical
+          // content, and the list is newest-first so an index is stable for a given render.
+          key={`${said.tick}:${index}`}
+          className="said"
+          data-tacit={said.tacit && said.firstTime}
+          data-matched={said.question !== ''}
+        >
+          <p className="said__q">{said.question === '' ? said.asked : said.label}</p>
+          <p className="said__a">{said.answer}</p>
+        </article>
+      ))}
+    </section>
   )
 }
 
