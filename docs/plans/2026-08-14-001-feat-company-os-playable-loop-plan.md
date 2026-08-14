@@ -1,7 +1,7 @@
 ---
 title: "feat: Company OS Phase 2 - the playable loop"
 type: feat
-status: active
+status: completed
 date: 2026-08-14
 origin: docs/brainstorms/2026-08-14-playable-loop-requirements.md
 ---
