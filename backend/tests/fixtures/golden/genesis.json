@@ -1152,93 +1152,123 @@
     "roster": {
       "dir_admin": {
         "dept": "admin",
+        "initials": "GO",
         "mgr": "",
+        "name": "Grace Okafor",
         "rank": "director",
         "seat": [
           21,
           13
-        ]
+        ],
+        "title": "Director, Administration"
       },
       "dir_cs": {
         "dept": "support",
+        "initials": "NK",
         "mgr": "",
+        "name": "Nina Kaur",
         "rank": "director",
         "seat": [
           13,
           13
-        ]
+        ],
+        "title": "Customer Support Manager"
       },
       "dir_hr": {
         "dept": "hr",
+        "initials": "RB",
         "mgr": "",
+        "name": "Ruth Bello",
         "rank": "director",
         "seat": [
           5,
           13
-        ]
+        ],
+        "title": "People Manager"
       },
       "dir_sales": {
         "dept": "sales",
+        "initials": "MW",
         "mgr": "",
+        "name": "Marcus Webb",
         "rank": "director",
         "seat": [
           14,
           3
-        ]
+        ],
+        "title": "VP, Sales"
       },
       "stf_ap": {
         "dept": "accounting",
+        "initials": "PR",
         "mgr": "dir_admin",
+        "name": "Priya Raman",
         "rank": "staff",
         "seat": [
           18,
           3
-        ]
+        ],
+        "title": "Accounts Payable"
       },
       "stf_buyer": {
         "dept": "admin",
+        "initials": "VH",
         "mgr": "dir_admin",
+        "name": "Victor Hale",
         "rank": "staff",
         "seat": [
           18,
           13
-        ]
+        ],
+        "title": "Procurement Buyer"
       },
       "stf_cs": {
         "dept": "support",
+        "initials": "OC",
         "mgr": "dir_cs",
+        "name": "Owen Cole",
         "rank": "staff",
         "seat": [
           10,
           13
-        ]
+        ],
+        "title": "Support, First Line"
       },
       "stf_field": {
         "dept": "sales",
+        "initials": "TB",
         "mgr": "dir_sales",
+        "name": "Tom Baird",
         "rank": "staff",
         "seat": [
           12,
           3
-        ]
+        ],
+        "title": "Account Executive"
       },
       "stf_order": {
         "dept": "sales",
+        "initials": "DR",
         "mgr": "dir_sales",
+        "name": "Dana Reyes",
         "rank": "staff",
         "seat": [
           10,
           3
-        ]
+        ],
+        "title": "Order Processing Specialist"
       },
       "stf_rec": {
         "dept": "hr",
+        "initials": "SD",
         "mgr": "dir_hr",
+        "name": "Sam Delgado",
         "rank": "staff",
         "seat": [
           2,
           13
-        ]
+        ],
+        "title": "Recruiter"
       }
     },
     "rules_ver": "945e297a17029ce219993f101f47babc",

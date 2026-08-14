@@ -93,7 +93,9 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     # 2: U13/U14 added `catalog`, the authored work graph. Additive — the fold reads named
     # keys and ignores the rest — but a version bump regardless, because a consumer that
     # needs the graph has to be able to tell whether the event it is holding carries it.
-    EventKind.GENESIS: 2,  # U4/U8
+    # 3: Phase 2 added `name`, `initials` and `title` to each roster entry, so a client can
+    # say who the CEO is standing next to rather than showing them an id.
+    EventKind.GENESIS: 3,  # U4/U8
     EventKind.DAY_CHECKPOINT: 1,  # U3/U15
     EventKind.RATE_CHANGED: 1,  # U9
     EventKind.RUN_TERMINATED: 1,  # U8

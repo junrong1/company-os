@@ -26,6 +26,8 @@ import { Dag } from '../dag/Dag'
 import { Renderer } from '../render/index'
 import { EventStream, newIdempotencyKey, submitCommand } from '../net/stream'
 import { runState, subscribeTo, useRunStore } from '../net/store'
+import { Conversation } from './Conversation'
+import { selectConversation } from './conversation-model'
 import { Hud } from './Hud'
 import { Panels } from './Panels'
 import {
@@ -74,6 +76,12 @@ export function Shell({ runId, makeStream }: ShellProps) {
   const stageRef = useRef<HTMLDivElement | null>(null)
   const [stage, setStage] = useState<Stage>('office')
   const [rejection, setRejection] = useState<string | null>(null)
+
+  // Who the CEO is standing next to. Held as React state because a panel renders from it, but
+  // *decided* in the frame loop, because it depends on the predicted position — which React
+  // never sees — and on where the staff have walked to.
+  const [nearby, setNearby] = useState<string | null>(null)
+  const nearbyRef = useRef<string | null>(null)
 
   // Rebuilt when the run changes, so starting a second run does not inherit the first one's
   // position or its scheduled inputs. Keyed during render rather than reset in an effect: the
@@ -131,6 +139,16 @@ export function Shell({ runId, makeStream }: ShellProps) {
         if (echo !== null && echo !== seenEcho) {
           seenEcho = echo
           if (prediction.reconcile(echo)) runState().markDiverged(true)
+        }
+
+        // Recomputed every frame from *both* parties' positions: staff walk to desks and to
+        // meetings, so the person the CEO is talking to can leave a conversation the CEO is
+        // standing perfectly still in. Pushed into React only when the answer changes, so a
+        // frame loop does not re-render the tree sixty times a second.
+        const next = selectConversation(prediction.pose(), runState().people, nearbyRef.current)
+        if (next !== nearbyRef.current) {
+          nearbyRef.current = next
+          setNearby(next)
         }
       },
     })
@@ -371,6 +389,10 @@ export function Shell({ runId, makeStream }: ShellProps) {
         <div className="dag-host" data-hidden={stage !== 'dag'}>
           <Dag active={stage === 'dag'} />
         </div>
+
+        {/* Only over the office. On the chain view there is no floor to be standing on, and a
+            conversation panel there would claim a proximity the stage is not showing. */}
+        {stage === 'office' && <Conversation personId={nearby} />}
       </div>
 
       {/* Persists in both modes: a severed chain shows violet while you are still standing in

@@ -159,9 +159,19 @@ def assign_seats(floor: Floor) -> dict[str, tuple[int, int]]:
 
 
 def roster_to_state(seats: dict[str, tuple[int, int]]) -> dict[str, Any]:
-    """The immutable part of the roster, for the state hash."""
+    """The immutable part of the roster, as the genesis payload carries it.
+
+    Name, initials and title are here because the client has to be able to say who it is
+    talking to. Standing next to someone is the whole gesture, and a conversation headed
+    `stf_ap` would name a row in a table rather than a person — which is the opposite of what
+    the in-person route exists to be worth. They are authored constants that never move, so
+    shipping them once at genesis is cheaper than a lookup the client cannot perform.
+    """
     return {
         person.id: {
+            "name": person.name,
+            "initials": person.initials,
+            "title": person.title,
             "dept": person.dept,
             "mgr": person.mgr or "",
             "rank": person.rank,

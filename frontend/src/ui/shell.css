@@ -18,6 +18,9 @@
   --shilv: #57c3c2;
   --cuilv: #20a162;
   --zhuhong: #ed5126;
+  /* Reserved: a person is waiting on your decision. The art direction spends it on nothing
+     else, so nothing else in this file may reference it. */
+  --beam: #f2c46b;
   --tacit: #c4b1ff;
   --text: #e9edf4;
   --text-muted: #a2abbb;
@@ -506,4 +509,66 @@
   padding-left: 1rem;
   font-size: 0.7rem;
   color: var(--text-faint);
+}
+
+/* ---- the conversation ------------------------------------------------- */
+
+/*
+ * An overlay on the stage rather than a rail entry, so walking over to someone never costs
+ * sight of the HUD or the tray. Anchored to `.stage`, which is already positioned.
+ */
+.conversation {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  width: min(20rem, calc(100% - 2rem));
+  max-height: calc(100% - 2rem);
+  overflow-y: auto;
+  background: var(--gangqing);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  z-index: 2;
+}
+
+/* Someone stopped at a decision is the one thing that earns the reserved beam colour. */
+.conversation[data-state='blocked'] {
+  border-color: var(--beam);
+}
+
+.conversation__who {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.conversation__stripe {
+  width: 3px;
+  border-radius: 2px;
+  flex: none;
+}
+
+.conversation__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.conversation__name {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.conversation__title {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.conversation__meta {
+  font-size: 0.7rem;
 }

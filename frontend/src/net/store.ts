@@ -71,6 +71,10 @@ export interface CheckpointDef {
 }
 
 export interface RosterEntry {
+  /** Who they are, so a conversation names a person rather than a row id. */
+  name: string
+  initials: string
+  title: string
   dept: string
   mgr: string
   rank: string
