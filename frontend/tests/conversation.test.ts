@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { EventFrame, PersonView } from '../src/net/store'
+import type { EventFrame, PersonView, RosterEntry } from '../src/net/store'
 import {
   CLOSE_RADIUS_MILLI,
   FROM_TRAY_COST,
+  assignCost,
+  assignableWork,
   IN_PERSON_COST,
   OPEN_RADIUS_MILLI,
   SWITCH_MARGIN_MILLI,
@@ -477,5 +479,180 @@ describe('being summoned to a decision', () => {
     )
 
     expect(useRunStore.getState().tray).toHaveLength(0)
+  })
+})
+
+// =========================================================================
+// R12, R13, R14: handing work over from inside the conversation
+// =========================================================================
+
+/** Item states as the store holds them, defaulting everything to available backlog. */
+function backlog(over: Record<string, { status?: string; unlocked?: boolean }> = {}) {
+  const items: Record<string, { status: string; unlocked: boolean }> = {}
+  for (const entry of catalogFixture()) {
+    items[entry.id] = {
+      status: over[entry.id]?.status ?? 'backlog',
+      unlocked: over[entry.id]?.unlocked ?? true,
+    }
+  }
+  return items
+}
+
+function rosterOf(): Record<string, RosterEntry> {
+  useRunStore.getState().apply(genesisFrame())
+  return useRunStore.getState().genesis?.roster ?? {}
+}
+
+/** A specialist who reports to somebody, and one item that wants them. */
+function aSpecialistWithWork(roster: Record<string, RosterEntry>) {
+  const entry = catalogFixture().find((candidate) => (roster[candidate.want]?.mgr ?? '') !== '')
+  if (entry === undefined) throw new Error('no authored item wants a person with a director')
+  return { itemId: entry.id, personId: entry.want, director: roster[entry.want].mgr }
+}
+
+describe('handing work over in person', () => {
+  it('lists the unlocked backlog work this person could take (R12)', () => {
+    const roster = rosterOf()
+    const { itemId, personId } = aSpecialistWithWork(roster)
+
+    const offers = assignableWork(personId, roster, backlog(), catalogFixture())
+
+    expect(offers.map((offer) => offer.itemId)).toContain(itemId)
+    // Everything offered is genuinely for them or for one of their reports.
+    for (const offer of offers) {
+      expect(offer.wantId === personId || roster[offer.wantId].mgr === personId).toBe(true)
+    }
+  })
+
+  it('offers nothing locked and nothing already assigned (R12)', () => {
+    const roster = rosterOf()
+    const { itemId, personId } = aSpecialistWithWork(roster)
+
+    const locked = assignableWork(
+      personId,
+      roster,
+      backlog({ [itemId]: { unlocked: false } }),
+      catalogFixture(),
+    )
+    expect(locked.map((offer) => offer.itemId)).not.toContain(itemId)
+
+    const taken = assignableWork(
+      personId,
+      roster,
+      backlog({ [itemId]: { status: 'active' } }),
+      catalogFixture(),
+    )
+    expect(taken.map((offer) => offer.itemId)).not.toContain(itemId)
+  })
+
+  it('records the director as uninformed when handed straight to a specialist (R13, AE6)', () => {
+    const roster = rosterOf()
+    const { itemId, personId, director } = aSpecialistWithWork(roster)
+
+    const offer = assignableWork(personId, roster, backlog(), catalogFixture()).find(
+      (candidate) => candidate.itemId === itemId,
+    )
+
+    expect(offer?.bypassesDirector).toBe(true)
+    expect(offer?.uninformed).toBe(director)
+    expect(offer?.payload).toEqual({ item: itemId, person: personId, via_manager: false })
+  })
+
+  it('does not bypass anyone when routed through the director (R13)', () => {
+    const roster = rosterOf()
+    const { itemId, director } = aSpecialistWithWork(roster)
+
+    const offer = assignableWork(director, roster, backlog(), catalogFixture()).find(
+      (candidate) => candidate.itemId === itemId,
+    )
+
+    expect(offer?.bypassesDirector).toBe(false)
+    expect(offer?.uninformed).toBe('')
+    // No person named: the kernel resolves the line from the item's own `want`, and naming one
+    // here would be a second opinion about the org chart.
+    expect(offer?.payload).toEqual({ item: itemId, via_manager: true })
+  })
+
+  it("offers a director the work wanting any of their reports", () => {
+    const roster = rosterOf()
+    const { director } = aSpecialistWithWork(roster)
+
+    const offers = assignableWork(director, roster, backlog(), catalogFixture())
+    const reports = Object.entries(roster)
+      .filter(([, entry]) => entry.mgr === director)
+      .map(([id]) => id)
+
+    const routed = offers.filter((offer) => offer.wantId !== director)
+    expect(routed.length).toBeGreaterThan(0)
+    for (const offer of routed) expect(reports).toContain(offer.wantId)
+  })
+
+  it('bypasses nobody when the item wants a director outright', () => {
+    const roster = rosterOf()
+    const entry = catalogFixture().find((candidate) => (roster[candidate.want]?.mgr ?? '') === '')
+    if (entry === undefined) return
+
+    const offer = assignableWork(entry.want, roster, backlog(), catalogFixture()).find(
+      (candidate) => candidate.itemId === entry.id,
+    )
+
+    // There is nobody above them to go around.
+    expect(offer?.bypassesDirector).toBe(false)
+    expect(offer?.payload).toEqual({ item: entry.id, person: entry.want, via_manager: false })
+  })
+
+  it('offers nothing for somebody who is not on the roster', () => {
+    const roster = rosterOf()
+
+    expect(assignableWork('nobody', roster, backlog(), catalogFixture())).toEqual([])
+    expect(assignableWork(null, roster, backlog(), catalogFixture())).toEqual([])
+  })
+
+  it('picks up an item that unlocks while the conversation is open', () => {
+    const roster = rosterOf()
+    const { itemId, personId } = aSpecialistWithWork(roster)
+
+    const before = assignableWork(
+      personId,
+      roster,
+      backlog({ [itemId]: { unlocked: false } }),
+      catalogFixture(),
+    )
+    expect(before.map((offer) => offer.itemId)).not.toContain(itemId)
+
+    // The same conversation, one visibility gain later.
+    const after = assignableWork(personId, roster, backlog(), catalogFixture())
+    expect(after.map((offer) => offer.itemId)).toContain(itemId)
+  })
+
+  it('says what each route costs before the hand-over (R10, R13)', () => {
+    const roster = rosterOf()
+    const { itemId, personId, director } = aSpecialistWithWork(roster)
+
+    const direct = assignableWork(personId, roster, backlog(), catalogFixture()).find(
+      (candidate) => candidate.itemId === itemId,
+    )
+    const routed = assignableWork(director, roster, backlog(), catalogFixture()).find(
+      (candidate) => candidate.itemId === itemId,
+    )
+
+    expect(assignCost(direct!)).toContain(director)
+    expect(assignCost(direct!)).not.toBe(assignCost(routed!))
+  })
+
+  it('sends the same payloads the work panel sends, so both routes stay one rule (R14)', () => {
+    const roster = rosterOf()
+    const { itemId, personId, director } = aSpecialistWithWork(roster)
+
+    const direct = assignableWork(personId, roster, backlog(), catalogFixture()).find(
+      (candidate) => candidate.itemId === itemId,
+    )
+    const routed = assignableWork(director, roster, backlog(), catalogFixture()).find(
+      (candidate) => candidate.itemId === itemId,
+    )
+
+    // The work panel's own two buttons, verbatim.
+    expect(direct?.payload).toEqual({ item: itemId, person: personId, via_manager: false })
+    expect(routed?.payload).toEqual({ item: itemId, via_manager: true })
   })
 })

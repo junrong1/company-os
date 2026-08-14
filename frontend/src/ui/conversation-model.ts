@@ -232,3 +232,91 @@ export function resolvePayload(
 ): Record<string, unknown> {
   return { item: itemId, cp_index: cpIndex, option_index: optionIndex, in_person: inPerson }
 }
+
+// =========================================================================
+// The free card: handing work over
+// =========================================================================
+
+/** One thing this person could be handed, and what handing it over would mean. */
+export interface AssignableItem {
+  itemId: string
+  title: string
+  brief: string
+  dept: string
+  /** Who would end up doing the work. The person being talked to, or one of their reports. */
+  wantId: string
+  /** True when handing it over goes around the specialist's director. */
+  bypassesDirector: boolean
+  /** The director who would be left uninformed, or an empty string. */
+  uninformed: string
+  payload: Record<string, unknown>
+}
+
+/**
+ * What this person could take on, or route to someone who reports to them (R12).
+ *
+ * The route follows from who the item wants rather than from a button the player picks. An item
+ * wanting *this* person is handed over directly, which is the physical act of giving it to them
+ * — and if they report to someone, that someone is now blind to it (R13). An item wanting one of
+ * their reports is handed to them to pass on, which is what routing through a director *is*.
+ *
+ * Availability comes off the wire, exactly as the work panel takes it: the kernel owns whether
+ * an item's gates have cleared, and deciding it here from the authored gates would be a second
+ * implementation of that rule — the two already check visibility and prerequisites in opposite
+ * orders, so they would eventually disagree while each passed its own tests.
+ */
+export function assignableWork(
+  personId: string | null,
+  roster: Record<string, RosterEntry>,
+  items: Record<string, { status: string; unlocked: boolean }>,
+  catalog: CatalogEntry[],
+): AssignableItem[] {
+  if (personId === null || roster[personId] === undefined) return []
+
+  const assignable: AssignableItem[] = []
+
+  for (const entry of catalog) {
+    const item = items[entry.id]
+    // Backlog *and* unlocked. An item already assigned is not offered again, and a locked one
+    // would be rejected by the kernel with a reason the conversation has no room to explain.
+    if (item === undefined || item.status !== 'backlog' || !item.unlocked) continue
+
+    const want = entry.want
+    const wantEntry = roster[want]
+    if (wantEntry === undefined) continue
+
+    const direct = want === personId
+    const routed = wantEntry.mgr === personId
+
+    if (!direct && !routed) continue
+
+    // Only a direct hand-over can bypass, and only when the person actually reports to
+    // someone: an item wanting a director has nobody above them to go around.
+    const bypassed = direct && wantEntry.mgr !== '' ? wantEntry.mgr : ''
+
+    assignable.push({
+      itemId: entry.id,
+      title: entry.title,
+      brief: entry.brief,
+      dept: entry.dept,
+      wantId: want,
+      bypassesDirector: bypassed !== '',
+      uninformed: bypassed,
+      payload: direct
+        ? { item: entry.id, person: want, via_manager: false }
+        : // Routed carries no person: the kernel resolves the reporting line from the item's
+          // own `want`, and naming one here would be a second opinion about the org chart.
+          { item: entry.id, via_manager: true },
+    })
+  }
+
+  return assignable
+}
+
+/** What handing this item over costs, said before the hand-over rather than after (R10, R13). */
+export function assignCost(item: AssignableItem): string {
+  if (item.bypassesDirector) {
+    return `Straight to ${item.wantId}. ${item.uninformed} will not know about it.`
+  }
+  return `Through you to ${item.wantId}, so the reporting line stays informed.`
+}

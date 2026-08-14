@@ -634,3 +634,61 @@
   font-size: 0.68rem;
   line-height: 1.4;
 }
+
+.conversation__work {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--rule);
+}
+
+.conversation__work h3 {
+  margin: 0;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.offer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  align-items: flex-start;
+}
+
+.offer__title {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+.offer__brief {
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.offer button {
+  background: transparent;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+}
+
+/* Going around a director is the cheaper, costlier route. It should not look like the safe one. */
+.offer[data-bypass='true'] button {
+  border-color: var(--zhuhong);
+  color: var(--zhuhong);
+}
+
+.offer__cost {
+  margin: 0;
+  font-size: 0.66rem;
+  line-height: 1.4;
+}

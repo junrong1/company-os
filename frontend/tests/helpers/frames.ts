@@ -16,7 +16,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import type { EventFrame } from '../../src/net/store'
+import type { CatalogEntry, EventFrame } from '../../src/net/store'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const GOLDEN = join(HERE, '..', '..', '..', 'backend', 'tests', 'fixtures', 'golden')
@@ -45,19 +45,15 @@ export function genesisFixture(): GenesisFixture {
   return cached
 }
 
-/** The authored work graph, straight off the fixture. */
-export function catalogFixture(): Array<{
-  id: string
-  title: string
-  dept: string
-  director: string
-  requires: { items: string[]; visibility: number | null }
-  unlocks: string[]
-  effort_units: number
-  want: string
-  checkpoints: Array<{ prompt: string; options: Array<{ label: string; detail: string }> }>
-}> {
-  return genesisFixture().payload.catalog as never
+/**
+ * The authored work graph, straight off the fixture.
+ *
+ * Typed as the store's own `CatalogEntry` rather than as a hand-listed subset. The fixture *is*
+ * that payload, so a narrower local shape only means a suite that reads a real field has to
+ * cast around its own helper — and the cast is where a genuine shape change would go unnoticed.
+ */
+export function catalogFixture(): CatalogEntry[] {
+  return genesisFixture().payload.catalog as CatalogEntry[]
 }
 
 export function metricDefsFixture(): Array<{ key: string; good: number; display_max: number }> {
