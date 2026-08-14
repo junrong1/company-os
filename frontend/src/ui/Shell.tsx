@@ -25,10 +25,18 @@ import { ChainStrip } from '../dag/ChainStrip'
 import { Dag } from '../dag/Dag'
 import { Renderer } from '../render/index'
 import { EventStream, newIdempotencyKey, submitCommand } from '../net/stream'
-import { runState, useRunStore } from '../net/store'
+import { runState, subscribeTo, useRunStore } from '../net/store'
 import { Hud } from './Hud'
 import { Panels } from './Panels'
-import { INPUT_LEAD_TICKS, KEY_BITS, type Stage, actorsFromStore, bitmaskFor } from './stage'
+import {
+  CeoPrediction,
+  KEY_BITS,
+  type Stage,
+  actorsFromStore,
+  bitmaskFor,
+  inputLeadTicks,
+  shouldRestateHeldInput,
+} from './stage'
 import './shell.css'
 
 export interface ShellProps {
@@ -65,6 +73,11 @@ export function Shell({ runId, makeStream }: ShellProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
   const [stage, setStage] = useState<Stage>('office')
+  const [rejection, setRejection] = useState<string | null>(null)
+
+  // Per run, so starting a second one does not inherit the first one's position or its
+  // scheduled inputs.
+  const prediction = useMemo(() => new CeoPrediction(), [runId])
 
   const connection = useRunStore((state) => state.connection)
   const sequenceGap = useRunStore((state) => state.sequenceGap)
@@ -87,14 +100,56 @@ export function Shell({ runId, makeStream }: ShellProps) {
     const canvas = canvasRef.current
     if (canvas === null) return
 
+    const floor = runState().genesis?.floor
+    prediction.useFloor(floor)
+
+    let seenEcho: unknown = null
+
     const renderer = new Renderer({
       canvas,
-      floor: runState().genesis?.floor,
+      floor,
       // Read straight from the store inside the frame callback. No subscription, because a
       // notification would only tell the loop something its next frame was going to read
       // anyway.
-      actors: () => actorsFromStore(),
+      actors: () => actorsFromStore(prediction.pose()),
+      onFrame: (tick) => {
+        // The render clock is the client's estimate of the kernel's tick — smooth, and
+        // re-anchored every time the authority speaks. Walking the prediction along it is
+        // what makes movement cost sim-time: at ×3 the clock advances three times as fast,
+        // so the CEO covers three times the ground per wall-second, and at rate zero it is
+        // clamped and the CEO stands still.
+        prediction.advanceTo(tick)
+
+        // Compared once per echo rather than once per frame: `reconcile` re-walks the ticks
+        // since the echoed one, which is wasted work on an echo already accounted for.
+        const echo = runState().ceoEcho
+        if (echo !== null && echo !== seenEcho) {
+          seenEcho = echo
+          if (prediction.reconcile(echo)) runState().markDiverged(true)
+        }
+      },
     })
+
+    // Nothing fed the render clock, so it sat at its start tick reporting itself stalled. The
+    // authority is the store's tick — moved by events, and between them by the position echo.
+    const unsubscribeTick = subscribeTo(
+      (state) => state.tick,
+      (tick) => renderer.clock.onAuthoritativeTick(tick),
+      true,
+    )
+    const unsubscribeRate = subscribeTo(
+      (state) => state.rate,
+      (rate) => renderer.clock.onRateChange(rate, runState().tick),
+      true,
+    )
+    // Genesis and a resync are the two moments the wire states a CEO position outright. Both
+    // replace the prediction rather than correcting it: there is no earlier prediction that
+    // could be right, and an echo checked against a pre-seed history would compare timelines.
+    const unsubscribeCeo = subscribeTo(
+      (state) => state.ceo,
+      (ceo) => prediction.seed(ceo, runState().tick),
+      true,
+    )
 
     const resize = () => {
       const host = stageRef.current
@@ -115,22 +170,34 @@ export function Shell({ runId, makeStream }: ShellProps) {
 
     renderer.start()
 
-    // Symmetric: everything `start`, `addListener` and `observe` did, undone.
+    // Symmetric: everything `start`, `addListener`, `observe` and `subscribeTo` did, undone.
     return () => {
+      unsubscribeTick()
+      unsubscribeRate()
+      unsubscribeCeo()
       observer?.disconnect()
       renderer.dispose()
     }
-  }, [hasGenesis])
+  }, [hasGenesis, prediction])
 
   // --- CEO input --------------------------------------------------------
   const pressed = useRef(new Set<string>())
   const lastMask = useRef(0)
 
   const sendInput = useCallback(
-    (mask: number) => {
-      if (mask === lastMask.current) return
+    (mask: number, force = false) => {
+      // `force` is for a resume: a key held across a pause fires no fresh keydown, so the mask
+      // has not changed and the guard below would drop the one command that gets the CEO
+      // walking again.
+      if (mask === lastMask.current && !force) return
       lastMask.current = mask
-      const atTick = runState().tick + INPUT_LEAD_TICKS
+      const state = runState()
+      const atTick = state.tick + inputLeadTicks(state.rate)
+
+      // Predicted at the same tick the kernel is told to apply it at. Predicting it now
+      // instead would feel a few ticks sharper and be wrong at every tick until the key was
+      // released — a standing disagreement the echo would report as a divergence.
+      prediction.hold(mask, atTick)
       // Run-length encoded by construction: one command per *change* of held direction, not
       // one per frame. Roughly 36 rows a second of walking becomes one row a keypress.
       //
@@ -144,13 +211,32 @@ export function Shell({ runId, makeStream }: ShellProps) {
         'submit_ceo_input',
         { bitmask: mask, at_tick: atTick.toString() },
         newIdempotencyKey('ceo'),
-      ).catch(() => {
-        // A dropped input is a missed step, not a broken client. The next change re-states
-        // the whole held direction, so the error needs no recovery of its own.
-      })
+      )
+        .then((outcome) => {
+          // Movement swallows its errors on purpose — a dropped input is a missed step, and
+          // the next change re-states the whole held direction. A paused run is the one
+          // exception: it rejects *every* command, so that same silence would make the pause
+          // button read as a broken build rather than as a stopped world.
+          if (outcome.status === 'run_paused') setRejection(outcome.reason)
+        })
+        .catch(() => {
+          // A dropped input is a missed step, not a broken client. The next change re-states
+          // the whole held direction, so the error needs no recovery of its own.
+        })
     },
-    [runId],
+    [runId, prediction],
   )
+
+  // A key held across a pause fires no keydown on resume, so without re-stating the held
+  // direction the CEO stays frozen until the player lets go and presses again — which reads
+  // as the resume having failed.
+  const previousRate = useRef(rate)
+  useEffect(() => {
+    const held = bitmaskFor(pressed.current)
+    const restate = shouldRestateHeldInput(previousRate.current, rate, held)
+    previousRate.current = rate
+    if (restate) sendInput(held, true)
+  }, [rate, sendInput])
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
@@ -195,8 +281,6 @@ export function Shell({ runId, makeStream }: ShellProps) {
       window.removeEventListener('blur', blur)
     }
   }, [sendInput])
-
-  const [rejection, setRejection] = useState<string | null>(null)
 
   const command = useCallback(
     (kind: string, payload: Record<string, unknown>) => {

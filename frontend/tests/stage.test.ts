@@ -1,10 +1,27 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { CEO_ID, PALETTE_OVERRIDE, personPalette } from '../src/render/palettes'
-import { DIRS, FRAMES, SPRITE_HEIGHT, SPRITE_WIDTH, characterSheet, depthSort } from '../src/render/actors'
+import { DIRS, FRAMES, SPRITE_HEIGHT, SPRITE_WIDTH, characterSheet, depthSort, walkFrame } from '../src/render/actors'
 import { CHARACTER_PALETTE } from '../src/render/sprites'
-import { TILE } from '../src/render/floor'
-import { actorsFromStore } from '../src/ui/stage'
+import { type FloorData, TILE, buildGrid, walkable } from '../src/render/floor'
+import {
+  CEO_DIAGONAL_MILLI_PER_TICK,
+  CEO_LOOKAHEAD_MILLI,
+  CEO_STRAIGHT_MILLI_PER_TICK,
+  INPUT_DOWN,
+  INPUT_LEFT,
+  INPUT_RIGHT,
+  INPUT_UP,
+} from '../src/render/interpolate'
+import { RenderClock } from '../src/render/clock'
+import {
+  CeoPrediction,
+  MIN_INPUT_LEAD_TICKS,
+  actorsFromStore,
+  bitmaskFor,
+  inputLeadTicks,
+  shouldRestateHeldInput,
+} from '../src/ui/stage'
 import { useRunStore } from './helpers/store-helpers'
 import { genesisFixture, genesisFrame } from './helpers/frames'
 
@@ -157,5 +174,404 @@ describe('depth sorting the CEO', () => {
 
     // Standing further down the floor than anybody, the CEO draws last.
     expect(depthSort(drawables).at(-1)).toMatchObject({ id: CEO_ID })
+  })
+})
+
+// =========================================================================
+// R2, R3, R4: predicting the CEO's position, and keeping it honest
+// =========================================================================
+
+/** The real floor, so collision is checked against the geometry the kernel used. */
+function floorFixture(): FloorData {
+  return genesisFixture().payload.floor as unknown as FloorData
+}
+
+/**
+ * A prediction seeded at spawn, and the open direction to walk it in.
+ *
+ * The direction is discovered rather than assumed: the floor is generated, and a test that
+ * hard-codes "left is open" turns a floor change into a movement regression that is not one.
+ */
+function atSpawn(): {
+  prediction: CeoPrediction
+  open: number
+  spawn: [number, number]
+  /** Ticks that can be walked in `open` before the wall lookahead stops the CEO. */
+  clearTicks: number
+} {
+  const floor = floorFixture()
+  const grid = buildGrid(floor)
+  const [sx, sy] = floor.spawn
+
+  const candidates: Array<[number, number, number]> = [
+    [INPUT_LEFT, -1, 0],
+    [INPUT_RIGHT, 1, 0],
+    [INPUT_UP, 0, -1],
+    [INPUT_DOWN, 0, 1],
+  ]
+
+  // The longest clear run, not merely an open neighbour. The floor is generated, so a test
+  // that assumes room to walk turns a tighter layout into a movement regression that is not
+  // one — which is exactly what a two-tile assumption did here.
+  let best: [number, number] = [0, 0]
+  for (const [mask, dx, dy] of candidates) {
+    let clear = 0
+    while (clear < 20 && walkable(grid, sx + dx * (clear + 1), sy + dy * (clear + 1))) clear += 1
+    if (clear > best[1]) best = [mask, clear]
+  }
+  if (best[1] < 2) throw new Error('the spawn tile has nowhere to walk to')
+
+  const prediction = new CeoPrediction()
+  prediction.useFloor(floor)
+  prediction.seed({ xMilli: sx * 1000, yMilli: sy * 1000, facing: 'down' }, 0n)
+
+  // How many steps fit in the clear run, less the lookahead probe's reach. Derived from the
+  // constants rather than measured by walking, so a broken predictor cannot quietly hand these
+  // tests a clearance of zero and make every movement assertion vacuous.
+  const clearTicks = Math.floor(
+    (best[1] * 1000 - Number(CEO_LOOKAHEAD_MILLI)) / Number(CEO_STRAIGHT_MILLI_PER_TICK),
+  )
+
+  return { prediction, open: best[0], spawn: [sx, sy], clearTicks }
+}
+
+/** How far the prediction has travelled from spawn, on either axis. */
+function travelled(prediction: CeoPrediction, spawn: [number, number]): number {
+  const pose = prediction.pose()
+  return Math.abs(pose.xMilli - spawn[0] * 1000) + Math.abs(pose.yMilli - spawn[1] * 1000)
+}
+
+describe('predicting CEO movement', () => {
+  it('advances every tick a direction is held, and stops when it is released (R2)', () => {
+    const { prediction, open, spawn } = atSpawn()
+
+    prediction.hold(open, 1n)
+    prediction.advanceTo(5n)
+    expect(travelled(prediction, spawn)).toBe(5 * Number(CEO_STRAIGHT_MILLI_PER_TICK))
+
+    const stoppedAt = travelled(prediction, spawn)
+    prediction.hold(0, 6n)
+    prediction.advanceTo(40n)
+    expect(travelled(prediction, spawn)).toBe(stoppedAt)
+    expect(prediction.pose().moving).toBe(false)
+  })
+
+  it('holds a direction until it is superseded, matching the kernel', () => {
+    // One command per *change*, not one per tick. This is the property the kernel had to be
+    // fixed to share: reading only the tagged tick moves the CEO a seventh of a tile and stops.
+    const { prediction, open, spawn, clearTicks } = atSpawn()
+    expect(clearTicks).toBeGreaterThan(5)
+
+    prediction.hold(open, 1n)
+    prediction.advanceTo(BigInt(clearTicks))
+
+    expect(travelled(prediction, spawn)).toBe(clearTicks * Number(CEO_STRAIGHT_MILLI_PER_TICK))
+  })
+
+  it('does not apply an input before the tick it was tagged for', () => {
+    const { prediction, open, spawn } = atSpawn()
+
+    prediction.hold(open, 10n)
+    prediction.advanceTo(9n)
+    expect(travelled(prediction, spawn)).toBe(0)
+
+    prediction.advanceTo(10n)
+    expect(travelled(prediction, spawn)).toBe(Number(CEO_STRAIGHT_MILLI_PER_TICK))
+  })
+
+  it('uses the diagonal step, so diagonals are not faster than straight lines', () => {
+    const floor = floorFixture()
+    const grid = buildGrid(floor)
+    const [sx, sy] = floor.spawn
+
+    // Find an open diagonal from spawn; skip the claim rather than assert a false one if the
+    // generated floor offers none.
+    const diagonals: Array<[number, number, number]> = [
+      [INPUT_LEFT | INPUT_UP, -1, -1],
+      [INPUT_LEFT | INPUT_DOWN, -1, 1],
+      [INPUT_RIGHT | INPUT_UP, 1, -1],
+      [INPUT_RIGHT | INPUT_DOWN, 1, 1],
+    ]
+    const found = diagonals.find(
+      ([, dx, dy]) =>
+        walkable(grid, sx + dx, sy + dy) &&
+        walkable(grid, sx + dx * 2, sy + dy * 2) &&
+        walkable(grid, sx + dx, sy) &&
+        walkable(grid, sx, sy + dy),
+    )
+    if (found === undefined) return
+
+    const prediction = new CeoPrediction()
+    prediction.useFloor(floor)
+    prediction.seed({ xMilli: sx * 1000, yMilli: sy * 1000, facing: 'down' }, 0n)
+    prediction.hold(found[0], 1n)
+    prediction.advanceTo(1n)
+
+    const pose = prediction.pose()
+    expect(Math.abs(pose.xMilli - sx * 1000)).toBe(Number(CEO_DIAGONAL_MILLI_PER_TICK))
+    expect(Math.abs(pose.yMilli - sy * 1000)).toBe(Number(CEO_DIAGONAL_MILLI_PER_TICK))
+    expect(CEO_DIAGONAL_MILLI_PER_TICK).toBeLessThan(CEO_STRAIGHT_MILLI_PER_TICK)
+  })
+
+  it('will not walk the CEO through a wall, so it cannot diverge on collision', () => {
+    const floor = floorFixture()
+    const grid = buildGrid(floor)
+    const prediction = new CeoPrediction()
+    prediction.useFloor(floor)
+    prediction.seed(
+      { xMilli: floor.spawn[0] * 1000, yMilli: floor.spawn[1] * 1000, facing: 'down' },
+      0n,
+    )
+
+    // Every direction in turn, long enough to reach a wall in each.
+    for (const [index, mask] of [INPUT_LEFT, INPUT_UP, INPUT_RIGHT, INPUT_DOWN].entries()) {
+      prediction.hold(mask, BigInt(index * 100 + 1))
+      prediction.advanceTo(BigInt(index * 100 + 100))
+    }
+
+    const pose = prediction.pose()
+    const tile = (milli: number) => Math.floor((milli + 500) / 1000)
+    expect(walkable(grid, tile(pose.xMilli), tile(pose.yMilli))).toBe(true)
+  })
+
+  it('animates the walk cycle while held and rests when released', () => {
+    const { prediction, open } = atSpawn()
+
+    prediction.hold(open, 1n)
+    prediction.advanceTo(4n)
+    expect(prediction.pose().moving).toBe(true)
+
+    // Frame 0 is standing still; a moving actor cycles through the stride.
+    const frames = new Set(
+      [0, 7, 14, 21].map((ticks) =>
+        walkFrame({ ...prediction.pose(), id: CEO_ID, animTicks: ticks }),
+      ),
+    )
+    expect(frames.size).toBeGreaterThan(1)
+
+    prediction.hold(0, 5n)
+    prediction.advanceTo(6n)
+    expect(walkFrame({ ...prediction.pose(), id: CEO_ID, animTicks: 7 })).toBe(0)
+  })
+
+  it('faces the direction of travel', () => {
+    const floor = floorFixture()
+    const grid = buildGrid(floor)
+    const [sx, sy] = floor.spawn
+
+    for (const [mask, dx, dy, facing] of [
+      [INPUT_LEFT, -1, 0, 'left'],
+      [INPUT_RIGHT, 1, 0, 'right'],
+      [INPUT_UP, 0, -1, 'up'],
+      [INPUT_DOWN, 0, 1, 'down'],
+    ] as const) {
+      if (!walkable(grid, sx + dx, sy + dy)) continue
+      const prediction = new CeoPrediction()
+      prediction.useFloor(floor)
+      prediction.seed({ xMilli: sx * 1000, yMilli: sy * 1000, facing: 'down' }, 0n)
+      prediction.hold(mask, 1n)
+      prediction.advanceTo(1n)
+      expect(prediction.pose().facing).toBe(facing)
+    }
+  })
+})
+
+// =========================================================================
+// AE8: reconciliation against the kernel's echo
+// =========================================================================
+
+describe('reconciling against the position echo', () => {
+  it('leaves an agreeing prediction alone', () => {
+    const { prediction, open } = atSpawn()
+    prediction.hold(open, 1n)
+    prediction.advanceTo(10n)
+
+    const before = prediction.pose()
+    const diverged = prediction.reconcile({
+      xMilli: before.xMilli,
+      yMilli: before.yMilli,
+      tick: 10n,
+    })
+
+    expect(diverged).toBe(false)
+    expect(prediction.pose()).toEqual(before)
+  })
+
+  it('compares against the prediction for the echoed tick, not the position now (AE8)', () => {
+    const { prediction, open } = atSpawn()
+    prediction.hold(open, 1n)
+    prediction.advanceTo(5n)
+    const atFive = prediction.pose()
+
+    // The client walks on while the echo is in flight. Comparing the tick-5 echo against the
+    // tick-20 position would report a divergence on every step the CEO ever takes.
+    prediction.advanceTo(20n)
+    expect(prediction.pose().xMilli + prediction.pose().yMilli).not.toBe(
+      atFive.xMilli + atFive.yMilli,
+    )
+
+    const diverged = prediction.reconcile({
+      xMilli: atFive.xMilli,
+      yMilli: atFive.yMilli,
+      tick: 5n,
+    })
+
+    expect(diverged).toBe(false)
+  })
+
+  it('snaps to the kernel and re-walks the ticks since, so a snap eats no input (AE8)', () => {
+    const { prediction, open, spawn, clearTicks } = atSpawn()
+    expect(clearTicks).toBeGreaterThan(10)
+    const step = Number(CEO_STRAIGHT_MILLI_PER_TICK)
+
+    prediction.hold(open, 1n)
+    prediction.advanceTo(5n)
+    const atFive = prediction.pose()
+    prediction.advanceTo(10n)
+    expect(travelled(prediction, spawn)).toBe(10 * step)
+
+    // The kernel says tick 5 was one step *behind* where this client put it. Behind rather
+    // than ahead so the corrected position is back along the corridor already walked, which
+    // keeps the assertion about reconciliation instead of about which tile is a wall.
+    const towardsSpawn = (value: number, origin: number) =>
+      value === origin ? value : value + (value > origin ? -step : step)
+
+    const diverged = prediction.reconcile({
+      xMilli: towardsSpawn(atFive.xMilli, spawn[0] * 1000),
+      yMilli: towardsSpawn(atFive.yMilli, spawn[1] * 1000),
+      tick: 5n,
+    })
+
+    expect(diverged).toBe(true)
+    // Snapped to tick 5's corrected position, then ticks 6 through 10 walked again on top of
+    // it — nine steps from spawn rather than ten, with none of those five ticks discarded.
+    expect(travelled(prediction, spawn)).toBe(9 * step)
+  })
+
+  it('reports nothing when it has no prediction for the echoed tick', () => {
+    const { prediction } = atSpawn()
+
+    // Before any advance there is no second opinion, so there is no disagreement to report.
+    expect(prediction.reconcile({ xMilli: 999_999, yMilli: 999_999, tick: 3n })).toBe(false)
+  })
+
+  it('drops its history on a reseed, so an echo never compares two timelines', () => {
+    const { prediction, open } = atSpawn()
+    prediction.hold(open, 1n)
+    prediction.advanceTo(10n)
+
+    prediction.seed({ xMilli: 5000, yMilli: 5000, facing: 'up' }, 10n)
+
+    expect(prediction.reconcile({ xMilli: 123, yMilli: 456, tick: 10n })).toBe(false)
+    expect(prediction.pose()).toMatchObject({ xMilli: 5000, yMilli: 5000, facing: 'up' })
+  })
+})
+
+// =========================================================================
+// R4, R23: the clock rate is what movement costs
+// =========================================================================
+
+describe('movement against the clock', () => {
+  /** Ticks the render clock covers in `ms` of wall time at `rate`. */
+  function ticksIn(ms: number, rate: number): bigint {
+    const clock = new RenderClock(0n, rate)
+    // A far-off authority, so the extrapolation cap plays no part in this measurement.
+    clock.onAuthoritativeTick(0n)
+    clock.advance(ms)
+    return clock.tick
+  }
+
+  it('covers three times the ground per wall-second at x3 (R4)', () => {
+    const atOne = ticksIn(1000, 1)
+    const atThree = ticksIn(1000, 3)
+
+    // Capped by the extrapolation budget rather than unbounded, but the ratio is the claim:
+    // sim-time is what movement is priced in, so a faster clock buys more walking per second.
+    expect(atThree).toBeGreaterThan(atOne)
+
+    // Three times the ticks is three times the ground, which is what "a faster clock buys
+    // more walking" means once movement is priced in sim-time rather than wall time.
+    const { prediction: slow, open, spawn, clearTicks } = atSpawn()
+    const oneSecond = Math.floor(clearTicks / 3)
+    expect(oneSecond).toBeGreaterThan(0)
+
+    slow.hold(open, 1n)
+    slow.advanceTo(BigInt(oneSecond))
+
+    const { prediction: fast } = atSpawn()
+    fast.hold(open, 1n)
+    fast.advanceTo(BigInt(oneSecond * 3))
+
+    expect(travelled(fast, spawn)).toBe(3 * travelled(slow, spawn))
+  })
+
+  it('stops dead at rate zero, because the clock it walks along is clamped (R23)', () => {
+    const clock = new RenderClock(100n, 0)
+    clock.onRateChange(0, 100n)
+    clock.advance(5000)
+    expect(clock.tick).toBe(100n)
+
+    const { prediction, open, spawn } = atSpawn()
+    prediction.advanceTo(100n)
+    prediction.hold(open, 101n)
+
+    // The clock did not move, so neither does the prediction that walks along it.
+    prediction.advanceTo(clock.tick)
+    expect(travelled(prediction, spawn)).toBe(0)
+  })
+})
+
+// =========================================================================
+// R23 / AE10: pause is stated, and a held key survives it
+// =========================================================================
+
+describe('pausing and resuming', () => {
+  it('re-states a held direction on resume, which no keydown would (AE10)', () => {
+    expect(shouldRestateHeldInput(0, 1, INPUT_LEFT)).toBe(true)
+    expect(shouldRestateHeldInput(0, 3, INPUT_UP | INPUT_LEFT)).toBe(true)
+  })
+
+  it('re-states nothing when no key is held', () => {
+    expect(shouldRestateHeldInput(0, 1, 0)).toBe(false)
+  })
+
+  it('re-states nothing when the run was not paused', () => {
+    expect(shouldRestateHeldInput(1, 3, INPUT_LEFT)).toBe(false)
+    expect(shouldRestateHeldInput(3, 1, INPUT_LEFT)).toBe(false)
+  })
+
+  it('re-states nothing on the way into a pause', () => {
+    expect(shouldRestateHeldInput(1, 0, INPUT_LEFT)).toBe(false)
+  })
+})
+
+// =========================================================================
+// Tagging an input for a tick the kernel has not run yet
+// =========================================================================
+
+describe('the input lead', () => {
+  it('grows with the rate, so the wall-time margin holds at every speed', () => {
+    // The margin has to cover a round trip plus the kernel's batching, both measured in wall
+    // time. A fixed tick lead shrinks in real terms exactly as the clock speeds up.
+    expect(inputLeadTicks(3)).toBeGreaterThan(inputLeadTicks(1))
+    // Proportional up to the floor division that keeps ticks whole, not exactly triple.
+    expect(inputLeadTicks(3)).toBeGreaterThanOrEqual(inputLeadTicks(1) * 3n)
+    expect(inputLeadTicks(3)).toBeLessThan(inputLeadTicks(1) * 3n + 3n)
+  })
+
+  it('never tags an input for the very next tick', () => {
+    expect(inputLeadTicks(0)).toBeGreaterThanOrEqual(MIN_INPUT_LEAD_TICKS)
+    expect(inputLeadTicks(1)).toBeGreaterThanOrEqual(MIN_INPUT_LEAD_TICKS)
+  })
+})
+
+describe('the held-direction bitmask', () => {
+  it('reads WASD and the arrows the same way', () => {
+    expect(bitmaskFor(['w'])).toBe(bitmaskFor(['ArrowUp']))
+    expect(bitmaskFor(['a', 's'])).toBe(bitmaskFor(['ArrowLeft', 'ArrowDown']))
+  })
+
+  it('ignores keys that are not directions', () => {
+    expect(bitmaskFor(['q', 'Shift'])).toBe(0)
   })
 })

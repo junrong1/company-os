@@ -19,10 +19,16 @@
  * provably wrong world for minutes while it caught up. Past the threshold it is a reset, not a
  * chase.
  *
- * **Extrapolation is capped at one quantum, then it freezes and says so.** Running ahead of the
- * authority is how smooth motion is possible at all, but running *far* ahead is fabricating a
- * world. One quantum is the budget; past it the clock stops and a stalled indicator becomes true,
- * so the UI can say "the clock stopped" rather than showing a confidently wrong office.
+ * **Extrapolation is capped, then it freezes and says so.** Running ahead of the authority is how
+ * smooth motion is possible at all, but running *far* ahead is fabricating a world. Past the
+ * budget the clock stops and a stalled indicator becomes true, so the UI can say "the clock
+ * stopped" rather than showing a confidently wrong office.
+ *
+ * The budget is sized by how often the authority actually speaks, which is not every tick. Events
+ * are appended only on ticks that produce one, and a measured run emits on about five ticks in
+ * twelve hundred; the regular signal is the position echo, once per sim-hour. A one-tick budget —
+ * which is what this held while nothing fed the clock at all — stalls between every pair of
+ * echoes and freezes the office for fifty-nine ticks in sixty.
  *
  * Everything is `bigint`, for the same reason as `interpolate.ts`: tick indices are `uint64` and
  * `number` loses precision above 2^53 silently.
@@ -34,8 +40,15 @@ export const SLEW_THRESHOLD_TICKS = 120n
 /** How much of the remaining gap one frame closes, in per-mille. */
 export const SLEW_PER_MILLE = 250n
 
-/** How far the render clock may lead the last authoritative tick before it freezes. */
-export const MAX_EXTRAPOLATION_TICKS = 1n
+/**
+ * How far the render clock may lead the last authoritative tick before it freezes.
+ *
+ * One and a half echo intervals. It has to exceed one interval or the clock stalls waiting for
+ * a signal that is still coming; the half is slack for a slow frame and for the kernel's own
+ * batching, which runs up to a 50 ms wake's worth of ticks at once. Past this the authority has
+ * genuinely stopped talking, which is what the stall is for.
+ */
+export const MAX_EXTRAPOLATION_TICKS = 90n
 
 /** Sim-ticks per wall millisecond at the base rate, as an exact rational (36/1000). */
 export const TICKS_PER_WALL_MS_NUMERATOR = 36n

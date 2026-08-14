@@ -4,8 +4,16 @@ import {
   MAX_EXTRAPOLATION_TICKS,
   RenderClock,
   SLEW_THRESHOLD_TICKS,
+  TICKS_PER_WALL_MS_DENOMINATOR,
+  TICKS_PER_WALL_MS_NUMERATOR,
   positionDiverged,
 } from '../src/render/clock'
+import { TICKS_PER_SIM_HOUR } from '../src/render/interpolate'
+
+/** Wall milliseconds that advance the clock by at least `ticks` at rate 1. */
+function wallMsFor(ticks: bigint): number {
+  return Number((ticks * TICKS_PER_WALL_MS_DENOMINATOR) / TICKS_PER_WALL_MS_NUMERATOR) + 1
+}
 import { Renderer, resetSheetCounter, sheetsGenerated } from '../src/render/index'
 import {
   ART,
@@ -301,14 +309,16 @@ describe('the render clock', () => {
     expect(clock.tick).toBe(far)
   })
 
-  it('extrapolates at most one quantum past the authority, then freezes and says so', () => {
+  it('extrapolates at most its budget past the authority, then freezes and says so', () => {
     const clock = new RenderClock(0n, 1)
     clock.onAuthoritativeTick(100n)
     clock.advance(10)
     expect(clock.stalled).toBe(false)
 
-    // No further authoritative ticks: the clock runs out of budget.
-    clock.advance(5000)
+    // No further authoritative ticks: the clock runs out of budget. Derived from the constant
+    // rather than a literal duration, so resizing the budget does not turn this into a test
+    // that passes by not reaching the cap at all.
+    clock.advance(wallMsFor(100n + MAX_EXTRAPOLATION_TICKS + 10n))
 
     expect(clock.tick).toBe(100n + MAX_EXTRAPOLATION_TICKS)
     expect(clock.stalled).toBe(true)
@@ -317,10 +327,21 @@ describe('the render clock', () => {
   it('clears the stall when the authority moves again', () => {
     const clock = new RenderClock(0n, 1)
     clock.onAuthoritativeTick(100n)
-    clock.advance(5000)
+    clock.advance(wallMsFor(100n + MAX_EXTRAPOLATION_TICKS + 10n))
     expect(clock.stalled).toBe(true)
 
-    clock.onAuthoritativeTick(140n)
+    clock.onAuthoritativeTick(100n + MAX_EXTRAPOLATION_TICKS + 40n)
+
+    expect(clock.stalled).toBe(false)
+  })
+
+  it('does not stall across one position-echo interval, which is how often the kernel speaks', () => {
+    // Events land on about five ticks in twelve hundred, so the echo — once per sim-hour — is
+    // the regular signal. A budget under that interval freezes the office between every pair.
+    const clock = new RenderClock(0n, 1)
+    clock.onAuthoritativeTick(0n)
+
+    clock.advance(wallMsFor(TICKS_PER_SIM_HOUR))
 
     expect(clock.stalled).toBe(false)
   })

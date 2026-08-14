@@ -269,6 +269,24 @@ export function buildGrid(floor: FloorData): number[][] {
   return grid
 }
 
+/**
+ * Whether a tile can be stood on, matching `simcore.world.walkable` exactly.
+ *
+ * Duplicated on purpose, like the tick arithmetic in `interpolate.ts`: the client predicts the
+ * CEO's position locally and has to reach the kernel's answer, collision included. A client
+ * that let the CEO through a wall would not merely look wrong — it would diverge from the
+ * kernel on the very next position echo, and the banner would report a mystery.
+ *
+ * Out of bounds is not walkable rather than an error, because the lookahead probe deliberately
+ * asks about tiles past the edge.
+ */
+export function walkable(grid: number[][], x: number, y: number): boolean {
+  if (x < 0 || y < 0 || y >= grid.length) return false
+  const row = grid[y]
+  if (x >= row.length) return false
+  return row[x] === FLOOR || row[x] === CORRIDOR
+}
+
 // =========================================================================
 // The prop atlas
 // =========================================================================

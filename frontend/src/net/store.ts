@@ -384,13 +384,22 @@ function applyControl(set: Setter, get: Getter, frame: ControlFrame): void {
     // Recorded, not applied. The comparison belongs to whoever owns the prediction — the
     // stage — and writing the echo straight into `ceo` would make the drawn position jump
     // backwards by up to a sim-hour of walking every time one arrived.
-    set({
-      ceoEcho: {
-        xMilli: toInt(frame.x_milli),
-        yMilli: toInt(frame.y_milli),
-        tick: toBig(frame.tick),
-      },
-    })
+    const tick = toBig(frame.tick)
+    const patch: Partial<RunStore> = {
+      ceoEcho: { xMilli: toInt(frame.x_milli), yMilli: toInt(frame.y_milli), tick },
+    }
+
+    // The echo is also the only *regular* statement of what tick the kernel is on. Events are
+    // appended only when a tick produces one, and a measured run emits on about five ticks in
+    // twelve hundred — so without this the client's clock has nothing to chase for hundreds of
+    // ticks at a stretch, and every command it tags "a few ticks ahead" lands in the past.
+    //
+    // Only ever forwards: the echo is published from inside the batch while the batch's own
+    // events are published after it, so an echo can arrive describing a tick the client has
+    // already passed, and rewinding on one would make time stutter.
+    if (tick > get().tick) patch.tick = tick
+
+    set(patch)
     return
   }
 
