@@ -64,3 +64,74 @@ export async function fetchGatewayStatus(signal?: AbortSignal): Promise<ServiceS
 
   return (await response.json()) as ServiceStatus
 }
+
+// =========================================================================
+// Starting a run
+// =========================================================================
+
+/** A run, as the creation route reports it. */
+export interface CreatedRun {
+  run_id: string
+  run_seed: number
+  tick: number
+  rate: number
+  terminal_reason: string
+  head_seq: number
+  active: boolean
+  /**
+   * False when the id already existed and this call returned that run instead.
+   *
+   * Not an error: the run id is its own idempotency key, so a client retrying a request whose
+   * response it never saw gets the run it made rather than a second one or a 409.
+   */
+  created: boolean
+}
+
+export class RunNotCreated extends Error {
+  constructor(detail: string) {
+    super(detail)
+    this.name = 'RunNotCreated'
+  }
+}
+
+/**
+ * Start a run, and get back what to attach to.
+ *
+ * Creation stays its own route rather than a command, which is the rule that keeps a typo'd id
+ * in a client from conjuring a simulation: `POST /runs/{id}/commands` answers not-found for an
+ * unknown run on purpose. So this is a different verb on a different path, and the run id is
+ * its own idempotency key.
+ *
+ * A failure is reported as an error to be shown rather than swallowed — a start button that
+ * does nothing is the worst possible answer, since the page it leaves behind has no other way
+ * to begin.
+ */
+export async function createRun(
+  options: { runId?: string; runSeed?: number } = {},
+  signal?: AbortSignal,
+): Promise<CreatedRun> {
+  const body: Record<string, unknown> = {}
+  if (options.runId !== undefined) body.run_id = options.runId
+  if (options.runSeed !== undefined) body.run_seed = options.runSeed
+
+  let response: Response
+  try {
+    response = await fetch(`${GATEWAY_BASE}/runs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    })
+  } catch (cause) {
+    throw new GatewayUnreachable(cause)
+  }
+
+  if (!response.ok) {
+    const detail = (await response.json().catch(() => ({}))) as { detail?: string }
+    throw new RunNotCreated(
+      detail.detail ?? `the gateway answered ${response.status} to a run creation`,
+    )
+  }
+
+  return (await response.json()) as CreatedRun
+}

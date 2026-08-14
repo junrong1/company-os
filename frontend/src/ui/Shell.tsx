@@ -45,6 +45,14 @@ import './shell.css'
 export interface ShellProps {
   runId: string
   /**
+   * Start another run. Offered when this one has ended (R26).
+   *
+   * Owned by the app rather than by the shell, because starting a run replaces the run the
+   * shell exists to render — the shell cannot both be the thing that starts it and the thing
+   * that gets torn down and rebuilt for it.
+   */
+  onStartRun?: () => void
+  /**
    * Injectable so the suite can mount the shell without a socket.
    *
    * Must be referentially stable across renders — it is an effect dependency, and a fresh inline
@@ -53,7 +61,7 @@ export interface ShellProps {
   makeStream?: (runId: string, onFrame?: () => void) => { start(): void; stop(): void }
 }
 
-export function Shell({ runId, makeStream }: ShellProps) {
+export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
   const [stage, setStage] = useState<Stage>('office')
@@ -358,7 +366,18 @@ export function Shell({ runId, makeStream }: ShellProps) {
         </div>
       </header>
 
-      {banner !== null && <p className="banner">{banner}</p>}
+      {banner !== null && (
+        <p className="banner">
+          {banner}
+          {/* A finished run is a dead screen otherwise, and the whole point of a run this
+              short is that two of them can be compared in one sitting (R26). */}
+          {terminal !== null && onStartRun !== undefined && (
+            <button type="button" className="banner__action" onClick={onStartRun}>
+              Start another
+            </button>
+          )}
+        </p>
+      )}
 
       <Hud />
 

@@ -1,27 +1,36 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 import {
-  fetchGatewayStatus,
   GatewayUnreachable,
   type ServiceStatus,
+  createRun,
+  fetchGatewayStatus,
 } from './net/gateway'
-import { runIdFromLocation } from './net/runid'
+import { useRunStore } from './net/store'
+import { rememberRunInLocation, runIdFromLocation } from './net/runid'
 import { Shell } from './ui/Shell'
 
 /**
- * The entry point: find a run, or explain why there is nothing to show.
+ * The entry point: open a run, or start one.
  *
- * The gateway's own status is the fallback view, and that is deliberate — it is the surface a
- * contributor already has open when something is wrong, and it can explain that the kernel is
- * down. U1 shipped exactly this; the office, HUD and DAG now sit in front of it when there is
- * a run to render.
+ * A session used to begin by running a command in a terminal, because nothing in the client
+ * reached the gateway's creation route — so the page could only ever attach to a run some other
+ * process had already made, and with no run named in the URL it had nothing to offer but the
+ * gateway's own health. That health view is still the fallback when the gateway cannot be
+ * reached, since it is the surface that can say why.
+ *
+ * Creation stays its own route rather than a command. The rule that no command brings a run
+ * into being is what keeps a typo'd id from conjuring a simulation, and it is untouched here.
  */
 export default function App() {
-  const [runId] = useState(() =>
+  const [runId, setRunId] = useState(() =>
     typeof window === 'undefined' ? null : runIdFromLocation(window.location.search),
   )
   const [status, setStatus] = useState<ServiceStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [starting, setStarting] = useState(false)
+
+  const reset = useRunStore((state) => state.reset)
 
   useEffect(() => {
     if (runId !== null) return
@@ -44,15 +53,40 @@ export default function App() {
     return () => controller.abort()
   }, [runId])
 
-  if (runId !== null) return <Shell runId={runId} />
+  const start = useCallback(() => {
+    setStarting(true)
+    setError(null)
+
+    createRun()
+      .then((run) => {
+        // Cleared before attaching, not after: the store still holds the finished run, and the
+        // shell would render its terminal banner and its old floor over the new run until the
+        // first frames arrived.
+        reset()
+        // In the URL so a reload re-attaches to this run rather than quietly starting another.
+        rememberRunInLocation(run.run_id)
+        setRunId(run.run_id)
+      })
+      .catch((cause: unknown) => {
+        // Reported rather than swallowed: a start button that does nothing leaves a page with
+        // no other way to begin.
+        setError(cause instanceof Error ? cause.message : String(cause))
+      })
+      .finally(() => setStarting(false))
+  }, [reset])
+
+  if (runId !== null) return <Shell key={runId} runId={runId} onStartRun={start} />
 
   return (
     <main className="shell">
       <header>
         <h1>Company OS</h1>
         <p className="sub">
-          No run selected. Open <code>?run=&lt;id&gt;</code> to attach to one.
+          Start a run, or open <code>?run=&lt;id&gt;</code> to attach to one.
         </p>
+        <button type="button" onClick={start} disabled={starting}>
+          {starting ? 'Starting…' : 'Start a run'}
+        </button>
       </header>
 
       {error && (

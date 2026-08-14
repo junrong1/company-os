@@ -771,3 +771,15 @@
   line-height: 1.45;
   color: var(--text-muted);
 }
+
+.banner__action {
+  margin-left: 0.6rem;
+  background: transparent;
+  border: 1px solid currentcolor;
+  border-radius: 2px;
+  color: inherit;
+  font: inherit;
+  font-size: 0.72rem;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+}

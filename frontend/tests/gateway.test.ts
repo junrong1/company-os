@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { fetchGatewayStatus, GatewayUnreachable } from '../src/net/gateway'
+import { createRun, fetchGatewayStatus, GatewayUnreachable } from '../src/net/gateway'
+import { rememberRunInLocation, runIdFromLocation } from '../src/net/runid'
 
 /**
  * The module under test makes exactly one judgement call, so that is what is
@@ -67,5 +68,156 @@ describe('fetchGatewayStatus', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 500 })))
 
     await expect(fetchGatewayStatus()).rejects.toBeInstanceOf(GatewayUnreachable)
+  })
+})
+
+// =========================================================================
+// R25, R26: starting a run from the page
+// =========================================================================
+
+const createdBody = {
+  run_id: 'run-abc123',
+  run_seed: 12345,
+  tick: 0,
+  rate: 1,
+  terminal_reason: '',
+  head_seq: 1,
+  active: true,
+  created: true,
+}
+
+describe('createRun', () => {
+  it('posts once and returns the run to attach to (R25, AE11)', async () => {
+    // Typed parameters so the recorded calls carry types, rather than being cast back.
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify(createdBody), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const run = await createRun()
+
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/runs')
+    expect(init.method).toBe('POST')
+    expect(run.run_id).toBe('run-abc123')
+    expect(run.created).toBe(true)
+  })
+
+  it('sends no id or seed when it is not asked to, so the gateway mints both', async () => {
+    // Typed parameters so the recorded calls carry types, rather than being cast back.
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify(createdBody), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createRun()
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(String(init.body))).toEqual({})
+  })
+
+  it('passes an id and a seed through when given them', async () => {
+    // Typed parameters so the recorded calls carry types, rather than being cast back.
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify(createdBody), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createRun({ runId: 'run-fixed', runSeed: 7 })
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(String(init.body))).toEqual({ run_id: 'run-fixed', run_seed: 7 })
+  })
+
+  it('attaches to a run that already exists rather than erroring', async () => {
+    // The run id is its own idempotency key, so a retry whose first response was never seen
+    // must not end up with two runs and must not look like a failure.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ ...createdBody, created: false }), { status: 200 }),
+      ),
+    )
+
+    const run = await createRun({ runId: 'run-abc123' })
+
+    expect(run.created).toBe(false)
+    expect(run.run_id).toBe('run-abc123')
+  })
+
+  it('reports why a creation failed rather than failing silently', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ detail: 'could not create the run: bad seed' }), {
+            status: 400,
+          }),
+      ),
+    )
+
+    await expect(createRun()).rejects.toThrow('bad seed')
+  })
+
+  it('reports an unreachable gateway as such', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+
+    await expect(createRun()).rejects.toBeInstanceOf(GatewayUnreachable)
+  })
+
+  it('survives a body it cannot read on a failure', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('<html>502</html>', { status: 502 })),
+    )
+
+    await expect(createRun()).rejects.toThrow('502')
+  })
+})
+
+describe('remembering the run in the URL', () => {
+  it('puts the created id in the address bar so a reload re-attaches (R25)', () => {
+    window.history.replaceState(null, '', '/')
+    expect(runIdFromLocation(window.location.search)).toBeNull()
+
+    rememberRunInLocation('run-abc123')
+
+    expect(runIdFromLocation(window.location.search)).toBe('run-abc123')
+  })
+
+  it('replaces rather than pushes, so the back button does not undo starting a run', () => {
+    window.history.replaceState(null, '', '/')
+    const before = window.history.length
+
+    rememberRunInLocation('run-abc123')
+
+    expect(window.history.length).toBe(before)
+  })
+
+  it('leaves the URL alone when it already names that run', () => {
+    window.history.replaceState(null, '', '/?run=run-abc123')
+    const before = window.location.href
+
+    rememberRunInLocation('run-abc123')
+
+    expect(window.location.href).toBe(before)
+  })
+
+  it('replaces the id when a second run starts', () => {
+    window.history.replaceState(null, '', '/?run=run-first')
+
+    rememberRunInLocation('run-second')
+
+    expect(runIdFromLocation(window.location.search)).toBe('run-second')
   })
 })
