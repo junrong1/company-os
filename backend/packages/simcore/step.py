@@ -1255,9 +1255,32 @@ def _start_work(state: State, person: PersonRuntime, item: ItemRuntime) -> None:
         person.state = STATE_WORKING
 
 
+def _held_bitmask(state: State) -> int:
+    """The direction being held this tick: the most recent input at or before it.
+
+    An input *stands* until another supersedes it, which is what "held" means. The client
+    sends one command per change of held direction — walking is run-length encoded, so a
+    second of movement is one row rather than thirty-six — and reading only the exact tick
+    would move the CEO a seventh of a tile per keypress and then stop dead.
+
+    Superseded entries are dropped as they are passed. Ticks advance monotonically, so a past
+    input can never apply again, and `ceo_inputs` is hashed state: leaving them in place would
+    grow the state hash's input for the length of the run and make the scan below O(run).
+    Inputs still tagged for future ticks are kept, because they have not happened yet.
+    """
+    held_at = max((tick for tick in state.ceo_inputs if tick <= state.tick), default=None)
+    if held_at is None:
+        return 0
+
+    for tick in [tick for tick in state.ceo_inputs if tick < held_at]:
+        del state.ceo_inputs[tick]
+
+    return state.ceo_inputs[held_at]
+
+
 def _advance_ceo(state: State) -> None:
     """Apply the CEO's held-direction input for this tick, if one was logged."""
-    bitmask = state.ceo_inputs.get(state.tick, 0)
+    bitmask = _held_bitmask(state)
     if not bitmask:
         return
 

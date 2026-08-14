@@ -566,6 +566,61 @@ def test_the_ceo_cannot_walk_through_a_wall(run: sim.State) -> None:
     assert walkable(run.floor, *run.ceo.tile)
 
 
+def test_a_held_direction_keeps_moving_until_it_is_superseded(run: sim.State) -> None:
+    """R2: held means held.
+
+    The client sends one command per *change* of held direction — walking is run-length
+    encoded, so roughly 36 rows a second of movement becomes one row a keypress. Applying a
+    logged mask only on the exact tick it was tagged for therefore moves the CEO a seventh
+    of a tile per keypress and then stops, which is a CEO who cannot cross the floor.
+    """
+    # Left of spawn is open corridor. Asserted rather than assumed, so a floor change fails
+    # here saying what it broke instead of looking like a movement regression.
+    x, y = run.ceo.tile
+    assert walkable(run.floor, x - 1, y)
+
+    start = run.ceo.x_milli
+    sim.submit_ceo_input(run, sim.INPUT_LEFT, at_tick=run.tick + 1)
+
+    advance(run, 10)
+
+    assert start - run.ceo.x_milli == 10 * sim.CEO_STRAIGHT_MILLI_PER_TICK
+
+
+def test_releasing_a_direction_stops_the_ceo(run: sim.State) -> None:
+    sim.submit_ceo_input(run, sim.INPUT_LEFT, at_tick=run.tick + 1)
+    advance(run, 5)
+    stopped_at = run.ceo.x_milli
+    assert stopped_at < run.floor.spawn[0] * 1000
+
+    sim.submit_ceo_input(run, 0, at_tick=run.tick + 1)
+    advance(run, 20)
+
+    assert run.ceo.x_milli == stopped_at
+
+
+def test_a_superseded_input_is_dropped_rather_than_accumulating(run: sim.State) -> None:
+    """The held mask is hashed state, so an unpruned dict grows for the length of a run."""
+    for _ in range(50):
+        sim.submit_ceo_input(run, sim.INPUT_RIGHT, at_tick=run.tick + 1)
+        sim.step(run)
+
+    # One held input, plus anything still scheduled ahead of the current tick.
+    assert len(run.ceo_inputs) == 1
+
+
+def test_an_input_scheduled_ahead_does_not_apply_early(run: sim.State) -> None:
+    """The client tags inputs a few ticks ahead so both sides apply them at the same tick."""
+    start = run.ceo.x_milli
+    sim.submit_ceo_input(run, sim.INPUT_LEFT, at_tick=run.tick + 6)
+
+    advance(run, 5)
+    assert run.ceo.x_milli == start
+
+    advance(run, 1)
+    assert start - run.ceo.x_milli == sim.CEO_STRAIGHT_MILLI_PER_TICK
+
+
 def test_an_input_for_a_past_tick_is_rejected(run: sim.State) -> None:
     advance(run, 5)
     with pytest.raises(sim.CommandRejected, match="not in the future"):
