@@ -13,12 +13,13 @@ import {
   SWITCH_MARGIN_MILLI,
   conversationHeader,
   distanceMilli,
+  personActivity,
   resolvePayload,
   selectConversation,
   stoppedCard,
   tacitKey,
 } from '../src/ui/conversation-model'
-import { typingTarget } from '../src/ui/stage'
+import { actorsFromStore, typingTarget } from '../src/ui/stage'
 import { useRunStore } from './helpers/store-helpers'
 import {
   catalogFixture,
@@ -819,5 +820,74 @@ describe('typing into the ask box', () => {
     expect(typingTarget(document.createElement('button'))).toBe(true)
     expect(typingTarget(document.createElement('select'))).toBe(true)
     expect(typingTarget(document.createElement('summary'))).toBe(true)
+  })
+})
+
+// =========================================================================
+// R20: the floor and the conversation agree about who is stopped
+// =========================================================================
+
+describe('what a person is actually doing', () => {
+  it('reads waiting off the tray, since no event carries person state (R20)', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+
+    const state = useRunStore.getState()
+    // The wire's own copy still says idle, and would for the whole run.
+    expect(state.people[want].state).toBe('idle')
+    expect(state.people[want].waiting).toBe(false)
+
+    const activity = personActivity(want, state.tray, state.items, state.people[want].state)
+    expect(activity.waiting).toBe(true)
+    expect(activity.state).toBe('blocked')
+  })
+
+  it('lights the beam on the floor for whoever is in the tray (R20)', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+
+    const actors = actorsFromStore()
+    expect(actors.find((actor) => actor.id === want)?.waiting).toBe(true)
+    // And nobody else.
+    expect(actors.filter((actor) => actor.waiting === true)).toHaveLength(1)
+  })
+
+  it('says a person holding work is working, not free', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore
+      .getState()
+      .apply(itemFrame({ seq: 2, kind: 'WORK_ASSIGNED', item: id, status: 'active', person: want }))
+
+    const state = useRunStore.getState()
+    const header = conversationHeader(want, state.genesis?.roster ?? {}, state.people, state.tray, state.items)
+
+    expect(header?.stateLabel).toBe('Working')
+    expect(header?.itemId).toBe(id)
+  })
+
+  it('says a person holding nothing is free', () => {
+    useRunStore.getState().apply(genesisFrame())
+    const state = useRunStore.getState()
+
+    const header = conversationHeader('stf_ap', state.genesis?.roster ?? {}, state.people, state.tray, state.items)
+    expect(header?.stateLabel).toBe('Free right now')
+  })
+
+  it('says waiting rather than working when they are stopped at a decision', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore
+      .getState()
+      .apply(itemFrame({ seq: 2, kind: 'WORK_ASSIGNED', item: id, status: 'active', person: want }))
+    useRunStore.getState().apply(raisedFrame({ seq: 3, item: id, person: want }))
+
+    const state = useRunStore.getState()
+    const header = conversationHeader(want, state.genesis?.roster ?? {}, state.people, state.tray, state.items)
+
+    expect(header?.stateLabel).toBe('Waiting on your decision')
+    expect(header?.waiting).toBe(true)
   })
 })

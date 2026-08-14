@@ -370,6 +370,11 @@ export function actorsFromStore(ceo?: CeoPose): Actor[] {
   // mid-stride between events.
   const animTicks = Number(state.tick)
 
+  // Who the kernel says is stopped, read off the tray. `person.waiting` is set at genesis and
+  // by a resync and by nothing else — no event carries person state — so the beam that tells
+  // the CEO somebody needs them would never light during a run (R20).
+  const waiting = new Set(state.tray.map((entry) => entry.personId))
+
   const actors: Actor[] = Object.values(state.people).map((person) => ({
     id: person.id,
     xMilli: person.xMilli,
@@ -377,7 +382,7 @@ export function actorsFromStore(ceo?: CeoPose): Actor[] {
     facing: person.facing as Facing,
     moving: person.state === 'walking',
     animTicks,
-    waiting: person.waiting,
+    waiting: waiting.has(person.id) || person.waiting,
   }))
 
   // Nothing to draw before genesis: the floor has not arrived, so a CEO at the store's zeroed

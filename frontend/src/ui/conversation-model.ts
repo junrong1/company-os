@@ -101,6 +101,43 @@ export const STATE_LABEL: Record<string, string> = {
   meeting: 'In a meeting',
 }
 
+/**
+ * What a person is doing, derived from what the wire actually says.
+ *
+ * The kernel keeps a per-person state — idle, working, walking, meeting, blocked — and emits
+ * no event carrying it, so the client's copy is whatever genesis or the last resync said and
+ * is `idle` for the whole of a normal run. Deriving the two states that matter from facts the
+ * wire *does* carry is what makes the waiting beam light and keeps the conversation from
+ * telling the CEO that the person standing in front of them holding a decision is free.
+ *
+ * Derived here rather than in the store on purpose: the store's rule is that it holds only what
+ * it read off an event, and this is a projection over two things it already holds. The full fix
+ * is a person-state event, which the kernel does not have.
+ */
+export function personActivity(
+  personId: string,
+  tray: TrayEntry[],
+  items: Record<string, { status: string; assignee: string }>,
+  recorded: string,
+): { state: string; waiting: boolean } {
+  // The tray is the live signal; a resync's `blocked` is the authoritative one. Either is a
+  // person standing at a decision, and dropping the second would lose what a reattach knows.
+  if (recorded === 'blocked' || tray.some((entry) => entry.personId === personId)) {
+    return { state: 'blocked', waiting: true }
+  }
+
+  const holding = Object.values(items).some(
+    (item) =>
+      item.assignee === personId &&
+      (item.status === 'assigned' || item.status === 'active' || item.status === 'blocked'),
+  )
+  if (holding) return { state: 'working', waiting: false }
+
+  // Nothing the wire contradicts, so whatever was last stated stands — which is `idle` for
+  // everyone until a person-state event exists.
+  return { state: recorded, waiting: false }
+}
+
 /** The header every conversation carries, whatever card sits under it (R6). */
 export interface ConversationHeader {
   id: string
@@ -129,6 +166,8 @@ export function conversationHeader(
   personId: string | null,
   roster: Record<string, RosterEntry>,
   people: Record<string, PersonView>,
+  tray: TrayEntry[] = [],
+  items: Record<string, { status: string; assignee: string }> = {},
 ): ConversationHeader | null {
   if (personId === null) return null
 
@@ -136,16 +175,22 @@ export function conversationHeader(
   const person = people[personId]
   if (entry === undefined || person === undefined) return null
 
+  const activity = personActivity(personId, tray, items, person.state)
+  const held = Object.entries(items).find(
+    ([, item]) => item.assignee === personId && item.status !== 'done',
+  )
+
   return {
     id: personId,
     name: entry.name,
     initials: entry.initials,
     title: entry.title,
     dept: entry.dept,
-    state: person.state,
-    stateLabel: STATE_LABEL[person.state] ?? person.state,
-    waiting: person.waiting,
-    itemId: person.itemId,
+    state: activity.state,
+    stateLabel: STATE_LABEL[activity.state] ?? activity.state,
+    waiting: activity.waiting,
+    // The wire's own `item` is as stale as its `state`, so the item is found the same way.
+    itemId: held?.[0] ?? person.itemId,
   }
 }
 

@@ -47,7 +47,13 @@ export interface ConversationProps {
 export function Conversation({ personId, onCommand }: ConversationProps) {
   const header = useRunStore(
     useShallow((state) =>
-      conversationHeader(personId, state.genesis?.roster ?? {}, state.people),
+      conversationHeader(
+        personId,
+        state.genesis?.roster ?? {},
+        state.people,
+        state.tray,
+        state.items,
+      ),
     ),
   )
   const stopped = useRunStore(
