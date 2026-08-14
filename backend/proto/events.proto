@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package companyos.events.v1;
+
+// The event envelope. Every append to the log is one of these.
+//
+// The field set is split into two groups, and which group a field is in is a
+// decision with consequences rather than a formatting choice:
+//
+//   hashed   — participates in replay identity (R11) and the state hash (R9).
+//              Two fresh runs from one seed must produce identical values here.
+//   metadata — excluded from both. Ingest time, correlation ids, producing host
+//              and store backend all differ between two runs of the same seed,
+//              so including any of them would make R11's comparison fail on
+//              runs that are in fact identical.
+//
+// R11 requires a new field to be explicitly classified before it can be added,
+// and the classification is asserted in `contracts/envelope.py` rather than
+// living only in this comment.
+message Envelope {
+  // --- hashed ------------------------------------------------------------
+
+  // Kernel-assigned, dense, gapless. Not a store autoincrement: the kernel knows
+  // the value before insert, and a Postgres sequence would introduce
+  // out-of-order-commit gaps that the corrupt-tail detector would misread as
+  // damage (R37). Read as the run's committed maximum plus one, inside the same
+  // transaction that appends the tick.
+  uint64 seq = 1;
+
+  // The quantum this event belongs to. There is no tick event per quantum —
+  // under a fixed quantum it would carry no information — so this is how an
+  // event is located in sim-time.
+  uint64 tick = 2;
+
+  EventKind kind = 3;
+
+  // Per event type, not per envelope. The envelope's own shape is versioned
+  // separately as ENVELOPE_SCHEMA_VERSION in contracts/envelope.py.
+  uint32 schema_ver = 4;
+
+  // Identity of the tuning constants and the multiplier composition order.
+  // Derived at import as a hash over both (R36), never hand-written: a forgotten
+  // manual bump would leave stale snapshots treated as current, and
+  // fold-from-snapshot would diverge from fold-from-zero while the guard
+  // reported a match.
+  string rules_ver = 5;
+
+  // Canonical encoding of the payload. Integers only — no float value may cross
+  // the log (R6). Opaque here on purpose: protobuf's wire format is not
+  // canonical for maps, so hashing proto bytes would make replay identity depend
+  // on a serializer detail. `contracts.canonical` owns the encoding.
+  bytes payload = 6;
+
+  // --- metadata (excluded from replay identity and the state hash) --------
+
+  string run_id = 100;
+
+  // The causation trace. Gateway-minted, carried by every event a command
+  // produces, which is what makes one identifier greppable across seven service
+  // streams. U2 is the last cheap moment to add this: retrofitting it means a
+  // schema version bump across every event type.
+  string command_id = 101;
+
+  // Answer events only. UUIDv5 over (run_id, seq of the RequestRaised event), so
+  // it is deterministic and run-scoped. A per-run counter would collide across a
+  // fork and let an answer intended for the parent be accepted by the child.
+  string request_id = 102;
+
+  // Store-side only, and never read by the fold.
+  string ingested_at = 103;
+}
+
+// A closed set. Decoding an unrecognised kind is an error, never a skip: an event
+// the fold silently ignored is a state divergence that announces itself only much
+// later, at the next day-boundary hash, with nothing pointing at the cause.
+//
+// UNSPECIFIED exists because proto3 requires a zero value. It is rejected on
+// decode, which also catches a default-constructed envelope.
+enum EventKind {
+  EVENT_KIND_UNSPECIFIED = 0;
+
+  // Run lifecycle and determinism.
+  GENESIS = 1;
+  DAY_CHECKPOINT = 2;
+  RATE_CHANGED = 3;
+  RUN_TERMINATED = 4;
+  RUN_FORKED = 5;
+  STORE_RECOVERED = 6;
+
+  // The pending-input contract.
+  REQUEST_RAISED = 10;
+  INPUT_RECEIVED = 11;
+  ANSWER_REJECTED = 12;
+
+  // The CEO, and decisions.
+  CEO_INPUT = 20;
+  CHECKPOINT_RAISED = 21;
+  DECISION_RESOLVED = 22;
+
+  // Work.
+  WORK_ASSIGNED = 30;
+  WORK_REASSIGNED = 31;
+  WORK_RETURNED_TO_BACKLOG = 32;
+  DELIVERABLE_PRODUCED = 33;
+  ITEM_UNLOCKED = 34;
+
+  // The economy.
+  METRICS_APPLIED = 40;
+  LOAD_CHANGED = 41;
+  HIRE_REQUESTED = 42;
+  HIRE_ARRIVED = 43;
+  HIRE_REFUSED = 44;
+  ATTRITION = 45;
+  DAILY_COSTS_APPLIED = 46;
+
+  // Commands whose outcome must survive a client reconnect (R30).
+  COMMAND_REJECTED = 50;
+}

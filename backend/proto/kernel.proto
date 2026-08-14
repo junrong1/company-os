@@ -1,0 +1,215 @@
+syntax = "proto3";
+
+package companyos.kernel.v1;
+
+import "events.proto";
+
+// The kernel's inbound surface. The gateway is its only caller.
+//
+// Note the direction of everything here: callers come *to* the kernel. The
+// kernel's own outbound calls — to the domain and agent services — are streams it
+// opens itself, defined in domain.proto and agents.proto. The kernel therefore has
+// no outbound dependency on any read-side service (R17), and nothing outside it
+// holds a write entrance to the log.
+service Kernel {
+  // Enqueued for a tick boundary; the response reports the outcome rather than
+  // mere acceptance. Validating and applying in separate steps would leave a race
+  // where a command validates against a state the tick then changes.
+  rpc SubmitCommand(Command) returns (CommandOutcome);
+
+  // R30: retry is expected behaviour for a call whose response the client may
+  // never have seen, so a reconnecting client resolves an in-flight command by
+  // key instead of retrying blind.
+  rpc CommandOutcomeByKey(OutcomeByKeyRequest) returns (CommandOutcome);
+
+  // Read-only, and with no effect on simulation state. Subscribing does not start
+  // a clock: tick-loop lifecycle follows the run's persisted rate (R18), because
+  // starting on subscribe would race two loops into existence on near-simultaneous
+  // subscribes.
+  rpc SubscribeEvents(SubscribeRequest) returns (stream events.v1.Envelope);
+
+  // Fold a log prefix to state.
+  rpc Fold(FoldRequest) returns (FoldResponse);
+
+  // Historical replay. Never re-issues an external call: it reads the logged
+  // answer (R3).
+  rpc Replay(ReplayRequest) returns (ReplayResponse);
+
+  // Fork at an arbitrary event index. Executed as a command enqueued to the
+  // parent's tick loop and committed at a tick boundary inside the lease-fenced
+  // transaction — the only path that satisfies both the lease and the
+  // sole-appender rule, which is why it is not a free-standing store operation.
+  rpc Fork(ForkRequest) returns (ForkResponse);
+
+  // R32: a run leaves the machine as a self-contained artifact.
+  rpc ExportRun(ExportRequest) returns (ExportResponse);
+
+  // Answers "why did the clock stop" without anyone reading a log. The
+  // highest-leverage diagnostic in the system.
+  rpc Diagnose(DiagnoseRequest) returns (DiagnoseResponse);
+}
+
+message Command {
+  string run_id = 1;
+
+  // Client-supplied, and deduplicated structurally rather than by a racing check
+  // (R30).
+  string idempotency_key = 2;
+
+  // Gateway-minted, and carried onto every event this command produces.
+  string command_id = 3;
+
+  CommandKind kind = 4;
+
+  // Canonical, integers only — the same encoding as an event payload.
+  bytes payload = 5;
+}
+
+enum CommandKind {
+  COMMAND_KIND_UNSPECIFIED = 0;
+  START_RUN = 1;
+  ASSIGN_WORK = 2;
+  REASSIGN_WORK = 3;
+  RETURN_TO_BACKLOG = 4;
+  RESOLVE_CHECKPOINT = 5;
+  SUBMIT_CEO_INPUT = 6;
+  SET_RATE = 7;
+  REQUEST_HIRE = 8;
+  FORK_RUN = 9;
+}
+
+message CommandOutcome {
+  Status status = 1;
+
+  // The tick the command was applied at, so a client can reconcile its own
+  // prediction against the tick the kernel actually used.
+  uint64 applied_tick = 2;
+
+  // Sequences of the events this command produced. Empty for a rejection, which
+  // is what "mutates nothing" means concretely.
+  repeated uint64 produced_seq = 3;
+
+  // Populated on rejection. A reason, not a code: "crosses a reporting line" is
+  // the sentence a client should be able to show.
+  string reason = 4;
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    APPLIED = 1;
+    REJECTED = 2;
+    // The command was already applied under this idempotency key. The outcome
+    // returned is the original one.
+    DUPLICATE = 3;
+    // A paused run has no tick boundary. Stated explicitly rather than leaving
+    // the request to hang.
+    QUEUED_RUN_PAUSED = 4;
+    RUN_TERMINATED = 5;
+    RUN_NOT_FOUND = 6;
+  }
+}
+
+message OutcomeByKeyRequest {
+  string run_id = 1;
+  string idempotency_key = 2;
+}
+
+message SubscribeRequest {
+  string run_id = 1;
+
+  // Resume is keyed on run *and* sequence: a fork shares sequence values with its
+  // parent, so a bare sequence is ambiguous (R31).
+  uint64 after_seq = 2;
+}
+
+// Whether a fold is at the live head is a parameter of the fold, not an implicit
+// property of the caller (R3). Re-issuing an unanswered external request is
+// permitted only at the live head — never during historical replay, fork
+// reconstruction, or a report fold.
+message FoldRequest {
+  string run_id = 1;
+  uint64 through_seq = 2;
+  bool at_live_head = 3;
+  bool allow_snapshot = 4;
+}
+
+message FoldResponse {
+  uint64 through_seq = 1;
+  uint64 tick = 2;
+  string rules_ver = 3;
+  // Hex digest over canonically serialised decoded state, with per-subsystem
+  // sub-hashes. Computed over decoded state, never over a store-returned JSON
+  // string: Postgres JSONB reorders keys where SQLite does not, so hashing
+  // serialised text would work locally and break on the first Postgres run.
+  string state_hash = 4;
+  map<string, string> subsystem_hashes = 5;
+  uint32 state_shape_ver = 6;
+  bytes state = 7;
+}
+
+message ReplayRequest {
+  string run_id = 1;
+  uint64 through_seq = 2;
+}
+
+message ReplayResponse {
+  bool matched = 1;
+  string state_hash = 2;
+  // On a rules-version mismatch the fold refuses and reports why (R10, R27); the
+  // guard lives in the fold so no consumer can omit it.
+  string refusal = 3;
+  uint64 diverged_at_seq = 4;
+  uint64 diverged_at_tick = 5;
+}
+
+message ForkRequest {
+  string parent_run_id = 1;
+  uint64 at_seq = 2;
+}
+
+message ForkResponse {
+  string child_run_id = 1;
+  uint64 copied_through_seq = 2;
+  // A prefix above the size bound is refused with a reason rather than blocking
+  // the single writer in one long transaction, which would surface as a phantom
+  // outage in the lag metric.
+  string refusal = 3;
+}
+
+message ExportRequest {
+  string run_id = 1;
+}
+
+message ExportResponse {
+  bytes artifact = 1;
+  string state_hash = 2;
+  string rules_ver = 3;
+  uint32 envelope_schema_ver = 4;
+}
+
+message DiagnoseRequest {
+  string run_id = 1;
+}
+
+// Everything needed to answer "why did the clock stop".
+message DiagnoseResponse {
+  int32 rate = 1;
+  uint64 rate_effective_tick = 2;
+  uint32 subscribers = 3;
+  string tick_task_state = 4;
+  string tick_task_exception = 5;
+  string last_wake_at = 6;
+  int64 sim_time_lag_ticks = 7;
+  double achieved_multiplier = 8;
+  repeated string unresolved_checkpoints = 9;
+  repeated OutstandingRequest outstanding_requests = 10;
+  bool store_reachable = 11;
+  bool lease_held = 12;
+}
+
+message OutstandingRequest {
+  string request_id = 1;
+  string owning_item = 2;
+  uint64 raised_at_tick = 3;
+  uint64 age_ticks = 4;
+  string service = 5;
+}

@@ -1,0 +1,70 @@
+syntax = "proto3";
+
+package companyos.domain.v1;
+
+// The metric and effect model, behind the origin R15 seam.
+//
+// Phase 1 ships the flat authored deltas the prototype already has; Phase 4
+// replaces the implementation without touching this contract.
+service DomainModel {
+  // Opened by the kernel, never by this service (R17). The kernel is the gRPC
+  // client here, which is what keeps the dependency one-directional: no service
+  // holds the kernel's address, and there is no inbound write entrance to a
+  // permanent log.
+  //
+  // A bidirectional stream rather than a unary call the kernel awaits, because a
+  // connection drop is then a *failure signal* rather than a timeout: every
+  // request outstanding on this stream is known-unanswered, which is exactly what
+  // recovery needs. A unary call would also put the outstanding-request registry
+  // in process memory, lost on restart — and R23 requires it to be a projection
+  // of the log.
+  rpc Consult(stream Consultation) returns (stream Effect);
+}
+
+message Consultation {
+  // UUIDv5 over (run_id, seq of the RequestRaised event). Deterministic and
+  // run-scoped, so a fork cannot accept an answer intended for its parent.
+  string request_id = 1;
+
+  string run_id = 2;
+
+  // The tick the request was raised at. The answer applies at the tick it
+  // carries, not at the tick it arrives.
+  uint64 raised_at_tick = 3;
+
+  // Consults happen at period boundaries, not per tick: demand modelling is
+  // naturally periodic, and a per-tick round trip would both stall the loop and
+  // flood the log.
+  uint64 period_index = 4;
+
+  // The synthetic period item this request is attached to. Every raised request
+  // names an owning item, because the whole failure story rests on stalling that
+  // item while the clock continues. This consult is company-scoped and owns no
+  // real item, so a late, rejected or absent answer defers only this period's
+  // metric application rather than advancing the day without it or stalling the
+  // clock.
+  string owning_item = 5;
+
+  // Integers only, as everywhere.
+  map<string, int64> metrics = 6;
+
+  // What the kernel believes the rules are. Bounds are part of the rules version,
+  // so an answer computed under different rules is detectable rather than
+  // silently applied.
+  string rules_ver = 7;
+}
+
+message Effect {
+  string request_id = 1;
+
+  // Deltas, not absolutes: the kernel owns state. Integers only.
+  map<string, int64> metric_deltas = 2;
+
+  // Echoed back so a mismatch against the kernel's rules version is caught before
+  // append rather than becoming a permanent logged fact.
+  string rules_ver = 3;
+
+  // Identifies what produced this answer. Phase 1 is a flat authored table;
+  // Phase 4 is a real demand model. The report names it.
+  string model_identity = 4;
+}

@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+package companyos.agents.v1;
+
+// Phase 2's agent layer. Phase 1 ships a stub resolver whose only job is to prove
+// the pending-input contract works before Phase 2 depends on it.
+service AgentResolver {
+  // Opened by the kernel (R17), same shape and for the same reasons as the domain
+  // consult stream.
+  rpc Resolve(stream Resolution) returns (stream Decision);
+}
+
+message Resolution {
+  string request_id = 1;
+  string run_id = 2;
+  uint64 raised_at_tick = 3;
+
+  // The item stalled by this request. In Phase 1 every decision point is
+  // human-resolved because no other resolver exists, so a stub answer here is
+  // exercising the boundary rather than making a decision.
+  string owning_item = 4;
+
+  string checkpoint_id = 5;
+
+  // The options the kernel considers valid. An answer outside this set is
+  // out-of-domain and is rejected and logged rather than clamped (R24): clamping
+  // would make behaviour depend on where the clamp sits, and would diverge live
+  // from replay if the two paths clamped differently.
+  repeated string permitted_options = 6;
+
+  string rules_ver = 7;
+}
+
+message Decision {
+  string request_id = 1;
+
+  string chosen_option = 2;
+
+  // R37: the contract is producer-agnostic. A resolution carries a resolver
+  // identity and never assumes human origin — which is what lets Phase 2 add an
+  // LLM resolver with no change to the advancement contract.
+  ResolverIdentity resolver = 3;
+
+  string rules_ver = 4;
+
+  // Phase 2 logs the prompt and model identifier as part of the input event
+  // (origin R3). Declared here so Phase 2 is additive rather than a contract
+  // change: an answer that carries provenance is the same shape whether the
+  // provenance is empty or not.
+  map<string, string> provenance = 5;
+}
+
+message ResolverIdentity {
+  Kind kind = 1;
+  // Free-form within a kind: a person id, or a model identifier.
+  string identity = 2;
+
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    HUMAN_IN_PERSON = 1;
+    HUMAN_FROM_TRAY = 2;
+    AGENT = 3;
+    // Phase 1's resolver. Named so the report can say a decision was not made by
+    // anyone, rather than presenting it as if it were.
+    STUB = 4;
+  }
+}
