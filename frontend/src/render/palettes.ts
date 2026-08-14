@@ -73,13 +73,30 @@ export const TOPS: string[][] = [["#3f6fd8","#2f55a8","#1f3a75"],["#2f9e78","#22
 export const PANTS: string[][] = [["#4a5a78","#39465e","#26303f"],["#6b5340","#544032","#372a20"],["#3f4654","#313743","#20242c"]]
 export const SHOES: string[][] = [["#4a3526","#2f2118"],["#3a3a42","#23232a"],["#5a3f2a","#38261a"]]
 
-/** Hand-set exceptions, where the derived palette read badly for a specific person. */
+/**
+ * The CEO's sprite id, matching the prototype's `drawSprite(S.ceo, 'you')`.
+ *
+ * Not on the roster: the CEO is the player, so they have no desk, no reporting line and no
+ * `PersonSpec`. Everything keyed by person id — the sheet cache, the palette map — still keys
+ * on this one, which is why it is a constant rather than a literal spelled in four places.
+ */
+export const CEO_ID = 'you'
+
+/**
+ * Hand-set exceptions, where the derived palette read badly for a specific person.
+ *
+ * The CEO's entry is not a legibility fix but R1: they wear the app's accent so they stay
+ * findable among ten staff at a glance. Deriving their palette from `idHash('you')` like
+ * everyone else would put them in whichever top the hash landed on, and the player would lose
+ * themselves in a crowd. Overriding the three top shades rather than adding pixel rows keeps
+ * the CEO on the same generated sheet as everyone else.
+ */
 export const PALETTE_OVERRIDE: Record<string, Record<string, string>> =
 {
-  "you": {
-    "t": "#3f6fd8",
-    "T": "#2f55a8",
-    "u": "#1f3a75"
+  [CEO_ID]: {
+    "t": "#57c3c2",
+    "T": "#3d9695",
+    "u": "#276665"
   }
 }
 

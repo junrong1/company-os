@@ -147,6 +147,28 @@ export interface PersonView {
   waiting: boolean
 }
 
+/**
+ * Where the wire says the CEO is.
+ *
+ * Distinct from where the client is *drawing* them. This is the authoritative side: seeded from
+ * the floor's spawn at genesis, replaced wholesale by a resync's snapshot, and corrected about
+ * once a sim-hour by the position echo. The predicted position the renderer draws lives in the
+ * stage, because a prediction is recomputed rather than read off an event, and the rule this
+ * module opens with is that nothing recomputed belongs in here.
+ */
+export interface CeoView {
+  xMilli: number
+  yMilli: number
+  facing: string
+}
+
+/** The kernel's own derived CEO position, as the last echo reported it. */
+export interface PositionEcho {
+  xMilli: number
+  yMilli: number
+  tick: bigint
+}
+
 /** One entry in the decision tray: an item stopped, waiting on the CEO. */
 export interface TrayEntry {
   itemId: string
@@ -206,6 +228,10 @@ export interface RunStore {
   tray: TrayEntry[]
   deliverables: DeliverableView[]
   terminal: { reason: string; tick: bigint } | null
+  /** Where the wire last said the CEO is. What the stage's prediction seeds from. */
+  ceo: CeoView
+  /** The last position echo, or `null` before one has arrived. Reconciled against, not drawn. */
+  ceoEcho: PositionEcho | null
   /** R33: the kernel's derived CEO position disagreed with the client's prediction. */
   diverged: boolean
 
@@ -240,6 +266,8 @@ function emptyRun(): Omit<
     tray: [],
     deliverables: [],
     terminal: null,
+    ceo: { xMilli: 0, yMilli: 0, facing: 'down' },
+    ceoEcho: null,
     diverged: false,
   }
 }
@@ -353,8 +381,16 @@ type Getter = () => RunStore
 
 function applyControl(set: Setter, get: Getter, frame: ControlFrame): void {
   if (frame.kind === 'POSITION_ECHO') {
-    // Compared against the client's own prediction by the renderer, which owns the
-    // predicted position. Recording the echo here keeps the comparison out of the store.
+    // Recorded, not applied. The comparison belongs to whoever owns the prediction — the
+    // stage — and writing the echo straight into `ceo` would make the drawn position jump
+    // backwards by up to a sim-hour of walking every time one arrived.
+    set({
+      ceoEcho: {
+        xMilli: toInt(frame.x_milli),
+        yMilli: toInt(frame.y_milli),
+        tick: toBig(frame.tick),
+      },
+    })
     return
   }
 
@@ -626,7 +662,16 @@ function readGenesis(payload: Record<string, unknown>): Partial<RunStore> {
     }
   }
 
-  return { genesis, items, people }
+  // The CEO spawns where the kernel spawned them (`CeoRuntime(x_milli=floor.spawn[0] * MILLI,
+  // ...)`), read off the floor the genesis payload carries rather than written down a second
+  // time here. Facing matches `CeoRuntime`'s default, for the same reason.
+  const ceo: CeoView = {
+    xMilli: genesis.floor.spawn[0] * 1000,
+    yMilli: genesis.floor.spawn[1] * 1000,
+    facing: 'down',
+  }
+
+  return { genesis, items, people, ceo }
 }
 
 function readDeliverable(record: Record<string, unknown>): DeliverableView {
@@ -717,6 +762,18 @@ function readSnapshot(
       }
     }
     patch.people = next
+  }
+
+  // The snapshot is `simcore.snapshot()`, whose `ceo` key carries the kernel's own derived
+  // position. This is what makes attaching to a run in progress put the CEO where they
+  // actually are rather than back at spawn.
+  const ceo = snapshot.ceo
+  if (isRecord(ceo)) {
+    patch.ceo = {
+      xMilli: toInt(ceo.x_milli),
+      yMilli: toInt(ceo.y_milli),
+      facing: toStr(ceo.facing, 'down'),
+    }
   }
 
   // A snapshot carries no tray of its own; it is rebuilt from the items that are blocked.
