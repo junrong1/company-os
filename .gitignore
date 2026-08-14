@@ -22,6 +22,9 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Local SQLite store. README calls this git-ignored; this is what makes that true.
+backend/var/
+
 # Environment / secrets
 .env
 .env.local
