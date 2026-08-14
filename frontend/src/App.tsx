@@ -22,6 +22,9 @@ import { Shell } from './ui/Shell'
  * Creation stays its own route rather than a command. The rule that no command brings a run
  * into being is what keeps a typo'd id from conjuring a simulation, and it is untouched here.
  */
+/** How long to wait for the gateway to create a run before saying it did not answer. */
+const CREATE_RUN_TIMEOUT_MS = 10_000
+
 export default function App() {
   const [runId, setRunId] = useState(() =>
     typeof window === 'undefined' ? null : runIdFromLocation(window.location.search),
@@ -57,7 +60,13 @@ export default function App() {
     setStarting(true)
     setError(null)
 
-    createRun()
+    // Bounded, unlike the status fetch beside it, which is cancelled by its effect's cleanup.
+    // Nothing cancels this one — a hung gateway would leave the button reading "Starting…"
+    // for as long as the page stayed open, with a reload the only way out.
+    const controller = new AbortController()
+    const timeout = window.setTimeout(() => controller.abort(), CREATE_RUN_TIMEOUT_MS)
+
+    createRun({}, controller.signal)
       .then((run) => {
         // Cleared before attaching, not after: the store still holds the finished run, and the
         // shell would render its terminal banner and its old floor over the new run until the
@@ -70,9 +79,18 @@ export default function App() {
       .catch((cause: unknown) => {
         // Reported rather than swallowed: a start button that does nothing leaves a page with
         // no other way to begin.
-        setError(cause instanceof Error ? cause.message : String(cause))
+        setError(
+          controller.signal.aborted
+            ? `the gateway did not answer within ${CREATE_RUN_TIMEOUT_MS / 1000}s`
+            : cause instanceof Error
+              ? cause.message
+              : String(cause),
+        )
       })
-      .finally(() => setStarting(false))
+      .finally(() => {
+        window.clearTimeout(timeout)
+        setStarting(false)
+      })
   }, [reset])
 
   if (runId !== null) return <Shell key={runId} runId={runId} onStartRun={start} />

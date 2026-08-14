@@ -701,7 +701,7 @@ function readGenesis(payload: Record<string, unknown>): Partial<RunStore> {
     decisionSupply: toInt(payload.decision_supply),
     rulesVer: toStr(payload.rules_ver),
     floor: payload.floor as FloorData,
-    roster: (payload.roster ?? {}) as Record<string, RosterEntry>,
+    roster: readRoster(payload.roster),
     catalog: Array.isArray(payload.catalog) ? (payload.catalog as CatalogEntry[]) : [],
     metricDefs: Array.isArray(payload.metric_defs) ? (payload.metric_defs as MetricDef[]) : [],
     load: { scale: toInt(loadDomain.scale, 1000), ceiling: toInt(loadDomain.ceiling, 1000) },
@@ -754,6 +754,35 @@ function readGenesis(payload: Record<string, unknown>): Partial<RunStore> {
   }
 
   return { genesis, items, people, ceo }
+}
+
+/**
+ * The roster, with the fields that arrived late defaulted rather than cast over.
+ *
+ * `name`, `initials` and `title` joined the genesis payload at schema version 3. A blanket cast
+ * would type an older payload as if it carried them and render `undefined` at the reader — and
+ * a run exported before the change is still readable through the report path, where the
+ * rules-version gate that rejects a live resync does not apply. Falling back to the id is worse
+ * than a name and much better than the word "undefined" where a person should be.
+ */
+function readRoster(value: unknown): Record<string, RosterEntry> {
+  if (!isRecord(value)) return {}
+
+  const roster: Record<string, RosterEntry> = {}
+  for (const [id, entry] of Object.entries(value)) {
+    if (!isRecord(entry)) continue
+    const seat = Array.isArray(entry.seat) ? entry.seat : [0, 0]
+    roster[id] = {
+      name: toStr(entry.name, id),
+      initials: toStr(entry.initials, id.slice(0, 2).toUpperCase()),
+      title: toStr(entry.title),
+      dept: toStr(entry.dept),
+      mgr: toStr(entry.mgr),
+      rank: toStr(entry.rank, 'staff'),
+      seat: [toInt(seat[0]), toInt(seat[1])],
+    }
+  }
+  return roster
 }
 
 function readDeliverable(record: Record<string, unknown>): DeliverableView {

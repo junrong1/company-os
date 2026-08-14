@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { type ControlFrame, useRunStore } from '../src/net/store'
-import { genesisFixture, genesisFrame } from './helpers/frames'
+import { genesisFixture, genesisFrame, metricsFrame } from './helpers/frames'
 
 /**
  * What the store believes about the CEO.
@@ -98,6 +98,47 @@ describe('the position echo', () => {
   it('is null until one arrives, so "no echo yet" and "echo at the origin" are different', () => {
     useRunStore.getState().apply(genesisFrame())
     expect(useRunStore.getState().ceoEcho).toBeNull()
+  })
+
+  it('advances the tick, because it is the only regular word the kernel says', () => {
+    // Events are appended only on ticks that produce one, and a measured run emits on about
+    // five ticks in twelve hundred. Without this the render clock has nothing to chase for
+    // hundreds of ticks at a stretch, and every command tagged a few ticks ahead of a stale
+    // tick lands in the kernel's past and is rejected.
+    useRunStore.getState().apply(genesisFrame())
+    expect(useRunStore.getState().tick).toBe(0n)
+
+    useRunStore.getState().apply({
+      kind: 'POSITION_ECHO',
+      run_id: 'run-1',
+      tick: 600,
+      x_milli: 1000,
+      y_milli: 2000,
+    })
+
+    expect(useRunStore.getState().tick).toBe(600n)
+  })
+
+  it('never rewinds the tick, since an echo can arrive behind its own batch', () => {
+    // The echo is published from inside the kernel's batch while that batch's events are
+    // published after it, so an echo can describe a tick the client has already passed.
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(
+      metricsFrame({ seq: 2, tick: 1080 }),
+    )
+    expect(useRunStore.getState().tick).toBe(1080n)
+
+    useRunStore.getState().apply({
+      kind: 'POSITION_ECHO',
+      run_id: 'run-1',
+      tick: 600,
+      x_milli: 1000,
+      y_milli: 2000,
+    })
+
+    expect(useRunStore.getState().tick).toBe(1080n)
+    // The position is still recorded — only the clock refuses to go backwards.
+    expect(useRunStore.getState().ceoEcho?.tick).toBe(600n)
   })
 
   it('clears on reset, so a second run does not reconcile against the first run position', () => {

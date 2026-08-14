@@ -53,12 +53,20 @@ like a crashed container and is actually a service that was never selected.
 
 **What this gives you today.** The seven services start, each answers a structured
 status endpoint, and the client renders a run: the office, the HUD, the decision
-tray, the DAG, and the chain strip.
+tray, the DAG, the chain strip, and the conversation panel that opens whenever the
+CEO stands next to someone. WASD or the arrow keys walk the CEO around the floor.
 
-**The client needs a run to attach to.** Open `?run=<id>` — for example
-<http://127.0.0.1:8790/?run=demo> — and the client streams that run. Without the
-parameter it shows the gateway's own status report instead, which is the useful
-thing to see when there is nothing to render.
+**The client can start its own run.** Open the page and press *Start a run*; the id
+it creates goes into the address bar, so a reload re-attaches to that run rather
+than starting a second one. Opening `?run=<id>` directly — for example
+<http://127.0.0.1:8790/?run=demo> — attaches to an existing run instead. When the
+gateway cannot be reached, the page falls back to its status report, which is the
+useful thing to see when there is nothing to render.
+
+**Staff do not move on screen yet.** The kernel walks them — a director really does
+carry work to a specialist's desk — but no event carries a person's position or
+path, so the client draws everyone at their seat. Only the CEO moves. See
+`docs/2026-08-14-phase-1-coverage-audit.md`.
 
 **Compose cannot reach the kernel yet, and that is the remaining gap.** The gateway
 talks to a `KernelClient`, and only one implementation exists — the in-process one

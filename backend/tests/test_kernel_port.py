@@ -1226,3 +1226,82 @@ def test_answered_questions_survive_a_snapshot(run: sim.State) -> None:
     payload = _ask(restored, "stf_ap", "why?")
     assert payload["first_time"] is False
     assert restored.metrics["visibility"] == visibility
+
+
+def test_asking_a_hire_is_rejected_and_mutates_nothing(run: sim.State) -> None:
+    """A command must be total before it is effectful.
+
+    `state.people` contains arrived hires, who are not on the authored roster and have no
+    script. Looking their answer up *after* charging Visibility raised a bare KeyError past
+    the point where CommandRejected is caught, leaving state changed with no event to explain
+    it — a state hash that moves with nothing in the log is replay identity broken silently.
+    """
+    run.people["hire_sales_1"] = sim.PersonRuntime(
+        id="hire_sales_1", pos=(5, 5), seat=(5, 5)
+    )
+    before = hashing.state_hash(sim.snapshot(run)).overall
+
+    with pytest.raises(sim.CommandRejected):
+        sim.ask_person(run, "hire_sales_1", "why does it work that way?")
+
+    assert hashing.state_hash(sim.snapshot(run)).overall == before
+    assert run.people["hire_sales_1"].answered == []
+
+
+def test_no_command_that_rejects_may_leave_state_changed(run: sim.State) -> None:
+    """The general form of the bug above, applied across the commands that can reject.
+
+    Written as a sweep rather than one case each: the failure was an *ordering* mistake, and
+    ordering mistakes are made once per command by whoever writes the next one.
+    """
+    run.people["hire_sales_1"] = sim.PersonRuntime(
+        id="hire_sales_1", pos=(5, 5), seat=(5, 5)
+    )
+
+    attempts = [
+        lambda: sim.ask_person(run, "hire_sales_1", "why?"),
+        lambda: sim.ask_person(run, "nobody", "why?"),
+        lambda: sim.ask_person(run, "stf_ap", "x" * (sim.MAX_QUESTION_CHARS + 1)),
+        lambda: sim.assign_direct(run, "wi_ap_map", "nobody"),
+        lambda: sim.resolve_checkpoint(run, "wi_ap_map", 0, 0, in_person=True),
+        lambda: sim.submit_ceo_input(run, sim.INPUT_LEFT, at_tick=run.tick),
+        lambda: sim.submit_ceo_input(
+            run, sim.INPUT_LEFT, at_tick=run.tick + sim.MAX_INPUT_LEAD_TICKS + 1
+        ),
+    ]
+
+    for attempt in attempts:
+        before = hashing.state_hash(sim.snapshot(run)).overall
+        with pytest.raises(sim.CommandRejected):
+            attempt()
+        assert hashing.state_hash(sim.snapshot(run)).overall == before
+
+
+def test_an_overlong_question_is_rejected(run: sim.State) -> None:
+    """The text is written verbatim into an append-only log and copied by every fork."""
+    ok = "why " * 10
+    assert len(ok) <= sim.MAX_QUESTION_CHARS
+    sim.ask_person(run, "stf_ap", ok)
+
+    with pytest.raises(sim.CommandRejected, match="the limit is"):
+        sim.ask_person(run, "stf_ap", "why " + "x" * sim.MAX_QUESTION_CHARS)
+
+
+def test_an_input_tagged_absurdly_far_ahead_is_rejected(run: sim.State) -> None:
+    """`ceo_inputs` is hashed state scanned every tick; pruning only drops what the clock passed."""
+    sim.submit_ceo_input(run, sim.INPUT_LEFT, at_tick=run.tick + sim.MAX_INPUT_LEAD_TICKS)
+
+    with pytest.raises(sim.CommandRejected, match="ticks ahead"):
+        sim.submit_ceo_input(
+            run, sim.INPUT_LEFT, at_tick=run.tick + sim.MAX_INPUT_LEAD_TICKS + 1
+        )
+
+
+def test_the_held_input_dict_stays_bounded_under_a_flood(run: sim.State) -> None:
+    for offset in range(1, 200):
+        sim.submit_ceo_input(run, sim.INPUT_LEFT, at_tick=run.tick + offset)
+
+    advance(run, 250)
+
+    # Everything the clock has passed is gone; nothing is scheduled beyond it.
+    assert len(run.ceo_inputs) == 1

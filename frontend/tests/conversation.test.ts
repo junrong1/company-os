@@ -374,7 +374,9 @@ describe('deciding in person', () => {
 
   it('picks the decision belonging to this person, not the first one waiting', () => {
     const catalogue = catalogFixture().filter((entry) => entry.checkpoints.length > 0)
-    if (catalogue.length < 2) return
+    // Loud rather than skipped, matching the fixture helper's own rule: a test that returns
+    // early when its precondition lapses reports green while checking nothing.
+    expect(catalogue.length).toBeGreaterThanOrEqual(2)
 
     useRunStore.getState().apply(genesisFrame())
     useRunStore
@@ -594,6 +596,8 @@ describe('handing work over in person', () => {
   it('bypasses nobody when the item wants a director outright', () => {
     const roster = rosterOf()
     const entry = catalogFixture().find((candidate) => (roster[candidate.want]?.mgr ?? '') === '')
+    // Loud rather than skipped: without an item wanting a director, this test asserts nothing.
+    expect(entry, 'no authored item wants a director outright').toBeDefined()
     if (entry === undefined) return
 
     const offer = assignableWork(entry.want, roster, backlog(), catalogFixture()).find(

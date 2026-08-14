@@ -226,11 +226,16 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
         newIdempotencyKey('ceo'),
       )
         .then((outcome) => {
-          // Movement swallows its errors on purpose — a dropped input is a missed step, and
-          // the next change re-states the whole held direction. A paused run is the one
-          // exception: it rejects *every* command, so that same silence would make the pause
-          // button read as a broken build rather than as a stopped world.
-          if (outcome.status === 'run_paused') setRejection(outcome.reason)
+          // Movement swallows *transport* errors on purpose — a dropped input is a missed
+          // step, and the next change re-states the whole held direction. A refusal is not
+          // that. The prediction has already applied this input locally, so a kernel that
+          // declined it leaves the two disagreeing until the next echo up to a sim-hour
+          // later, and the only thing the player would see is a divergence banner with no
+          // cause. Paused is the common case; a tick that has already passed is the one that
+          // would otherwise be a mystery.
+          if (outcome.produced_seq.length === 0 && outcome.reason !== '') {
+            setRejection(outcome.reason)
+          }
         })
         .catch(() => {
           // A dropped input is a missed step, not a broken client. The next change re-states

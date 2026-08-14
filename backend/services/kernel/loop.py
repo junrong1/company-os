@@ -641,8 +641,13 @@ class KernelRuntime:
                 run.state, int(decoded["bitmask"]), int(decoded["at_tick"])
             ),
             kernel_pb2.REQUEST_HIRE: lambda: sim.request_hire(run.state, decoded["director"]),
+            # `.get` rather than `[...]`: this is the one command carrying free-form text a
+            # person typed, so a payload missing a key is a client mistake to answer with a
+            # reason. A KeyError here would escape as a 500 — nothing above this catches
+            # anything but `CommandRejected` — and `ask_person` rejects an empty person id
+            # with a sentence of its own.
             kernel_pb2.ASK_PERSON: lambda: sim.ask_person(
-                run.state, decoded["person"], str(decoded["question"])
+                run.state, str(decoded.get("person", "")), str(decoded.get("question", ""))
             ),
         }
 

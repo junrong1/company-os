@@ -10,7 +10,12 @@
 import type { Actor, Facing } from '../render/actors'
 import { CEO_ID } from '../render/palettes'
 import { type FloorData, buildGrid, walkable } from '../render/floor'
-import { SLEW_THRESHOLD_TICKS } from '../render/clock'
+import {
+  SLEW_THRESHOLD_TICKS,
+  TICKS_PER_WALL_MS_DENOMINATOR,
+  TICKS_PER_WALL_MS_NUMERATOR,
+  positionDiverged,
+} from '../render/clock'
 import {
   CEO_LOOKAHEAD_MILLI,
   INPUT_DOWN,
@@ -40,10 +45,6 @@ export type Stage = 'office' | 'dag'
  * and keeps the felt latency the same at every rate.
  */
 export const INPUT_LEAD_MS = 150n
-
-/** Sim-ticks per wall millisecond at the base rate, as an exact rational. */
-const TICKS_PER_WALL_MS_NUMERATOR = 36n
-const TICKS_PER_WALL_MS_DENOMINATOR = 1000n
 
 /** Never tag an input for the very next tick, however slowly the clock is running. */
 export const MIN_INPUT_LEAD_TICKS = 4n
@@ -324,13 +325,19 @@ export class CeoPrediction {
     // the history. There is no disagreement to report, because there is no second opinion.
     if (predicted === undefined) return false
 
-    const echoX = BigInt(Math.trunc(echo.xMilli))
-    const echoY = BigInt(Math.trunc(echo.yMilli))
-    if (predicted[0] === echoX && predicted[1] === echoY) return false
+    const echoed = {
+      xMilli: BigInt(Math.trunc(echo.xMilli)),
+      yMilli: BigInt(Math.trunc(echo.yMilli)),
+    }
+    // `positionDiverged` is R33's own comparison, written for exactly this call and until now
+    // reachable only from its tests. Reimplementing the equality here would have been a second
+    // answer to "do these disagree", and the tolerance argument is the seam through which that
+    // question can later be answered differently without touching this method.
+    if (!positionDiverged({ xMilli: predicted[0], yMilli: predicted[1] }, echoed)) return false
 
     const resumeAt = this.appliedThrough
-    this.xMilli = echoX
-    this.yMilli = echoY
+    this.xMilli = echoed.xMilli
+    this.yMilli = echoed.yMilli
     this.history.clear()
     this.appliedThrough = echo.tick
     // Re-walk what the player did since the echoed tick, so the snap corrects the error

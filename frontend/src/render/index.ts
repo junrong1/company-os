@@ -238,7 +238,11 @@ export class Renderer {
       }
     }
 
-    const cache = this.sheets
+    // No floor means no world to stand anyone in. Genesis lands in the store synchronously
+    // from the socket handler, but React only rebuilds this renderer *after* the next paint —
+    // so without this guard the frame in between draws actors onto a blank, unsized canvas,
+    // and every run opens with the CEO flashing over nothing.
+    const cache = this.floor === undefined ? null : this.sheets
     if (cache !== null) {
       for (const actor of this.actors()) {
         const sheet = characterSheet(actor.id, cache, this.makeCanvas)

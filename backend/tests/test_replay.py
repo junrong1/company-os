@@ -780,3 +780,33 @@ def test_a_second_genesis_is_refused() -> None:
 
     with pytest.raises(folder.UnknownEventInFold, match="GENESIS"):
         folder.fold(duplicated, at_live_head=False)
+
+
+def test_a_snapshot_written_before_phase_2_still_restores() -> None:
+    """The backward-compatible defaults are only worth having if they are exercised.
+
+    `answered` and `announced_unlocks` are read with `.get(..., [])` so a snapshot written
+    before those fields existed still restores. Every other round-trip test goes through
+    `to_wire`, which always writes them — so the fallbacks were never actually taken.
+    """
+    from simcore import snapshot as snap
+
+    recorder = Recorder()
+    recorder.record(sim.ask_person(recorder.state, "stf_ap", "why?"))
+    recorder.advance(3)
+
+    wire = snap.to_wire(recorder.state)
+
+    # Strip the fields back out, exactly as a snapshot from before this change would lack them.
+    for person in wire["people"].values():
+        del person["answered"]
+    del wire["announced_unlocks"]
+
+    restored = snap.from_wire(wire)
+
+    assert restored.people["stf_ap"].answered == []
+    assert restored.announced_unlocks == []
+    # And the restored state is usable rather than merely constructed: the question now reads
+    # as unasked, which is the honest consequence of a snapshot that never recorded it.
+    payload = sim.ask_person(restored, "stf_ap", "why?")[0].payload
+    assert payload["first_time"] is True

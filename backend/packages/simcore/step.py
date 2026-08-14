@@ -76,6 +76,25 @@ INPUT_UP = 4
 INPUT_DOWN = 8
 INPUT_MASK = INPUT_LEFT | INPUT_RIGHT | INPUT_UP | INPUT_DOWN
 
+#: How far ahead of the current tick an input may be tagged.
+#:
+#: The client tags a wall-time budget's worth, which is about sixteen ticks at the fastest
+#: rate; a sim-day is absurdly generous by comparison. The bound exists because `ceo_inputs` is
+#: hashed state that is scanned every tick: without it, inputs tagged for arbitrarily distant
+#: ticks accumulate forever — the pruning only drops entries the clock has *passed* — and every
+#: tick of the run pays for them.
+#:
+#: A guard rather than tuning, so it stays out of TUNING and out of the rules version. Changing
+#: a limit on what may be submitted does not change what a recorded run means.
+MAX_INPUT_LEAD_TICKS = simtime.TICKS_PER_SIM_DAY
+
+#: How long a typed question may be.
+#:
+#: The text is written verbatim into an append-only log, broadcast to every subscriber,
+#: re-validated on every read and copied by every fork, so it is worth bounding where it is
+#: priced rather than trusting the browser. Generous for a sentence someone types.
+MAX_QUESTION_CHARS = 500
+
 # --- arrival intents ------------------------------------------------------
 
 ARRIVE_NONE = ""
@@ -1399,6 +1418,13 @@ def submit_ceo_input(state: State, bitmask: int, at_tick: int) -> list[Emitted]:
         raise CommandRejected(
             f"input is for tick {at_tick}, which is not in the future (now {state.tick})"
         )
+    if at_tick > state.tick + MAX_INPUT_LEAD_TICKS:
+        # Pruning only drops inputs the clock has passed, so an unbounded lead would let the
+        # scanned-every-tick dict grow for the life of the run.
+        raise CommandRejected(
+            f"input is for tick {at_tick}, more than {MAX_INPUT_LEAD_TICKS} ticks ahead "
+            f"(now {state.tick})"
+        )
 
     state.ceo_inputs[at_tick] = bitmask
     return [
@@ -1422,6 +1448,26 @@ def ask_person(state: State, person_id: str, question: str) -> list[Emitted]:
     what this command exists to be.
     """
     person = state.person(person_id)
+
+    if len(question) > MAX_QUESTION_CHARS:
+        raise CommandRejected(
+            f"that question is {len(question)} characters; the limit is {MAX_QUESTION_CHARS}"
+        )
+
+    # Everything that can fail is resolved *before* anything is mutated, and this ordering is
+    # the whole point rather than a style preference. `state.people` contains arrived hires,
+    # who are not on the authored roster and have no script — so looking their answer up after
+    # charging Visibility raises a bare KeyError, past the point where `CommandRejected` is
+    # caught, leaving state changed with no event to explain it. A state hash that moves with
+    # nothing in the log is replay identity broken silently, which is the one failure this
+    # kernel is built to prevent.
+    try:
+        deflection = roster.deflection_for(person_id)
+    except KeyError:
+        raise CommandRejected(
+            f"{person_id} joined after the run started and has nothing scripted to say yet"
+        ) from None
+
     intent = roster.match_intent(question)
 
     if intent is None:
@@ -1435,7 +1481,7 @@ def ask_person(state: State, person_id: str, question: str) -> list[Emitted]:
                     "matched": False,
                     "question": "",
                     "label": "",
-                    "answer": roster.deflection_for(person_id),
+                    "answer": deflection,
                     "tacit": False,
                     "first_time": False,
                     "deltas": {},
@@ -1443,6 +1489,9 @@ def ask_person(state: State, person_id: str, question: str) -> list[Emitted]:
                 },
             )
         ]
+
+    # Resolved before the mutations below, for the reason stated above.
+    answer = roster.answer_for(person_id, intent.slot)
 
     # First time for *this person and this question*. Someone else having answered "why" costs
     # nothing here — the knowledge is theirs, not the company's.
@@ -1471,7 +1520,7 @@ def ask_person(state: State, person_id: str, question: str) -> list[Emitted]:
                 "matched": True,
                 "question": intent.slot,
                 "label": intent.label,
-                "answer": roster.answer_for(person_id, intent.slot),
+                "answer": answer,
                 "tacit": intent.tacit,
                 "first_time": first_time,
                 "deltas": effective,

@@ -13,7 +13,7 @@ import {
   INPUT_RIGHT,
   INPUT_UP,
 } from '../src/render/interpolate'
-import { RenderClock } from '../src/render/clock'
+import { RenderClock, SLEW_THRESHOLD_TICKS } from '../src/render/clock'
 import {
   CeoPrediction,
   MIN_INPUT_LEAD_TICKS,
@@ -279,37 +279,85 @@ describe('predicting CEO movement', () => {
     expect(travelled(prediction, spawn)).toBe(Number(CEO_STRAIGHT_MILLI_PER_TICK))
   })
 
+  it('resets rather than walking when the gap is too large to chase', () => {
+    // A backgrounded tab or a resync leaves a gap of thousands of ticks. Replaying them would
+    // burn a frame to arrive somewhere the next echo corrects anyway, so past the render
+    // clock's own slew threshold this is a reset. The prediction stays put and the history is
+    // dropped, so no echo is later checked against a tick from before the jump.
+    const { prediction, open, spawn } = atSpawn()
+    prediction.hold(open, 1n)
+    prediction.advanceTo(5n)
+    const beforeJump = travelled(prediction, spawn)
+    expect(beforeJump).toBeGreaterThan(0)
+
+    prediction.advanceTo(5n + SLEW_THRESHOLD_TICKS + 1n)
+
+    expect(travelled(prediction, spawn)).toBe(beforeJump)
+    // History dropped: an echo for a tick before the jump has no second opinion to compare to.
+    expect(prediction.reconcile({ xMilli: 0, yMilli: 0, tick: 5n })).toBe(false)
+  })
+
+  it('walks the whole gap when it is within the threshold', () => {
+    const { prediction, open, spawn, clearTicks } = atSpawn()
+    const gap = BigInt(Math.min(clearTicks, Number(SLEW_THRESHOLD_TICKS) - 1))
+
+    prediction.hold(open, 1n)
+    prediction.advanceTo(gap)
+
+    expect(travelled(prediction, spawn)).toBe(
+      Number(gap) * Number(CEO_STRAIGHT_MILLI_PER_TICK),
+    )
+  })
+
   it('uses the diagonal step, so diagonals are not faster than straight lines', () => {
     const floor = floorFixture()
     const grid = buildGrid(floor)
-    const [sx, sy] = floor.spawn
 
-    // Find an open diagonal from spawn; skip the claim rather than assert a false one if the
-    // generated floor offers none.
+    // Searched across the whole floor rather than assumed at spawn. Requiring an open
+    // diagonal *at spawn* is what made the earlier version of this test skip itself silently
+    // on the shipped floor — it asserted nothing at all and reported green.
     const diagonals: Array<[number, number, number]> = [
       [INPUT_LEFT | INPUT_UP, -1, -1],
       [INPUT_LEFT | INPUT_DOWN, -1, 1],
       [INPUT_RIGHT | INPUT_UP, 1, -1],
       [INPUT_RIGHT | INPUT_DOWN, 1, 1],
     ]
-    const found = diagonals.find(
-      ([, dx, dy]) =>
-        walkable(grid, sx + dx, sy + dy) &&
-        walkable(grid, sx + dx * 2, sy + dy * 2) &&
-        walkable(grid, sx + dx, sy) &&
-        walkable(grid, sx, sy + dy),
-    )
-    if (found === undefined) return
+
+    let found: { mask: number; x: number; y: number } | null = null
+    for (let y = 1; y < floor.rows - 1 && found === null; y += 1) {
+      for (let x = 1; x < floor.cols - 1 && found === null; x += 1) {
+        if (!walkable(grid, x, y)) continue
+        for (const [mask, dx, dy] of diagonals) {
+          // Both neighbours open as well as the diagonal itself: the kernel tests each axis
+          // separately, so a diagonal into a corner moves on one axis only.
+          if (
+            walkable(grid, x + dx, y + dy) &&
+            walkable(grid, x + dx, y) &&
+            walkable(grid, x, y + dy) &&
+            walkable(grid, x + dx * 2, y + dy * 2)
+          ) {
+            found = { mask, x, y }
+            break
+          }
+        }
+      }
+    }
+
+    expect(found, 'the floor has no open diagonal anywhere').not.toBeNull()
+    if (found === null) return
 
     const prediction = new CeoPrediction()
     prediction.useFloor(floor)
-    prediction.seed({ xMilli: sx * 1000, yMilli: sy * 1000, facing: 'down' }, 0n)
-    prediction.hold(found[0], 1n)
+    prediction.seed(
+      { xMilli: found.x * 1000, yMilli: found.y * 1000, facing: 'down' },
+      0n,
+    )
+    prediction.hold(found.mask, 1n)
     prediction.advanceTo(1n)
 
     const pose = prediction.pose()
-    expect(Math.abs(pose.xMilli - sx * 1000)).toBe(Number(CEO_DIAGONAL_MILLI_PER_TICK))
-    expect(Math.abs(pose.yMilli - sy * 1000)).toBe(Number(CEO_DIAGONAL_MILLI_PER_TICK))
+    expect(Math.abs(pose.xMilli - found.x * 1000)).toBe(Number(CEO_DIAGONAL_MILLI_PER_TICK))
+    expect(Math.abs(pose.yMilli - found.y * 1000)).toBe(Number(CEO_DIAGONAL_MILLI_PER_TICK))
     expect(CEO_DIAGONAL_MILLI_PER_TICK).toBeLessThan(CEO_STRAIGHT_MILLI_PER_TICK)
   })
 

@@ -243,3 +243,35 @@ print("ok")
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok"
+
+
+def test_every_gateway_command_name_maps_to_a_kernel_enum_and_a_handler() -> None:
+    """The string the gateway speaks and the enum the kernel dispatches on must agree.
+
+    The gateway takes a command kind as a *string* off REST; the kernel dispatches on a proto
+    *enum*; and a third table maps between them. Nothing type-checks that chain, so a command
+    added to two of the three tables reaches production and fails only when someone sends it —
+    which is exactly the shape of failure the ask command could have had. Asserted as a sweep
+    rather than per command, because the mistake is made once per command by whoever adds the
+    next one.
+    """
+    import sys
+
+    sys.path.insert(0, str(BACKEND))
+    from contracts.grpc import kernel_pb2
+
+    from single_process import COMMAND_KINDS
+
+    dispatch_source = (BACKEND / "services" / "kernel" / "loop.py").read_text(encoding="utf-8")
+
+    for wire_name, proto_name in COMMAND_KINDS.items():
+        assert hasattr(kernel_pb2, proto_name), (
+            f"{wire_name!r} maps to {proto_name!r}, which is not in the kernel proto"
+        )
+        # `set_rate` is handled before the dispatch table, on purpose: it is the one command
+        # that does not wait for a tick boundary, because it is what lifts a pause.
+        if wire_name == "set_rate":
+            continue
+        assert f"kernel_pb2.{proto_name}" in dispatch_source, (
+            f"{wire_name!r} maps to {proto_name!r}, which no handler in loop.py dispatches"
+        )
