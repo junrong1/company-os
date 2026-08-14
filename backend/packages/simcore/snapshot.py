@@ -80,6 +80,7 @@ def to_wire(state: sim.State) -> dict[str, Any]:
             request_id: hire.to_state() for request_id, hire in state.hires.items()
         },
         "departed": list(state.departed),
+        "announced_unlocks": sorted(state.announced_unlocks),
         # U8's lifecycle. Caught by the round-trip guard below rather than by review, for the
         # third time — which is the argument for a snapshot that has to reproduce its own hash.
         "horizon_tick": state.horizon_tick,
@@ -172,6 +173,10 @@ def from_wire(wire: dict[str, Any]) -> sim.State:
             arrive=recorded["arrive"],
             arrive_item=recorded["arrive_item"],
             bypassed_director=bool(recorded["bypassed_director"]),
+            # Sorted on the way back in as well as on the way out: a snapshot written before
+            # this field existed has none, and a reload must not be the thing that decides
+            # whether a repeat question is free.
+            answered=sorted(recorded.get("answered", [])),
         )
 
     for item_id, recorded in wire["items"].items():
@@ -224,6 +229,7 @@ def from_wire(wire: dict[str, Any]) -> sim.State:
         for request_id, recorded in wire["hires"].items()
     }
     state.departed = list(wire["departed"])
+    state.announced_unlocks = sorted(wire.get("announced_unlocks", []))
     from simcore import pending as pend
 
     state.pending = {

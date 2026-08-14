@@ -160,6 +160,10 @@ TUNING: dict[str, int] = {
     "director_rate_denominator": 5,
     "meeting_sim_hours": 2,
     "visit_meeting_progress_threshold_pct": 20,
+    # What the first tacit answer from a person is worth. Every metric number in this product
+    # is authored tuning rather than a literal at its call site, so the ask mechanic's gain
+    # belongs here — which is also why adding it moves RULES_VERSION.
+    "visibility_per_tacit_answer": 2,
 }
 
 

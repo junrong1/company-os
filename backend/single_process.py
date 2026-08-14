@@ -60,6 +60,7 @@ COMMAND_KINDS = {
     "submit_ceo_input": "SUBMIT_CEO_INPUT",
     "set_rate": "SET_RATE",
     "request_hire": "REQUEST_HIRE",
+    "ask_person": "ASK_PERSON",
 }
 
 

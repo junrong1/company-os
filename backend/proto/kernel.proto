@@ -76,6 +76,10 @@ enum CommandKind {
   SET_RATE = 7;
   REQUEST_HIRE = 8;
   FORK_RUN = 9;
+
+  // Ask a person one of the four questions. The kernel matches the typed text to an
+  // intent, because it is the side that prices the answer.
+  ASK_PERSON = 10;
 }
 
 message CommandOutcome {

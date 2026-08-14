@@ -87,6 +87,10 @@ INPUT_KINDS = frozenset(
         # U7's commands: the CEO shedding load, and asking for a hire.
         EventKind.WORK_RETURNED_TO_BACKLOG,
         EventKind.HIRE_REQUESTED,
+        # Phase 2's command. Re-issued from the question rather than folded from the answer, so
+        # the Visibility trajectory is reproduced by the rule that priced it and not by the
+        # number the log happens to carry.
+        EventKind.QUESTION_ANSWERED,
     }
 )
 
@@ -381,6 +385,13 @@ def _apply_input(state: sim.State, envelope: Envelope) -> None:
             int(payload["option_index"]),
             in_person=bool(payload["in_person"]),
         )
+        return
+
+    if kind is EventKind.QUESTION_ANSWERED:
+        # Re-issued as the command, not folded from the payload. Replaying the *answer* would
+        # let a log disagree with the roster it was produced from; replaying the *question*
+        # reproduces the Visibility trajectory from the same rule that priced it originally.
+        sim.ask_person(state, payload["person"], str(payload["asked"]))
         return
 
     if kind is EventKind.RATE_CHANGED:

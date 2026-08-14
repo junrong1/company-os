@@ -641,6 +641,9 @@ class KernelRuntime:
                 run.state, int(decoded["bitmask"]), int(decoded["at_tick"])
             ),
             kernel_pb2.REQUEST_HIRE: lambda: sim.request_hire(run.state, decoded["director"]),
+            kernel_pb2.ASK_PERSON: lambda: sim.ask_person(
+                run.state, decoded["person"], str(decoded["question"])
+            ),
         }
 
         handler = dispatch.get(kind)

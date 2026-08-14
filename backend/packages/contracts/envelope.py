@@ -62,6 +62,7 @@ class EventKind(IntEnum):
     CEO_INPUT = 20
     CHECKPOINT_RAISED = 21
     DECISION_RESOLVED = 22
+    QUESTION_ANSWERED = 23
 
     # Work.
     WORK_ASSIGNED = 30
@@ -113,6 +114,11 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     # anybody has stopped at anything.
     EventKind.CHECKPOINT_RAISED: 3,  # U4
     EventKind.DECISION_RESOLVED: 2,  # U4
+    # The answer text rides on the event rather than being re-derived by readers. Every other
+    # scripted line in this system is re-derived from state — the report rebuilds checkpoint
+    # tacit lines that way — but a *generated* answer cannot be, so storing it now is what
+    # keeps the log's shape unchanged when a hearing API replaces the roster script.
+    EventKind.QUESTION_ANSWERED: 1,  # Phase 2
     EventKind.WORK_ASSIGNED: 2,  # U4
     EventKind.WORK_REASSIGNED: 2,  # U4
     EventKind.WORK_RETURNED_TO_BACKLOG: 2,  # U7

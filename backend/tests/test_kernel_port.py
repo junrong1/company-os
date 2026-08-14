@@ -18,6 +18,7 @@ import pytest
 from simcore import hashing
 from simcore import items as work
 from simcore import people as roster
+from simcore import rates
 from simcore import step as sim
 from simcore import time as simtime
 from simcore.world import find_path, plan_floor, walkable
@@ -1036,3 +1037,192 @@ def test_a_delivered_item_reports_its_final_effort(run: sim.State) -> None:
     spec = work.spec("wi_ap_map")
     assert produced[0].payload["done_units"] >= spec.effort_units
     assert produced[0].payload["item_status"] == sim.STATUS_DONE
+
+
+# =========================================================================
+# Asking, and what an answer is worth
+# =========================================================================
+
+
+def _ask(state: sim.State, person_id: str, question: str) -> dict:
+    """Ask, and return the QUESTION_ANSWERED payload."""
+    events = sim.ask_person(state, person_id, question)
+    answered = [e for e in events if e.kind.name == "QUESTION_ANSWERED"]
+    assert len(answered) == 1
+    return answered[0].payload
+
+
+def test_the_first_tacit_answer_raises_visibility(run: sim.State) -> None:
+    """R17, AE4."""
+    before = run.metrics["visibility"]
+
+    payload = _ask(run, "stf_ap", "why does it work that way?")
+
+    assert payload["matched"] is True
+    assert payload["question"] == "why"
+    assert payload["first_time"] is True
+    assert payload["answer"] == roster.VOICE["stf_ap"]["why"]
+    assert run.metrics["visibility"] == before + rates.TUNING["visibility_per_tacit_answer"]
+
+
+def test_asking_the_same_question_again_pays_nothing(run: sim.State) -> None:
+    """R17, AE4: the answer returns, and nothing moves."""
+    _ask(run, "stf_ap", "why does it work that way?")
+    after_first = run.metrics["visibility"]
+
+    payload = _ask(run, "stf_ap", "why though?")
+
+    assert payload["first_time"] is False
+    assert payload["answer"] == roster.VOICE["stf_ap"]["why"]
+    assert payload["deltas"] == {}
+    assert run.metrics["visibility"] == after_first
+
+
+def test_the_bottleneck_question_never_moves_visibility(run: sim.State) -> None:
+    before = run.metrics["visibility"]
+
+    payload = _ask(run, "stf_ap", "where does the time go?")
+
+    assert payload["question"] == "bottleneck"
+    assert payload["tacit"] is False
+    assert payload["answer"] == roster.VOICE["stf_ap"]["bottleneck"]
+    assert run.metrics["visibility"] == before
+
+
+def test_the_knowledge_is_theirs_not_the_company_s(run: sim.State) -> None:
+    """Asking one person why does not make everybody else's why free."""
+    _ask(run, "stf_ap", "why?")
+    before = run.metrics["visibility"]
+
+    payload = _ask(run, "stf_buyer", "why?")
+
+    assert payload["first_time"] is True
+    assert run.metrics["visibility"] == before + rates.TUNING["visibility_per_tacit_answer"]
+
+
+def test_a_question_matching_nothing_deflects_and_records_nothing(run: sim.State) -> None:
+    """R16, AE5."""
+    before = dict(run.metrics)
+
+    payload = _ask(run, "stf_ap", "what do you think of the weather")
+
+    assert payload["matched"] is False
+    assert payload["answer"] == roster.DEFLECTIONS["stf_ap"]
+    assert run.metrics == before
+    assert run.people["stf_ap"].answered == []
+
+
+def test_each_person_deflects_in_their_own_voice(run: sim.State) -> None:
+    lines = {person.id: roster.deflection_for(person.id) for person in roster.PEOPLE}
+
+    assert len(set(lines.values())) == len(roster.PEOPLE)
+    for person_id, line in lines.items():
+        assert line, f"{person_id} has no deflection line"
+
+
+def test_every_person_has_all_four_scripted_answers() -> None:
+    for person in roster.PEOPLE:
+        for slot in roster.ASK_SLOTS:
+            assert roster.answer_for(person.id, slot), f"{person.id} has no {slot} answer"
+
+
+def test_the_four_intents_match_their_keywords_case_insensitively() -> None:
+    """R15."""
+    assert roster.match_intent("WHY is that").slot == "why"
+    assert roster.match_intent("any EXCEPTIONS?").slot == "exception"
+    assert roster.match_intent("who decides this").slot == "axis"
+    assert roster.match_intent("what is the BOTTLENECK").slot == "bottleneck"
+    assert roster.match_intent("hello there") is None
+
+
+def test_three_of_the_four_are_tacit() -> None:
+    assert roster.TACIT_SLOTS == frozenset({"why", "exception", "axis"})
+
+
+def test_asking_someone_who_is_not_on_the_roster_is_rejected(run: sim.State) -> None:
+    before = hashing.state_hash(sim.snapshot(run)).overall
+
+    with pytest.raises(sim.CommandRejected):
+        sim.ask_person(run, "nobody", "why?")
+
+    assert hashing.state_hash(sim.snapshot(run)).overall == before
+
+
+def test_answered_questions_stay_canonical_in_hashed_state(run: sim.State) -> None:
+    """A set or a float reaching hashed state raises at a day boundary, far from the cause."""
+    _ask(run, "stf_ap", "why?")
+    _ask(run, "stf_ap", "any exceptions?")
+
+    recorded = sim.snapshot(run)["people"]["stf_ap"]["answered"]
+    assert isinstance(recorded, list)
+    assert recorded == sorted(recorded)
+    # Raises NotCanonical if anything in here is a set or a float.
+    hashing.state_hash(sim.snapshot(run))
+
+
+def test_two_states_that_heard_the_same_questions_hash_the_same(run: sim.State) -> None:
+    """Order of asking must not change identity, which is what the sorting is for."""
+    other, _ = sim.new_run(run_seed=SEED)
+
+    _ask(run, "stf_ap", "why?")
+    _ask(run, "stf_ap", "any exceptions?")
+
+    _ask(other, "stf_ap", "any exceptions?")
+    _ask(other, "stf_ap", "why?")
+
+    assert (
+        hashing.state_hash(sim.snapshot(run)).overall
+        == hashing.state_hash(sim.snapshot(other)).overall
+    )
+
+
+def test_a_visibility_gain_from_asking_announces_what_it_unlocked(run: sim.State) -> None:
+    """Asking opens work, and the floor has to be told."""
+    gate = work.spec("wi_close").requires.visibility
+    assert gate is not None
+    assert not sim.is_unlocked(run, "wi_close")
+
+    # Enough first tacit answers to clear the gate.
+    slots = ["why?", "any exceptions?", "who decides?"]
+    for person in roster.PEOPLE:
+        for question in slots:
+            sim.ask_person(run, person.id, question)
+        if sim.is_unlocked(run, "wi_close"):
+            break
+
+    assert sim.is_unlocked(run, "wi_close")
+
+    # Announced by the step, not by the command, so it regenerates on replay.
+    events = advance(run, 1)
+    unlocked = [e for e in events if e.kind.name == "ITEM_UNLOCKED"]
+    assert any(e.payload["item"] == "wi_close" for e in unlocked)
+
+
+def test_an_unlock_is_announced_once(run: sim.State) -> None:
+    for person in roster.PEOPLE:
+        for question in ["why?", "any exceptions?", "who decides?"]:
+            sim.ask_person(run, person.id, question)
+
+    first = [e for e in advance(run, 1) if e.kind.name == "ITEM_UNLOCKED"]
+    again = [e for e in advance(run, 5) if e.kind.name == "ITEM_UNLOCKED"]
+
+    assert first
+    assert not again
+
+
+def test_answered_questions_survive_a_snapshot(run: sim.State) -> None:
+    """R19, AE7."""
+    from simcore import snapshot as snap
+
+    _ask(run, "stf_ap", "why?")
+    _ask(run, "stf_ap", "who decides?")
+    visibility = run.metrics["visibility"]
+
+    restored = snap.from_wire(snap.to_wire(run))
+
+    assert restored.people["stf_ap"].answered == ["axis", "why"]
+
+    # And a repeat ask on the restored run pays nothing.
+    payload = _ask(restored, "stf_ap", "why?")
+    assert payload["first_time"] is False
+    assert restored.metrics["visibility"] == visibility

@@ -191,6 +191,38 @@ def test_the_fold_reproduces_the_ceos_input_derived_position() -> None:
     assert folded.state.ceo.y_milli == recorder.state.ceo.y_milli
 
 
+def test_replaying_a_log_of_asks_reproduces_the_visibility_trajectory() -> None:
+    """R19: what a person has already answered is run state, and it replays.
+
+    The fold re-issues the *question* rather than folding the recorded answer, so this is a
+    check that the rule which priced the answer originally prices it the same way again —
+    including charging nothing the second time the same person is asked the same thing.
+    """
+    from simcore.rates import TUNING
+
+    recorder = Recorder()
+    for question in ("why does it work that way?", "any exceptions?", "why again?"):
+        recorder.record(sim.ask_person(recorder.state, "stf_ap", question))
+        recorder.advance(1)
+    recorder.record(sim.ask_person(recorder.state, "dir_admin", "who decides?"))
+    recorder.advance(1)
+
+    live = recorder.state
+    # Three first-time tacit answers across two people; the repeated "why" paid nothing.
+    assert live.people["stf_ap"].answered == ["exception", "why"]
+    assert live.people["dir_admin"].answered == ["axis"]
+    assert live.metrics["visibility"] == 6 + 3 * TUNING["visibility_per_tacit_answer"]
+
+    folded = folder.fold(recorder.log, at_live_head=False, through_tick=live.tick)
+
+    assert folded.state.metrics["visibility"] == live.metrics["visibility"]
+    assert folded.state.people["stf_ap"].answered == live.people["stf_ap"].answered
+    assert (
+        hashing.state_hash(sim.snapshot(folded.state)).overall
+        == hashing.state_hash(sim.snapshot(live)).overall
+    )
+
+
 def test_a_quiet_run_needs_its_current_tick_passed_in() -> None:
     """Where the run row earns its place.
 

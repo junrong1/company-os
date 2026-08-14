@@ -181,6 +181,95 @@ def roster_to_state(seats: dict[str, tuple[int, int]]) -> dict[str, Any]:
     }
 
 
+@dataclass(frozen=True, slots=True)
+class AskIntent:
+    """One of the four questions worth asking, and how a typed question reaches it.
+
+    `tacit` marks the three where undocumented knowledge lives. Those are the ones that raise
+    Visibility the first time a person answers them; the bottleneck question is a number they
+    would have given you anyway, so it pays nothing.
+    """
+
+    slot: str
+    label: str
+    tacit: bool
+    keys: tuple[str, ...]
+
+
+#: Ported from the prototype's `ASK_MAP` (`company-os.html:3049`), keyword sets included.
+#:
+#: Matching lives here rather than on the client, and deliberately: the kernel has to know
+#: *which* question was asked to charge Visibility once per person per question, so a client
+#: that classified the text would be handing the kernel a fact it prices without being able to
+#: check. It is also where the hearing API replaces the script, and matching belongs with the
+#: producer rather than with the surface that shows the answer.
+#:
+#: Order matters. The first intent whose keywords appear wins, so a question mentioning both
+#: "why" and "slow" is read as a why.
+ASK_INTENTS: tuple[AskIntent, ...] = (
+    AskIntent("why", "Why", True, ("why", "reason", "because")),
+    AskIntent(
+        "exception", "Exceptions", True, ("exception", "edge", "irregular", "unusual", "special")
+    ),
+    AskIntent(
+        "axis",
+        "Who decides",
+        True,
+        ("who decide", "decides", "judg", "criteri", "rule", "threshold", "approve"),
+    ),
+    AskIntent("bottleneck", "Bottleneck", False, ("time", "bottleneck", "slow", "stuck", "long", "eating")),
+)
+
+ASK_SLOTS: tuple[str, ...] = tuple(intent.slot for intent in ASK_INTENTS)
+
+TACIT_SLOTS: frozenset[str] = frozenset(intent.slot for intent in ASK_INTENTS if intent.tacit)
+
+
+def match_intent(question: str) -> AskIntent | None:
+    """Which of the four a typed question is asking, or `None` for a miss.
+
+    Case-insensitive substring matching, as the prototype does. Crude on purpose: the point of
+    free text is that it needs no rework when a hearing API replaces the script, not that the
+    matching is clever. Misses are expected, which is why every person has a line for one.
+    """
+    lowered = question.lower()
+    for intent in ASK_INTENTS:
+        if any(key in lowered for key in intent.keys):
+            return intent
+    return None
+
+
+#: What each person says when the question matched nothing (R16).
+#:
+#: One per person rather than one shared line, because a miss is common enough that a generic
+#: "not in the script" would be most of what a player hears from the mechanic. Said in their own
+#: voice, a miss still reveals character and still points at what they *can* answer.
+DEFLECTIONS: dict[str, str] = {
+    "stf_order": "I would not know about that. Ask me why the entry works the way it does, where the exceptions are, what I decide myself, or where the time goes.",
+    "stf_ap": "That is above my desk. What I can tell you is why the reconciliation runs as it does, the exceptions I make, where my authority ends, and what eats the month.",
+    "stf_buyer": "No idea, honestly. Ask me why we quote the way we do, when I go single-source, what is mine to call, or where an order parks.",
+    "stf_cs": "Not something I see from first line. Ask me why the answers take as long as they do, what I escalate, what is my judgement, or what fills the queue.",
+    "stf_rec": "I could not say. Ask me why the postings drift, which candidates skip the process, where I set the bar, or what the scheduling costs.",
+    "stf_field": "That is not my end of it. Ask me why I keep my own numbers, what I take verbally, what I promise on my own, or what stops me on the road.",
+    "dir_sales": "I would be guessing, and you would be able to tell. Ask me why the numbers land where they do, what reaches me, what is mine to approve, or what we all know is broken.",
+    "dir_admin": "I do not have that to hand. Ask me why the close runs long, what we let slide at quarter end, where the approval line sits, or what everything waits on.",
+    "dir_cs": "You would want someone closer to it than me. Ask me why first line costs what it does, what comes to me, how escalation actually works, or what fills Owen's day.",
+    "dir_hr": "I have nothing useful on that. Ask me why the requirements drift, which hires go around us, who really decides, or what the agreeing costs.",
+}
+
+
+def deflection_for(person_id: str) -> str:
+    """This person's line for a question they cannot answer. Raises for a stranger."""
+    spec(person_id)
+    return DEFLECTIONS[person_id]
+
+
+def answer_for(person_id: str, slot: str) -> str:
+    """This person's scripted reply for one of the four questions."""
+    spec(person_id)
+    return VOICE[person_id][slot]
+
+
 #: Scripted replies, four per person. This is where the hearing API plugs in at
 #: Phase 2; the shape stays, the producer changes.
 #:

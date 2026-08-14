@@ -20,6 +20,7 @@ class CommandKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     SET_RATE: _ClassVar[CommandKind]
     REQUEST_HIRE: _ClassVar[CommandKind]
     FORK_RUN: _ClassVar[CommandKind]
+    ASK_PERSON: _ClassVar[CommandKind]
 COMMAND_KIND_UNSPECIFIED: CommandKind
 START_RUN: CommandKind
 ASSIGN_WORK: CommandKind
@@ -30,6 +31,7 @@ SUBMIT_CEO_INPUT: CommandKind
 SET_RATE: CommandKind
 REQUEST_HIRE: CommandKind
 FORK_RUN: CommandKind
+ASK_PERSON: CommandKind
 
 class Command(_message.Message):
     __slots__ = ("run_id", "idempotency_key", "command_id", "kind", "payload")
