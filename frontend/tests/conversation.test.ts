@@ -824,6 +824,30 @@ describe('the comparison', () => {
     expect(branches[1].reached?.itemId).toBe('wi_quotes')
   })
 
+  it('says a bounded branch stopped short rather than reporting it as the horizon', () => {
+    // The kernel stops a branch after a fixed span whatever horizon the run carries, so one
+    // comparison stays affordable on a run created with an arbitrary horizon. The column has
+    // to say the projection ran out, not that the run did — reporting the second as the first
+    // would claim the branch covered ground it never walked.
+    const bounded = { ...branchFixture(0), stop_reason: 'bound', stop_tick: 22213 }
+    const horizon = { ...branchFixture(1), stop_reason: 'horizon', stop_tick: 10800 }
+
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore
+      .getState()
+      .apply(comparedFrame({ seq: 3, item: id, person: want, branches: [bounded, horizon] }))
+
+    const branches = useRunStore.getState().comparisons[`${id}:0`].branches
+
+    expect(branches[0].stopReason).toBe('bound')
+    expect(stopSentence(branches[0])).toContain('continues past there')
+    expect(stopSentence(branches[0])).not.toContain('horizon')
+    // And the genuine horizon case still reads as the end of the run.
+    expect(stopSentence(branches[1])).toContain('horizon')
+  })
+
   it('keeps a runway the kernel could not know distinct from zero', () => {
     // The two are the same pixel width and opposite in meaning: "not yet knowable" and
     // "insolvent". Coercing the null on the way in would render one as the other.

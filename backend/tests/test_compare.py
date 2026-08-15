@@ -250,6 +250,63 @@ def test_a_trajectory_stays_bounded_over_a_full_horizon(run: Recorder) -> None:
     assert summary.stop_tick - summary.fork_tick > compare.TRAJECTORY_POINT_BOUND
 
 
+@pytest.mark.parametrize("horizon_days", [5, 20, 60, 400])
+def test_the_trajectory_bound_holds_at_any_horizon_the_caller_asks_for(
+    horizon_days: int,
+) -> None:
+    """The case the default-horizon fixture hid.
+
+    `POST /runs` takes `horizon_tick` from the caller with no upper limit, and the first version
+    of this bound was a constant derived from the *default* horizon that no production code
+    read — so a long run sailed past it and only a test with a default fixture was watching.
+    Parameterised over horizons on both sides of the cap, because "the one we happened to use"
+    is not the property.
+    """
+    run = blocked_at("wi_ap_map", "stf_ap", horizon_days=horizon_days)
+    summary = compare.run_branch(run.state, "wi_ap_map", 0, 0, in_person=True)
+
+    for key, points in summary.trajectories.items():
+        assert len(points) <= compare.TRAJECTORY_POINT_BOUND, (horizon_days, key, len(points))
+
+
+def test_a_branch_stops_at_the_comparison_bound_and_says_so() -> None:
+    """A run whose horizon is past what a comparison will step.
+
+    Reported as `bound`, never as `horizon`: "ran to the end of the run" and "ran as far as a
+    comparison goes, and the run continues past here" are different facts, and reporting the
+    second as the first would claim the projection covers ground it never walked.
+    """
+    beyond = compare.MAX_BRANCH_DAYS * 3
+    run = blocked_at("wi_ap_map", "stf_ap", horizon_days=beyond)
+
+    summary = compare.run_branch(run.state, "wi_ap_map", 0, 0, in_person=True)
+
+    assert summary.stop_reason == compare.STOP_BOUND
+    assert summary.stop_reason != lifecycle.TERMINAL_HORIZON
+    assert summary.stop_tick < run.state.horizon_tick
+    assert "not in this projection" in summary.stop_detail
+    # And the cap is what stopped it, within the tick the loop checks on.
+    span = summary.stop_tick - summary.fork_tick
+    assert span <= compare.MAX_BRANCH_DAYS * simtime.TICKS_PER_SIM_DAY
+
+
+def test_one_command_costs_the_same_however_long_the_run_is() -> None:
+    """The guard that makes a comparison affordable regardless of what the caller asked for.
+
+    The branches are stepped synchronously inside a request, on the same worker pool every other
+    run's clock ticks on, so an unbounded horizon would let one command hold that pool for as
+    long as the caller cared to ask for.
+    """
+    spans = []
+    for horizon_days in (compare.MAX_BRANCH_DAYS * 2, compare.MAX_BRANCH_DAYS * 10):
+        run = blocked_at("wi_ap_map", "stf_ap", horizon_days=horizon_days)
+        summary = compare.run_branch(run.state, "wi_ap_map", 0, 0, in_person=True)
+        spans.append(summary.stop_tick - summary.fork_tick)
+
+    # A run ten times longer costs a branch exactly the same number of steps.
+    assert spans[0] == spans[1]
+
+
 def test_a_branch_carries_the_option_it_is_a_branch_of(run: Recorder) -> None:
     option = work.spec("wi_ap_map").checkpoints[0].options[2]
     summary = compare.run_branch(run.state, "wi_ap_map", 0, 2, in_person=False)
@@ -493,6 +550,31 @@ def test_the_record_carries_what_the_client_said_it_was_looking_at(run: Recorder
 
     assert payload["requested_at_tick"] == run.state.tick - 5
     assert payload["tick"] == run.state.tick
+
+
+def test_a_branch_does_not_repeat_what_the_comparison_already_says(run: Recorder) -> None:
+    """The item, the checkpoint and the route are constant across every branch.
+
+    They belong once at the top of the payload rather than up to
+    `MAX_BRANCHES_PER_COMPARISON` times inside it — this is the exact payload the byte bound
+    exists to hold down. They stay Python-side fields, because a summary passed around in
+    process should still know which decision it is a branch of.
+    """
+    payload = compare_at(run)[0].payload
+
+    for key in ("item", "cp_index", "person", "in_person"):
+        assert key in payload
+
+    for branch in payload["branches"]:
+        assert "item" not in branch
+        assert "cp_index" not in branch
+        assert "in_person" not in branch
+
+    # The dataclass still carries them, so the runner's own callers are unaffected.
+    summary = compare.run_branch(run.state, "wi_ap_map", 0, 0, in_person=True)
+    assert summary.item == "wi_ap_map"
+    assert summary.cp_index == 0
+    assert summary.in_person is True
 
 
 def test_a_comparison_records_no_item_status(run: Recorder) -> None:

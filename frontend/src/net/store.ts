@@ -29,14 +29,6 @@ import { subscribeWithSelector } from 'zustand/middleware'
 
 import type { MetricDef } from '../design/tokens'
 import type { FloorData } from '../render/floor'
-import {
-  type Branch,
-  type Comparison,
-  type ProjectedFigure,
-  type ProjectedPoint,
-  type StopReason,
-  comparisonKey,
-} from '../ui/comparison-model'
 
 // =========================================================================
 // What the wire carries
@@ -251,6 +243,89 @@ export interface TrajectoryPoint {
 
 /** How many points a trajectory keeps. Bounded: a long run must not grow the client. */
 export const TRAJECTORY_CAPACITY = 240
+
+// =========================================================================
+// Branch comparisons
+// =========================================================================
+//
+// These live here rather than in `ui/comparison-model.ts` because they are wire shapes, and the
+// store owns wire shapes — `CatalogEntry`, `OptionDef`, `PersonView` and the rest are all
+// defined here and imported *by* the ui models. Defining them in the ui layer and importing
+// them down into `net/` inverted that, and put a `net -> ui` edge in a codebase that otherwise
+// only has `ui -> net`.
+
+/** The key a comparison is held under. One per checkpoint, which is one per decision. */
+export function comparisonKey(itemId: string, cpIndex: number): string {
+  return `${itemId}:${cpIndex}`
+}
+
+
+/** One sample on a projected trajectory, and the tick it was measured at. */
+export interface ProjectedPoint {
+  tick: bigint
+  value: number
+}
+
+/**
+ * One number in a branch summary, and the tick it was measured at (R22).
+ *
+ * `value` is `null` where the kernel could not know it — a runway before the branch has paid a
+ * day of costs. That is a different thing from zero, and rendering it as zero would say the
+ * company is insolvent at the moment the answer is merely unknown.
+ */
+export interface ProjectedFigure {
+  value: number | null
+  atTick: bigint
+}
+
+/**
+ * Why a branch stopped. The kernel's own vocabulary, not a second one.
+ *
+ * `bound` is distinct from `horizon` on purpose: "ran to the end of the run" and "ran as far as
+ * a comparison goes, and the run continues past here" are different facts, and rendering the
+ * second as the first would overstate what the projection covers.
+ */
+export type StopReason = 'checkpoint' | 'horizon' | 'insolvent' | 'bound' | ''
+
+/** The checkpoint a branch stopped at, reached and unsettled. */
+export interface ReachedCheckpoint {
+  itemId: string
+  cpIndex: number
+  label: string
+  kind: string
+  personId: string
+  tick: bigint
+}
+
+/** One option, followed to the next decision. */
+export interface Branch {
+  optionIndex: number
+  optionLabel: string
+  optionNote: string
+  forkTick: bigint
+  stopTick: bigint
+  stopReason: StopReason
+  stopDetail: string
+  reached: ReachedCheckpoint | null
+  trajectories: Record<string, ProjectedPoint[]>
+  metrics: Record<string, ProjectedFigure>
+  runway: ProjectedFigure
+  dailyCost: ProjectedFigure
+  unlocked: string[]
+  foreclosed: string[]
+}
+
+/** One comparison: every option at one checkpoint, as the kernel reported it. */
+export interface Comparison {
+  itemId: string
+  cpIndex: number
+  personId: string
+  forkTick: bigint
+  inPerson: boolean
+  branches: Branch[]
+  /** The sequence the record arrived at. Newer wins, so a re-read cannot go backwards. */
+  atSeq: bigint
+}
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'live' | 'resyncing' | 'lost'
 
@@ -745,11 +820,23 @@ function withItem(
   return { ...items, [id]: { ...existing, ...patch, id } }
 }
 
-/** Drop every comparison belonging to an item, whichever of its checkpoints it was at. */
+/**
+ * Drop every comparison belonging to an item, whichever of its checkpoints it was at.
+ *
+ * Returns the *same reference* when there is nothing to drop, which is the common case — items
+ * leave `blocked` on every assignment, reassignment, delivery and attrition, and a comparison is
+ * rare and short-lived. Rebuilding the map regardless would hand the slice a new identity on
+ * effectively every one of those events, waking any subscriber that reads the whole slice for a
+ * change that did not happen.
+ */
 function withoutItem(
   comparisons: Record<string, Comparison>,
   itemId: string,
 ): Record<string, Comparison> {
+  if (!Object.values(comparisons).some((comparison) => comparison.itemId === itemId)) {
+    return comparisons
+  }
+
   const next: Record<string, Comparison> = {}
   for (const [key, comparison] of Object.entries(comparisons)) {
     if (comparison.itemId !== itemId) next[key] = comparison

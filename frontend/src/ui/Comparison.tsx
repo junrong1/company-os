@@ -20,13 +20,10 @@ import { useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { type MetricDef, NO_METRIC_DEFS, PAL, directionColour } from '../design/tokens'
-import { useRunStore } from '../net/store'
+import { type Branch, type Comparison, type ProjectedFigure, useRunStore } from '../net/store'
 import { Mark } from './Marking'
 import {
-  type Branch,
-  type Comparison,
   type CompareSender,
-  type ProjectedFigure,
   comparisonFor,
   projectedDirection,
   stopSentence,

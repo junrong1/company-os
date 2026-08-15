@@ -79,13 +79,42 @@ from simcore import time as simtime
 #: vocabulary would make the two unreconcilable in a report.
 STOP_CHECKPOINT = "checkpoint"
 
+#: Why a branch stopped, when it stopped because a comparison does not run further than this.
+#:
+#: Distinct from the horizon on purpose. "Ran to the end of the run" and "ran as far as a
+#: comparison goes, and the run continues past here" are different facts, and reporting the
+#: second as the first would overstate what the projection covers.
+STOP_BOUND = "bound"
+
+#: How far a branch will step, whatever horizon the run carries.
+#:
+#: Twice the horizon this product designs for, which is itself sized against the decision
+#: supply — nine authored checkpoints, "a little over two days per decision". A run far beyond
+#: that is burn with nothing left to decide, and a comparison of one is not worth the seconds
+#: it would cost: the branches are stepped synchronously inside a request, on the same worker
+#: pool every other run's clock ticks on.
+#:
+#: A branch that reaches this stops and says so, rather than the comparison being refused. A
+#: refusal would make a legitimately long run uncomparable; stopping early and reporting the
+#: reason gives the CEO a shorter projection and tells them it is shorter.
+#:
+#: A submission guard rather than tuning, for the same reason the branch count is: it bounds
+#: what one command may cost and cannot change what a recorded run means.
+MAX_BRANCH_DAYS = lifecycle.DEFAULT_HORIZON_DAYS * 2
+
 #: The most trajectory points one branch reports per metric.
 #:
-#: A branch measures up to about 10,800 ticks and a point for each would be a projection the
-#: size of the run. Sampled at day boundaries, which is also the cadence the metrics actually
-#: move at — costs land daily — plus the fork and the stop, so the two ends are pinned and two
-#: branches line up against each other. A 20-day horizon therefore yields at most 22.
-TRAJECTORY_POINT_BOUND = lifecycle.DEFAULT_HORIZON_DAYS * 4 + 2
+#: Derived from the tick cap rather than authored beside it, which is what makes it true. A
+#: branch samples at each day boundary it crosses — the cadence the metrics actually move at,
+#: since costs land daily — plus the fork and the stop, so the two ends are pinned and two
+#: branches line up against each other. Cap the days and the point count follows.
+#:
+#: The first version of this was a *separate* constant derived from the default horizon and read
+#: by no production code, while the sampling bounded itself on the run's actual horizon — which
+#: `POST /runs` takes from the caller with no upper limit. A 200-day run produced 138 points
+#: against a "bound" of 82, and the only thing that noticed was a test whose fixture happened to
+#: use the default. A bound nothing enforces is a comment.
+TRAJECTORY_POINT_BOUND = MAX_BRANCH_DAYS + 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,14 +179,20 @@ class BranchSummary:
     emitted: list[sim.Emitted] = field(default_factory=list, repr=False)
 
     def to_state(self) -> dict[str, Any]:
-        """The branch as the comparison record and the client read it."""
+        """The branch as the comparison record and the client read it.
+
+        `item`, `cp_index` and `in_person` stay off the wire. They are constant across every
+        branch of one comparison — all of them fork from the same checkpoint by the same route,
+        and only the option differs — so the comparison payload carries them once at the top
+        and repeating them here would write the same three values up to
+        `MAX_BRANCHES_PER_COMPARISON` times into the payload the byte bound exists to hold
+        down. They stay dataclass fields, because a summary handed around in Python should
+        still know which decision it is a branch of.
+        """
         return {
-            "item": self.item,
-            "cp_index": self.cp_index,
             "option_index": self.option_index,
             "option_label": self.option_label,
             "option_note": self.option_note,
-            "in_person": self.in_person,
             "fork_tick": self.fork_tick,
             "stop_tick": self.stop_tick,
             "stop_reason": self.stop_reason,
@@ -222,12 +257,18 @@ def run_branch(
     stop_detail = ""
     stopped_at: dict[str, Any] | None = None
 
-    # Bounded by the parent's own horizon rather than by a number chosen here. `_refuse_unless
-    # _forkable` has already refused a run with no horizon, so this terminates.
-    while branch.tick < branch.horizon_tick:
+    # The lesser of the run's own horizon and what a comparison will spend. `_refuse_unless
+    # _forkable` has already refused a run with no horizon, so this terminates either way.
+    last_tick = min(
+        branch.horizon_tick, fork_tick + MAX_BRANCH_DAYS * simtime.TICKS_PER_SIM_DAY
+    )
+
+    while branch.tick < last_tick:
         produced = sim.step(branch)
         emitted.extend(produced)
 
+        # One point per day boundary crossed. Capping the days is what bounds the series, so
+        # there is no second rule here to keep in agreement with the first.
         if simtime.is_day_boundary(branch.tick):
             _sample(trajectories, branch)
 
@@ -258,14 +299,22 @@ def run_branch(
             stop_detail = "" if terminal is None else str(terminal.payload["detail"])
             break
 
-    if not stop_reason:
+    if not stop_reason and branch.tick >= branch.horizon_tick:
         # The loop ran out of horizon without the step raising termination, which happens when
-        # the parent was already at or past its horizon tick. Reported as the horizon rather
-        # than as no reason at all.
+        # the parent was already at or past its horizon tick.
         stop_reason = lifecycle.TERMINAL_HORIZON
         stop_detail = (
             f"the branch reached the run's horizon of {branch.horizon_tick} ticks, recorded "
             "at genesis."
+        )
+    elif not stop_reason:
+        # Stopped short of the run's own end. Said plainly, because reporting this as the
+        # horizon would claim the projection covers the rest of the run when it does not.
+        stop_reason = STOP_BOUND
+        stop_detail = (
+            f"a comparison runs {MAX_BRANCH_DAYS} sim-days and this run's horizon is further "
+            f"out, so the branch stops at tick {branch.tick}. What happens after that is not "
+            "in this projection."
         )
 
     _sample(trajectories, branch)

@@ -27,11 +27,8 @@
  */
 
 import { type Direction, type MetricDef, direction } from '../design/tokens'
-
-/** The key a comparison is held under. One per checkpoint, which is one per decision. */
-export function comparisonKey(itemId: string, cpIndex: number): string {
-  return `${itemId}:${cpIndex}`
-}
+import type { Branch, Comparison, ProjectedFigure } from '../net/store'
+import { comparisonKey } from '../net/store'
 
 /**
  * Asking for a comparison.
@@ -44,67 +41,6 @@ export function comparisonKey(itemId: string, cpIndex: number): string {
  */
 export interface CompareSender {
   (itemId: string, cpIndex: number, personId: string, inPerson: boolean): void
-}
-
-/** One sample on a projected trajectory, and the tick it was measured at. */
-export interface ProjectedPoint {
-  tick: bigint
-  value: number
-}
-
-/**
- * One number in a branch summary, and the tick it was measured at (R22).
- *
- * `value` is `null` where the kernel could not know it — a runway before the branch has paid a
- * day of costs. That is a different thing from zero, and rendering it as zero would say the
- * company is insolvent at the moment the answer is merely unknown.
- */
-export interface ProjectedFigure {
-  value: number | null
-  atTick: bigint
-}
-
-/** Why a branch stopped. The kernel's own vocabulary, not a second one. */
-export type StopReason = 'checkpoint' | 'horizon' | 'insolvent' | ''
-
-/** The checkpoint a branch stopped at, reached and unsettled. */
-export interface ReachedCheckpoint {
-  itemId: string
-  cpIndex: number
-  label: string
-  kind: string
-  personId: string
-  tick: bigint
-}
-
-/** One option, followed to the next decision. */
-export interface Branch {
-  optionIndex: number
-  optionLabel: string
-  optionNote: string
-  forkTick: bigint
-  stopTick: bigint
-  stopReason: StopReason
-  stopDetail: string
-  reached: ReachedCheckpoint | null
-  trajectories: Record<string, ProjectedPoint[]>
-  metrics: Record<string, ProjectedFigure>
-  runway: ProjectedFigure
-  dailyCost: ProjectedFigure
-  unlocked: string[]
-  foreclosed: string[]
-}
-
-/** One comparison: every option at one checkpoint, as the kernel reported it. */
-export interface Comparison {
-  itemId: string
-  cpIndex: number
-  personId: string
-  forkTick: bigint
-  inPerson: boolean
-  branches: Branch[]
-  /** The sequence the record arrived at. Newer wins, so a re-read cannot go backwards. */
-  atSeq: bigint
 }
 
 /**
@@ -174,6 +110,11 @@ export function stopSentence(branch: Branch): string {
   }
   if (branch.stopReason === 'horizon') {
     return `Raises no further decision. Runs to the horizon at tick ${branch.stopTick}.`
+  }
+  if (branch.stopReason === 'bound') {
+    // Said as a limit of the projection, not as a fact about the run. The run goes further;
+    // this is where the comparison stopped looking.
+    return `Raises no further decision as far as this projection runs, which is tick ${branch.stopTick}. The run continues past there.`
   }
   return `Stops at tick ${branch.stopTick}.`
 }
