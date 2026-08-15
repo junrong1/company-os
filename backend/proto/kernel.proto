@@ -80,6 +80,14 @@ enum CommandKind {
   // Ask a person one of the four questions. The kernel matches the typed text to an
   // intent, because it is the side that prices the answer.
   ASK_PERSON = 10;
+
+  // Run one branch per option at an open checkpoint and record what was shown.
+  //
+  // The only command accepted while the run is paused, besides SET_RATE. Every other
+  // command is rejected on a paused run because there is no tick boundary to apply it
+  // at; a comparison mutates nothing and needs no boundary, and pausing to weigh two
+  // options is exactly when it is wanted.
+  COMPARE_OPTIONS = 11;
 }
 
 message CommandOutcome {

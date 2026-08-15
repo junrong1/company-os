@@ -11,17 +11,21 @@ as far as the next decision and then reports where it stopped.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
+from contracts import canonical
 from contracts.envelope import Envelope, EventKind, build
 from simcore import compare
 from simcore import hashing
 from simcore import items as work
 from simcore import lifecycle
 from simcore import log as folder
+from simcore import rates
 from simcore import step as sim
 from simcore import time as simtime
-from simcore.rates import RULES_VERSION
+from simcore.rates import RULES_VERSION, TUNING
 
 RUN = "run-compare"
 SEED = 0xC0FFEE
@@ -73,6 +77,22 @@ def blocked_at(item_id: str, person_id: str, horizon_days: int = 20) -> Recorder
     run = Recorder(horizon_tick=simtime.TICKS_PER_SIM_DAY * horizon_days)
     run.record(sim.assign_direct(run.state, item_id, person_id))
     run.advance_until(lambda state: state.items[item_id].status == sim.STATUS_BLOCKED)
+    return run
+
+
+def blocked_at_the_closing_cycle() -> Recorder:
+    """A run stopped at the *first* of the closing-cycle item's two checkpoints.
+
+    The only authored item with two, and therefore the only case that can distinguish "stopped
+    at this checkpoint" from "stopped somewhere on this item". Reaching it is played rather
+    than arranged: it gates on 24% Visibility, and settling the accounts-payable map in person
+    on "PDF is the record" is exactly what pays for it.
+    """
+    run = blocked_at("wi_ap_map", "stf_ap", horizon_days=60)
+    run.record(sim.resolve_checkpoint(run.state, "wi_ap_map", 0, 0, in_person=True))
+    run.advance_until(lambda state: sim.is_unlocked(state, "wi_close"))
+    run.record(sim.assign_direct(run.state, "wi_close", "dir_admin"))
+    run.advance_until(lambda state: state.items["wi_close"].status == sim.STATUS_BLOCKED)
     return run
 
 
@@ -413,3 +433,330 @@ def test_a_branch_appends_nothing_to_the_log(run: Recorder) -> None:
     assert folder.fold(run.log, at_live_head=True, through_tick=run.state.tick).state.tick == (
         run.state.tick
     )
+
+
+# =========================================================================
+# The command: one event, no state change (R21, R25, R26, R29)
+# =========================================================================
+
+
+def compare_at(run: Recorder, item_id: str = "wi_ap_map", **over: Any) -> list[sim.Emitted]:
+    """The command as the surface sends it, defaulted to the situation the run is in."""
+    item = run.state.items[item_id]
+    request: dict[str, Any] = {
+        "item_id": item_id,
+        "cp_index": 0,
+        "person_id": item.assignee,
+        "at_tick": run.state.tick,
+        "in_person": True,
+    }
+    request.update(over)
+    return sim.compare_options(run.state, **request)
+
+
+def test_a_comparison_produces_one_event_carrying_every_branch(run: Recorder) -> None:
+    emitted = compare_at(run)
+
+    assert len(emitted) == 1
+    assert emitted[0].kind is EventKind.OPTIONS_COMPARED
+
+    payload = emitted[0].payload
+    assert payload["item"] == "wi_ap_map"
+    assert payload["cp_index"] == 0
+    assert payload["person"] == "stf_ap"
+    assert payload["tick"] == run.state.tick
+    assert len(payload["branches"]) == len(work.spec("wi_ap_map").checkpoints[0].options)
+    for index, branch in enumerate(payload["branches"]):
+        assert branch["option_index"] == index
+        assert branch["fork_tick"] == run.state.tick
+
+
+def test_a_comparison_advances_no_tick_and_changes_no_state(run: Recorder) -> None:
+    """AE9, R25. The command that appends without mutating, which is the whole of it."""
+    before = run.hash
+    before_tick = run.state.tick
+
+    run.record(compare_at(run))
+
+    assert run.hash == before
+    assert run.state.tick == before_tick
+    assert run.state.items["wi_ap_map"].status == sim.STATUS_BLOCKED
+
+
+def test_the_record_carries_what_the_client_said_it_was_looking_at(run: Recorder) -> None:
+    """The tag the client sent, kept beside the tick the branches actually forked at.
+
+    Recording only the kernel's own tick would make the record unable to say whether the two
+    ever disagreed, which is exactly the question a stale comparison raises.
+    """
+    payload = compare_at(run, at_tick=run.state.tick - 5)[0].payload
+
+    assert payload["requested_at_tick"] == run.state.tick - 5
+    assert payload["tick"] == run.state.tick
+
+
+def test_a_comparison_records_no_item_status(run: Recorder) -> None:
+    """A comparison moves nothing, so it must not claim to.
+
+    Every kind that carries `item_status` is a kind that moved an item, and a read-side
+    consumer updates its node from that field. A comparison carrying one would be a statement
+    about work that this event did not do anything to.
+    """
+    payload = compare_at(run)[0].payload
+    assert "item_status" not in payload
+
+
+# --- the guards -----------------------------------------------------------
+
+
+def test_a_comparison_on_an_item_that_is_not_stopped_is_refused_and_appends_nothing() -> None:
+    run = Recorder(horizon_tick=simtime.TICKS_PER_SIM_DAY * 20)
+    run.record(sim.assign_direct(run.state, "wi_ap_map", "stf_ap"))
+    before, before_log = run.hash, len(run.log)
+
+    with pytest.raises(sim.CommandRejected) as refusal:
+        sim.compare_options(
+            run.state, "wi_ap_map", 0, "stf_ap", run.state.tick, in_person=True
+        )
+
+    assert "stale" in str(refusal.value)
+    assert run.hash == before
+    assert len(run.log) == before_log
+
+
+def test_a_comparison_of_a_resolved_checkpoint_is_refused_as_stale(run: Recorder) -> None:
+    """AE19, the first of the four ways the situation moves out from under a request."""
+    at_tick = run.state.tick
+    run.record(sim.resolve_checkpoint(run.state, "wi_ap_map", 0, 0, in_person=True))
+
+    with pytest.raises(sim.CommandRejected) as refusal:
+        sim.compare_options(run.state, "wi_ap_map", 0, "stf_ap", at_tick, in_person=True)
+    assert "stale" in str(refusal.value)
+
+
+def test_a_comparison_of_a_completed_item_is_refused_as_stale(run: Recorder) -> None:
+    at_tick = run.state.tick
+    run.record(sim.resolve_checkpoint(run.state, "wi_ap_map", 0, 0, in_person=True))
+    run.advance_until(lambda state: state.items["wi_ap_map"].status == sim.STATUS_DONE)
+
+    with pytest.raises(sim.CommandRejected):
+        sim.compare_options(run.state, "wi_ap_map", 0, "stf_ap", at_tick, in_person=True)
+
+
+def test_a_comparison_of_a_reassigned_item_is_refused_as_stale(run: Recorder) -> None:
+    at_tick = run.state.tick
+    # Within the reporting line, which is the only reassignment the org chart permits.
+    run.record(sim.reassign(run.state, "wi_ap_map", "dir_admin"))
+
+    with pytest.raises(sim.CommandRejected):
+        sim.compare_options(run.state, "wi_ap_map", 0, "stf_ap", at_tick, in_person=True)
+
+
+def test_a_comparison_whose_assignee_has_gone_is_refused_as_stale(run: Recorder) -> None:
+    """The attrition case: the item goes back to the backlog with nobody on it."""
+    at_tick = run.state.tick
+    run.record(sim.return_to_backlog(run.state, "wi_ap_map"))
+
+    with pytest.raises(sim.CommandRejected):
+        sim.compare_options(run.state, "wi_ap_map", 0, "stf_ap", at_tick, in_person=True)
+
+
+def test_a_comparison_naming_the_wrong_person_is_refused_as_stale(run: Recorder) -> None:
+    """The case the status check alone does not cover.
+
+    Reassigning takes the item out of `blocked`, work resumes, and it can reach the *same*
+    checkpoint again with somebody else in front of it. The status is then blocked once more
+    and the request is still describing a situation that has gone.
+    """
+    with pytest.raises(sim.CommandRejected) as refusal:
+        sim.compare_options(
+            run.state, "wi_ap_map", 0, "dir_admin", run.state.tick, in_person=True
+        )
+
+    assert "stale" in str(refusal.value)
+    assert "dir_admin" in str(refusal.value)
+
+
+def test_a_comparison_tagged_ahead_of_the_clock_is_refused(run: Recorder) -> None:
+    """The client's render clock got in front of the run.
+
+    Not the same failure as staleness, and it says so: nothing has happened at that tick yet,
+    so there is nothing there to compare rather than something that has moved on.
+    """
+    with pytest.raises(sim.CommandRejected) as refusal:
+        sim.compare_options(
+            run.state, "wi_ap_map", 0, "stf_ap", run.state.tick + 1, in_person=True
+        )
+
+    assert "ahead" in str(refusal.value)
+
+
+def test_a_comparison_of_a_checkpoint_the_item_is_not_stopped_at_is_refused() -> None:
+    """The closing-cycle item carries two, and it is stopped at exactly one of them."""
+    run = blocked_at_the_closing_cycle()
+    assert len(work.spec("wi_close").checkpoints) == 2
+
+    with pytest.raises(sim.CommandRejected):
+        sim.compare_options(run.state, "wi_close", 1, "dir_admin", run.state.tick, in_person=True)
+
+    # And the one it *is* stopped at works, so the test is about the index rather than the item.
+    assert sim.compare_options(
+        run.state, "wi_close", 0, "dir_admin", run.state.tick, in_person=True
+    )
+
+
+def test_a_checkpoint_offering_more_options_than_the_bound_is_refused(
+    run: Recorder, monkeypatch
+) -> None:
+    """R26. Every branch steps the whole simulation, so the bound is on what a command costs."""
+    monkeypatch.setattr(sim, "MAX_BRANCHES_PER_COMPARISON", 2)
+
+    with pytest.raises(sim.CommandRejected) as refusal:
+        compare_at(run)
+
+    assert str(sim.MAX_BRANCHES_PER_COMPARISON) in str(refusal.value)
+
+
+def test_the_branch_bound_is_a_guard_and_not_a_tuning_constant() -> None:
+    """R26 departs from its literal wording, and the repo's own rule is why.
+
+    A bound on what may be submitted stays out of the tuning table; a number that changes what
+    a recorded run means goes in. A comparison changes no state, so its bound cannot change
+    what a run means — and putting it in `TUNING` would move the rules version, which
+    invalidates every kept snapshot and makes current logs unfoldable.
+    """
+    assert "branch" not in " ".join(TUNING).lower()
+    assert "compar" not in " ".join(TUNING).lower()
+    # The rules version is derived from the tuning table, so this is the assertion that the
+    # bound stayed out of it: adding it would change the string and unfold nothing.
+    assert RULES_VERSION == rates.rules_version()
+
+
+def test_an_over_long_comparison_payload_is_refused_rather_than_written(
+    run: Recorder, monkeypatch
+) -> None:
+    """An append-only log cannot take a row back, so the bound is at the entry point."""
+    monkeypatch.setattr(sim, "MAX_COMPARISON_PAYLOAD_BYTES", 16)
+    before = len(run.log)
+
+    with pytest.raises(sim.CommandRejected) as refusal:
+        compare_at(run)
+
+    assert "refused at the entry point" in str(refusal.value).lower()
+    assert len(run.log) == before
+
+
+def test_a_real_comparison_is_comfortably_inside_the_payload_bound(run: Recorder) -> None:
+    """The bound is a belt, not the thing the real case is sized against."""
+    encoded = len(canonical.encode(compare_at(run)[0].payload))
+
+    assert encoded < sim.MAX_COMPARISON_PAYLOAD_BYTES
+    # And large enough that the bound is guarding something rather than unreachable.
+    assert encoded > 1_000
+
+
+# --- the sweep ------------------------------------------------------------
+
+
+def test_every_command_that_can_reject_leaves_the_state_untouched() -> None:
+    """Resolve everything that can fail before mutating anything.
+
+    A sweep rather than one assertion per command, because the mistake is made once per
+    command by whoever adds the next one: a command that charges a metric and *then* looks
+    something up raises past the point where `CommandRejected` is caught, leaving state
+    changed with no event to explain it. A state hash that moves with nothing in the log is
+    replay identity broken silently, which is the one failure this kernel exists to prevent.
+    """
+    rejections = [
+        ("assign_via_manager", lambda s: sim.assign_via_manager(s, "wi_ai_rank")),
+        ("assign_direct", lambda s: sim.assign_direct(s, "wi_ai_rank", "dir_sales")),
+        ("reassign", lambda s: sim.reassign(s, "wi_quotes", "stf_ap")),
+        ("return_to_backlog", lambda s: sim.return_to_backlog(s, "wi_quotes")),
+        ("resolve_checkpoint", lambda s: sim.resolve_checkpoint(s, "wi_quotes", 0, 0, in_person=True)),
+        ("submit_ceo_input", lambda s: sim.submit_ceo_input(s, 1, at_tick=0)),
+        ("request_hire", lambda s: sim.request_hire(s, "nobody")),
+        ("ask_person", lambda s: sim.ask_person(s, "stf_ap", "x" * 5_000)),
+        ("compare_options", lambda s: sim.compare_options(s, "wi_quotes", 0, "stf_buyer", 0, in_person=True)),
+    ]
+
+    for name, command in rejections:
+        run = blocked_at("wi_ap_map", "stf_ap")
+        before = run.hash
+
+        with pytest.raises(sim.CommandRejected):
+            command(run.state)
+
+        assert run.hash == before, f"{name} mutated state on the path to a rejection"
+
+
+# --- the record, and the fold ---------------------------------------------
+
+
+def test_refolding_a_log_holding_comparison_records_reproduces_the_run(run: Recorder) -> None:
+    """R29. The record is on the log and the fold neither applies nor regenerates it."""
+    run.record(compare_at(run))
+    run.advance(600)
+    # A second record after the clock has moved, so the fold has to skip more than one and at
+    # more than one tick.
+    run.record(compare_at(run))
+
+    expected = run.hash
+    refolded = folder.fold(
+        run.log, at_live_head=False, strict=True, through_tick=run.state.tick
+    )
+
+    assert hashing.state_hash(sim.snapshot(refolded.state)).overall == expected
+
+
+def test_the_fold_treats_a_comparison_as_operational(run: Recorder) -> None:
+    """Not an input to re-apply, not an output to regenerate.
+
+    Regenerating would make every replay re-run N branches at a tenth of a second each and
+    prove nothing the rest of the replay does not already prove — the branches were computed
+    from state the replay has just reproduced exactly. Strict mode is the assertion: it
+    compares regenerated outputs against the log one for one, so a comparison classified as an
+    output would fail the count immediately.
+    """
+    assert EventKind.OPTIONS_COMPARED in folder.OPERATIONAL_KINDS
+    assert EventKind.OPTIONS_COMPARED not in folder.INPUT_KINDS
+    assert EventKind.OPTIONS_COMPARED not in folder.OUTPUT_KINDS
+
+    run.record(compare_at(run))
+    run.advance(50)
+
+    folder.fold(run.log, at_live_head=False, strict=True, through_tick=run.state.tick)
+
+
+def test_a_comparison_record_survives_a_round_trip_through_the_envelope(run: Recorder) -> None:
+    """Canonical encoding rejects anything that is not integers and strings.
+
+    Worth stating for this payload in particular: a branch summary is the most deeply nested
+    thing this log carries, and `Figure.value` is `None` for a runway that is not yet knowable
+    — which is the one shape most likely to fall outside what canonical accepts.
+    """
+    emitted = compare_at(run)[0]
+    envelope = build(
+        seq=1,
+        tick=run.state.tick,
+        kind=emitted.kind,
+        rules_ver=RULES_VERSION,
+        payload=emitted.payload,
+        run_id=RUN,
+    )
+
+    assert envelope.decoded_payload() == emitted.payload
+
+
+def test_a_branch_whose_runway_is_not_yet_knowable_records_a_null(run: Recorder) -> None:
+    """The `None` case, driven rather than asserted about a type.
+
+    A branch that stops before paying a day of costs has no burn to divide by. Reporting
+    infinity there would say "you have forever" at the moment the answer is unknown.
+    """
+    assert compare.runway_days(4800, 0) is None
+    assert compare.runway_days(-1, 20) == 0
+
+    summary = compare.run_branch(run.state, "wi_ap_map", 0, 0, in_person=True)
+    # The real branch does pay costs, so its runway is a number — the null path is the one
+    # above, and this is here so the two are stated together rather than in two places.
+    assert summary.runway.value is not None

@@ -135,6 +135,12 @@ OPERATIONAL_KINDS = frozenset(
         EventKind.COMMAND_REJECTED,
         EventKind.RUN_FORKED,
         EventKind.RUN_TERMINATED,
+        # A branch comparison mutates no state, so it is neither an input to re-apply nor an
+        # output to regenerate. Regenerating it would make every replay of the run re-run N
+        # branches and compare their summaries, which costs a tenth of a second per branch and
+        # proves nothing the rest of the replay does not already prove — the branches were
+        # computed from state the replay has just reproduced exactly.
+        EventKind.OPTIONS_COMPARED,
     }
 )
 

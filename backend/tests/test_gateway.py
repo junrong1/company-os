@@ -54,6 +54,19 @@ def command(api, kind: str, payload: dict, key: str, run_id: str = RUN):
     )
 
 
+def _kind(name: str) -> int:
+    """One proto command enum value, for the few tests that drive the runtime directly."""
+    from contracts.grpc import kernel_pb2
+
+    return getattr(kernel_pb2, name)
+
+
+def _encode(payload: dict) -> bytes:
+    from contracts import canonical
+
+    return canonical.encode(payload)
+
+
 # =========================================================================
 # Commands are applied at a tick boundary and report their outcome
 # =========================================================================
@@ -212,6 +225,55 @@ def test_set_rate_is_accepted_while_paused_so_a_pause_is_not_a_one_way_door(api)
     # And the run is genuinely driveable again, not merely reported as resumed.
     assigned = command(api, "assign_work", {"item": "wi_faq", "person": "stf_cs"}, "k1").json()
     assert assigned["status"] != Outcome.RUN_PAUSED
+
+
+def test_a_comparison_is_accepted_while_paused_unlike_every_other_player_command(
+    composed, api
+) -> None:
+    """The second exemption from the pause guard, and the reason it is sound.
+
+    The guard exists because a command that mutates state needs a tick boundary to mutate it
+    at, and a paused run never reaches one. A comparison mutates nothing — it steps a copy —
+    so the guard's own premise does not hold for it. Pausing to weigh two options is also
+    precisely when a CEO wants one, so rejecting it here would refuse the mechanic at the
+    moment it is most useful.
+
+    Asserted beside a command that *is* refused, so this states an exemption rather than a
+    guard that has stopped working.
+    """
+    runtime, _ = composed
+    run = runtime.runs[RUN]
+
+    runtime.apply_command(
+        RUN,
+        _kind("ASSIGN_WORK"),
+        _encode({"item": "wi_ap_map", "person": "stf_ap", "via_manager": False}),
+    )
+    while run.state.items["wi_ap_map"].status != "blocked":
+        runtime._advance(run, 1)
+
+    command(api, "set_rate", {"rate": 0}, "pause")
+
+    refused = command(api, "assign_work", {"item": "wi_faq", "person": "stf_cs"}, "k1").json()
+    assert refused["status"] == Outcome.RUN_PAUSED
+
+    compared = command(
+        api,
+        "compare_options",
+        {
+            "item": "wi_ap_map",
+            "cp_index": 0,
+            "person": "stf_ap",
+            "at_tick": run.state.tick,
+            "in_person": True,
+        },
+        "compare-while-paused",
+    ).json()
+
+    assert compared["status"] == Outcome.APPLIED, compared["reason"]
+    assert len(compared["produced_seq"]) == 1
+    # And the pause held: a comparison stops no clock and starts none.
+    assert runtime.runs[RUN].rate == 0
 
 
 def test_a_command_after_termination_is_rejected_and_mutates_nothing(composed) -> None:

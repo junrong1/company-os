@@ -95,6 +95,28 @@ MAX_INPUT_LEAD_TICKS = simtime.TICKS_PER_SIM_DAY
 #: priced rather than trusting the browser. Generous for a sentence someone types.
 MAX_QUESTION_CHARS = 500
 
+#: How many branches one comparison may run (R26).
+#:
+#: The count is derived from the authored option list rather than submitted, so this bounds
+#: what a *checkpoint* can cost rather than what a client can ask for — and it is still a
+#: submission guard, because what it bounds is the work one command causes. Every authored
+#: checkpoint offers three; six leaves room for one to grow without this becoming the thing
+#: that has to be edited first, and still holds a single comparison under a second.
+#:
+#: A guard rather than tuning, so it stays out of TUNING and out of the rules version. A
+#: comparison changes no state, so its bound cannot change what a recorded run means — and
+#: moving the rules version would invalidate every kept snapshot and make current logs
+#: unfoldable, which is a real cost for a number that decides nothing about the simulation.
+MAX_BRANCHES_PER_COMPARISON = 6
+
+#: How large a comparison record may be, encoded.
+#:
+#: Every branch carries a bounded trajectory per metric, so the payload is already bounded by
+#: construction — this is the belt on top of it, and it exists because the log is append-only
+#: and cannot take a row back. A full comparison of three branches over a twenty-day horizon
+#: encodes to roughly sixteen kilobytes, so this is about four times the real case.
+MAX_COMPARISON_PAYLOAD_BYTES = 64 * 1024
+
 # --- arrival intents ------------------------------------------------------
 
 ARRIVE_NONE = ""
@@ -1954,6 +1976,127 @@ def resolve_checkpoint(
             },
         )
     ]
+
+
+def compare_options(
+    state: State,
+    item_id: str,
+    cp_index: int,
+    person_id: str,
+    at_tick: int,
+    in_person: bool,
+) -> list[Emitted]:
+    """Run one branch per option at an open checkpoint, and record what was shown.
+
+    The only command that changes nothing and still appends. That is the whole shape of it:
+    R24 is satisfied because a branch is never written to the store, and this event exists so
+    that the figures the CEO weighed are on the record afterwards rather than lost with the
+    panel that showed them.
+
+    **Everything that can fail is resolved before any branch runs.** The ordering `ask_person`
+    states its reason for, applied here for a second reason as well: a branch costs about a
+    tenth of a second, so a refusal that arrived after three of them would have spent that for
+    nothing.
+
+    **Staleness, as far as the state can prove it (R25, AE19).** The CEO asked about a specific
+    situation — this person, stopped at this checkpoint, at the tick they were looking at — and
+    the comparison is against a world that no longer exists if any of it has changed. Being
+    *blocked at this checkpoint* is the authority, and it covers all four of the ways the
+    situation moves: resolving it, completing the item, reassigning it and losing its assignee
+    to attrition each take the item out of `blocked`. The person is checked too, because a
+    reassignment followed by the work re-reaching the same checkpoint puts a *different* person
+    in front of the same question. The tick is refused if it runs ahead of the kernel's clock,
+    which is the client having tagged from a render clock that got in front of the run.
+
+    This is deliberately not backed by a recorded blocked-at tick. Adding one would put a field
+    into hashed state and bump the state-shape version, which invalidates every existing
+    snapshot — a large price for a guard the three checks above already close.
+
+    **The branch bound is a submission guard, not tuning** (R26). It bounds what one command
+    may cause the kernel to do. A comparison changes no state, so its bound cannot change what
+    a recorded run means, and it therefore stays out of `TUNING` and out of the rules version —
+    where moving it would invalidate every kept snapshot and make current logs unfoldable.
+    """
+    # Imported here rather than at module scope: `simcore.compare` imports this module, and a
+    # top-level import either way round is a cycle. The same shape `items.director_for` uses.
+    from contracts import canonical
+    from simcore import compare as branching
+
+    item = state.item(item_id)
+    spec = state.spec_of(item_id)
+
+    if cp_index < 0 or cp_index >= len(spec.checkpoints):
+        raise CommandRejected(f"{item_id} has no checkpoint {cp_index}")
+
+    if at_tick > state.tick:
+        raise CommandRejected(
+            f"this comparison is tagged at tick {at_tick}, ahead of the run's clock "
+            f"(now {state.tick}). Nothing has happened there yet to compare."
+        )
+
+    # Blocked *at this checkpoint*, which the person's own runtime records because `_block` set
+    # it. Reading the item's status alone would accept a request about the second checkpoint on
+    # an item stopped at the first.
+    waiting = state.people.get(item.assignee)
+    stopped_here = (
+        item.status == STATUS_BLOCKED
+        and waiting is not None
+        and waiting.cp_index == cp_index
+        and not item.resolved[cp_index]
+    )
+    if not stopped_here:
+        raise CommandRejected(
+            f'"{spec.title}" is no longer stopped at that decision, so this comparison is '
+            "stale. Whatever moved it — you settled it, it finished, it was reassigned, or "
+            "its owner left — the branches would be forked from a run that no longer exists."
+        )
+
+    if item.assignee != person_id:
+        raise CommandRejected(
+            f'"{spec.title}" is now with {item.assignee or "nobody"} rather than '
+            f"{person_id}, so this comparison is stale. It reached that decision again with "
+            "somebody else in front of it."
+        )
+
+    options = spec.checkpoints[cp_index].options
+    if len(options) > MAX_BRANCHES_PER_COMPARISON:
+        raise CommandRejected(
+            f"that checkpoint offers {len(options)} options and a comparison runs at most "
+            f"{MAX_BRANCHES_PER_COMPARISON} branches. Each branch steps the whole simulation "
+            "to the next decision, so the bound is on what one command may cost."
+        )
+
+    # Every branch is computed before anything is appended, and every branch is forked from the
+    # parent rather than from the branch before it. Outside any append transaction: the single
+    # writer holds one transaction per tick, and three branches inside it would stall every
+    # other run's clock and read as a store outage that is not happening.
+    branches = [
+        branching.run_branch(state, item_id, cp_index, index, in_person=in_person).to_state()
+        for index in range(len(options))
+    ]
+
+    payload = {
+        "tick": state.tick,
+        "item": item_id,
+        "cp_index": cp_index,
+        "person": person_id,
+        # What the client said it was looking at, kept beside the tick the branches actually
+        # forked at. The two are usually equal and the record is worth nothing if it only
+        # keeps the one the kernel chose.
+        "requested_at_tick": at_tick,
+        "in_person": in_person,
+        "branches": branches,
+    }
+
+    encoded = len(canonical.encode(payload))
+    if encoded > MAX_COMPARISON_PAYLOAD_BYTES:
+        raise CommandRejected(
+            f"that comparison encodes to {encoded} bytes and the limit is "
+            f"{MAX_COMPARISON_PAYLOAD_BYTES}. Refused at the entry point rather than written: "
+            "an append-only log cannot take a row back."
+        )
+
+    return [Emitted(kind=EventKind.OPTIONS_COMPARED, payload=payload)]
 
 
 # =========================================================================

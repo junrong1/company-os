@@ -649,6 +649,23 @@ class KernelRuntime:
             kernel_pb2.ASK_PERSON: lambda: sim.ask_person(
                 run.state, str(decoded.get("person", "")), str(decoded.get("question", ""))
             ),
+            # Runs its branches here, in the handler, and therefore *outside* the append
+            # transaction the writer opens below. That placement is the whole reason a
+            # comparison is affordable: the single writer holds one transaction per tick, and
+            # three branches at a tenth of a second each inside it would stall every other
+            # run's clock and read as a store outage that is not happening.
+            #
+            # `.get` rather than `[...]` for the same reason `ask_person` uses it: a payload
+            # missing a key is a client mistake to answer with a reason, and a KeyError here
+            # would escape as a 500 because nothing above catches anything but CommandRejected.
+            kernel_pb2.COMPARE_OPTIONS: lambda: sim.compare_options(
+                run.state,
+                str(decoded.get("item", "")),
+                int(decoded.get("cp_index", -1)),
+                str(decoded.get("person", "")),
+                int(decoded.get("at_tick", 0)),
+                in_person=bool(decoded.get("in_person", False)),
+            ),
         }
 
         handler = dispatch.get(kind)
