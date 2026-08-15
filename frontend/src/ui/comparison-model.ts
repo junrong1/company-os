@@ -26,7 +26,7 @@
  * which they would if each derived its own columns.
  */
 
-import type { MetricDef } from '../design/tokens'
+import { type Direction, type MetricDef, direction } from '../design/tokens'
 
 /** The key a comparison is held under. One per checkpoint, which is one per decision. */
 export function comparisonKey(itemId: string, cpIndex: number): string {
@@ -189,9 +189,7 @@ export function projectedDirection(
   figure: ProjectedFigure,
   now: number | undefined,
   metric: MetricDef | undefined,
-): 'favourable' | 'unfavourable' | 'flat' {
+): Direction {
   if (figure.value === null || now === undefined || metric === undefined) return 'flat'
-  const movement = figure.value - now
-  if (movement === 0) return 'flat'
-  return Math.sign(movement) === Math.sign(metric.good) ? 'favourable' : 'unfavourable'
+  return direction(metric, figure.value - now)
 }

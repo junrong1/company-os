@@ -691,6 +691,12 @@ describe('the comparison', () => {
     expect(comparison).not.toBeNull()
     expect(comparison?.branches).toHaveLength(3)
     expect(comparison?.forkTick).toBe(600n)
+    // A new event kind arriving in the stream must not read as a lost event. The store's gap
+    // check is on the sequence alone, so a kind it did not recognise would still advance
+    // `appliedSeq` — this states that it does, because a spurious gap banner would tell the
+    // CEO their stream is broken every time they ran a comparison.
+    expect(state.appliedSeq).toBe(3n)
+    expect(state.sequenceGap).toBe(false)
 
     for (const branch of comparison?.branches ?? []) {
       // Every figure carries the tick it was measured at. A projection read without its

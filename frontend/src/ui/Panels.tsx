@@ -20,7 +20,7 @@
 import { useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
-import { type MetricDef, PAL, RESERVED_BEAM, deptColour } from '../design/tokens'
+import { type MetricDef, NO_METRIC_DEFS, PAL, RESERVED_BEAM, deptColour } from '../design/tokens'
 import { type CatalogEntry, type ItemStatus, type TrayEntry, useRunStore } from '../net/store'
 import { CompareAffordance } from './Comparison'
 import type { CompareSender } from './comparison-model'
@@ -243,7 +243,7 @@ export function TrayPanel({
   const tray = useRunStore(useShallow((state) => state.tray))
   const catalog = useRunStore(useShallow((state) => state.genesis?.catalog ?? []))
   // Genesis is written once and never replaced, so this is stable by reference.
-  const metricDefs = useRunStore((state) => state.genesis?.metricDefs) ?? EMPTY_METRIC_DEFS
+  const metricDefs = useRunStore((state) => state.genesis?.metricDefs) ?? NO_METRIC_DEFS
 
   const byId = useMemo(() => {
     const index: Record<string, CatalogEntry> = {}
@@ -268,9 +268,6 @@ export function TrayPanel({
     </section>
   )
 }
-
-/** The metric table is absent until genesis lands, and a fresh `[]` would re-render forever. */
-const EMPTY_METRIC_DEFS: MetricDef[] = []
 
 function TrayCard({
   entry,

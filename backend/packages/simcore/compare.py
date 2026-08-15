@@ -273,6 +273,9 @@ def run_branch(
     fixed, draw_cost, salaries = sim.day_cost_terms(branch)
     burn = fixed + draw_cost + salaries
     checkpoint = state.spec_of(item_id).checkpoints[cp_index]
+    # Once, not once per direction: the predicate walks every authored item and re-evaluates
+    # its gates, and the two sets below are differences over the same answer.
+    unlocked_after = _gates_open(branch)
 
     return BranchSummary(
         item=item_id,
@@ -293,8 +296,8 @@ def run_branch(
         },
         runway=Figure(value=runway_days(branch.metrics["cash"], burn), at_tick=branch.tick),
         daily_cost=Figure(value=burn, at_tick=branch.tick),
-        unlocked=sorted(_gates_open(branch) - unlocked_before),
-        foreclosed=sorted(unlocked_before - _gates_open(branch)),
+        unlocked=sorted(unlocked_after - unlocked_before),
+        foreclosed=sorted(unlocked_before - unlocked_after),
         emitted=emitted,
     )
 
@@ -345,12 +348,9 @@ def _refuse_unless_forkable(
         )
     if item.resolved[cp_index]:
         raise sim.CommandRejected("that checkpoint is already resolved")
-    if not work.checkpoint_reached(item.done_units, spec.effort_units, checkpoint.at_percent):
-        progress = item.done_units * 100 // spec.effort_units if spec.effort_units else 0
-        raise sim.CommandRejected(
-            f'"{spec.title}" has not reached that decision point yet — it is at {progress}% '
-            f"of {checkpoint.at_percent}%."
-        )
+    not_reached_yet = sim.checkpoint_not_reached(item, spec, checkpoint)
+    if not_reached_yet:
+        raise sim.CommandRejected(not_reached_yet)
 
 
 def _copy_of(state: sim.State) -> sim.State:

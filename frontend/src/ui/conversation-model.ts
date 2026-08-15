@@ -18,7 +18,7 @@
  * from both positions every frame rather than only when the CEO moves.
  */
 
-import type { MetricDef } from '../design/tokens'
+import { type Direction, type MetricDef, directionOf } from '../design/tokens'
 import type { CatalogEntry, OptionDef, PersonView, RosterEntry, TrayEntry } from '../net/store'
 
 /** Within this, a conversation opens. The prototype's `TALK_RANGE`, in milli-tiles. */
@@ -314,18 +314,20 @@ export function optionConsequence(
  *
  * The draw is the case a uniform rule gets wrong: less recurring work is a win, so a negative
  * draw change is favourable — the same asymmetry `manualHours` carries, and for the same
- * reason, since the metric is the sum of the draws.
+ * reason, since the metric is the sum of the draws. That is why this resolves a `good`
+ * direction and hands it to `directionOf` rather than calling `direction`: the draw figure has
+ * no `MetricDef` to pass, and inventing one to satisfy the signature would be worse than
+ * naming the number.
  */
 export function consequenceDirection(
   figure: ConsequenceFigure,
   metricDefs: readonly MetricDef[],
-): 'favourable' | 'unfavourable' | 'flat' {
-  if (figure.delta === 0) return 'flat'
+): Direction {
   const good =
     figure.key === DRAW_FIGURE_KEY
       ? -1
       : (metricDefs.find((metric) => metric.key === figure.key)?.good ?? 1)
-  return Math.sign(figure.delta) === Math.sign(good) ? 'favourable' : 'unfavourable'
+  return directionOf(figure.delta, good)
 }
 
 /** A person stopped at a decision, as the conversation shows it. */

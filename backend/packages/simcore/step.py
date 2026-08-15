@@ -1871,6 +1871,26 @@ def _complete_hire(state: State, item_id: str) -> list[Emitted]:
     ]
 
 
+def checkpoint_not_reached(
+    item: ItemRuntime, spec: work.ItemSpec, checkpoint: work.Checkpoint
+) -> str:
+    """Why this checkpoint cannot be acted on yet, or the empty string if it can.
+
+    Shared by `resolve_checkpoint` and the comparison's guard because the arithmetic is easy to
+    copy slightly wrong: the progress figure cross-multiplies and has to survive an item with
+    zero effort, and the two callers were carrying identical copies of it. Returns the sentence
+    rather than raising, so each caller keeps its own ending — a decision adds "Nobody is
+    waiting on you for it", and a comparison has its own reason to give.
+    """
+    if work.checkpoint_reached(item.done_units, spec.effort_units, checkpoint.at_percent):
+        return ""
+    progress = item.done_units * 100 // spec.effort_units if spec.effort_units else 0
+    return (
+        f'"{spec.title}" has not reached that decision point yet — it is at {progress}% '
+        f"of {checkpoint.at_percent}%."
+    )
+
+
 def resolve_checkpoint(
     state: State, item_id: str, cp_index: int, option_index: int, in_person: bool
 ) -> list[Emitted]:
@@ -1896,12 +1916,9 @@ def resolve_checkpoint(
     # tray that renders blocked items; a kernel command has no such protection and needs the
     # rule stated. Found when U7's slower burn rate meant a fixed tick count no longer
     # reached the checkpoint, and the early resolution succeeded instead of failing.
-    if not work.checkpoint_reached(item.done_units, spec.effort_units, checkpoint.at_percent):
-        progress = item.done_units * 100 // spec.effort_units if spec.effort_units else 0
-        raise CommandRejected(
-            f'"{spec.title}" has not reached that decision point yet — it is at {progress}% '
-            f"of {checkpoint.at_percent}%. Nobody is waiting on you for it."
-        )
+    not_reached_yet = checkpoint_not_reached(item, spec, checkpoint)
+    if not_reached_yet:
+        raise CommandRejected(f"{not_reached_yet} Nobody is waiting on you for it.")
 
     option = checkpoint.options[option_index]
     item.resolved[cp_index] = True

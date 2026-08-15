@@ -14,7 +14,7 @@
 import { useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
-import { type MetricDef, PAL, deptColour } from '../design/tokens'
+import { NO_METRIC_DEFS, PAL, deptColour } from '../design/tokens'
 import { type AnsweredQuestion, useRunStore } from '../net/store'
 import { CompareAffordance } from './Comparison'
 import type { CompareSender } from './comparison-model'
@@ -40,9 +40,6 @@ import {
  * panel forever.
  */
 const EMPTY_ANSWERS: AnsweredQuestion[] = []
-
-/** The same trick for the metric table, which is absent until genesis lands. */
-const EMPTY_METRIC_DEFS: MetricDef[] = []
 
 export interface ConversationProps {
   /** Who the CEO is standing next to, decided by the model from both parties' positions. */
@@ -268,7 +265,7 @@ function Decision({
 }) {
   const [chosen, setChosen] = useState<number | null>(null)
   // Genesis is written once and never replaced, so this is stable by reference.
-  const metricDefs = useRunStore((state) => state.genesis?.metricDefs) ?? EMPTY_METRIC_DEFS
+  const metricDefs = useRunStore((state) => state.genesis?.metricDefs) ?? NO_METRIC_DEFS
 
   return (
     <section className="conversation__decision">

@@ -229,7 +229,31 @@ export interface MetricDef {
   display_max: number
 }
 
+/**
+ * The empty metric table, as one shared reference.
+ *
+ * A fresh `[]` from a selector would be a new reference every call, and the store's equality
+ * check is `Object.is` on the selector's output — so a panel reading the metric table before
+ * genesis has landed would re-render forever. Shared rather than declared once per panel that
+ * needs it: three copies of a sentinel is three chances for one to become an inline literal.
+ */
+export const NO_METRIC_DEFS: readonly MetricDef[] = []
+
 export type Direction = 'favourable' | 'unfavourable' | 'flat'
+
+/**
+ * Whether a movement is good news, given which direction counts as an improvement.
+ *
+ * The lower half of `direction`, split out because two callers need the rule without holding a
+ * `MetricDef`. The recurring-draw figure is not a metric — `manualHours` is derived from the
+ * sum of the draws — and a projected figure is read against where the run is now rather than
+ * against zero. Both were open-coding the sign comparison, which is one rule in three places
+ * and exactly what drifts silently.
+ */
+export function directionOf(delta: number, good: number): Direction {
+  if (delta === 0) return 'flat'
+  return Math.sign(delta) === Math.sign(good) ? 'favourable' : 'unfavourable'
+}
 
 /**
  * Whether a movement is good news for this metric.
@@ -240,8 +264,7 @@ export type Direction = 'favourable' | 'unfavourable' | 'flat'
  * as a regression. That rule is the kernel's to state, and the HUD's to read.
  */
 export function direction(metric: MetricDef, delta: number): Direction {
-  if (delta === 0) return 'flat'
-  return Math.sign(delta) === Math.sign(metric.good) ? 'favourable' : 'unfavourable'
+  return directionOf(delta, metric.good)
 }
 
 /** The hue a delta renders in. Never the beam — a metric movement is not a person waiting. */

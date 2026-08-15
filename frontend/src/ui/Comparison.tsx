@@ -19,7 +19,7 @@
 import { useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
-import { type MetricDef, PAL, directionColour } from '../design/tokens'
+import { type MetricDef, NO_METRIC_DEFS, PAL, directionColour } from '../design/tokens'
 import { useRunStore } from '../net/store'
 import { Mark } from './Marking'
 import {
@@ -209,7 +209,7 @@ export function CompareAffordance({
   const comparison = useRunStore(
     useShallow((state) => comparisonFor(itemId, cpIndex, state.comparisons, state.tray)),
   )
-  const metricDefs = useRunStore((state) => state.genesis?.metricDefs) ?? EMPTY_METRIC_DEFS
+  const metricDefs = useRunStore((state) => state.genesis?.metricDefs) ?? NO_METRIC_DEFS
   const now = useRunStore(useShallow((state) => state.metrics))
   const titles = useRunStore(
     useShallow((state) =>
@@ -266,5 +266,3 @@ export function CompareAffordance({
   )
 }
 
-/** Absent until genesis lands, and a fresh `[]` from a selector would re-render forever. */
-const EMPTY_METRIC_DEFS: MetricDef[] = []
