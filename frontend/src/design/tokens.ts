@@ -71,6 +71,45 @@ export const PAL = {
  */
 export const RESERVED_BEAM = PAL.beam
 
+// =========================================================================
+// The authored-tuning marking
+// =========================================================================
+
+/**
+ * Every number this product renders is invented, and every surface has to say so.
+ *
+ * R27 and R28: no figure appears without its marking travelling with it. R36 adds the part
+ * that makes it a design constraint rather than a label — **the marking is a dedicated token,
+ * never a hue.** Amber is reserved for a person waiting on the CEO, and a "these numbers are
+ * made up" signal expressed as colour would either spend that reserve or invent a second one
+ * competing with it. So the marking is a glyph and a short label, and it survives greyscale,
+ * a colour-blind reader and a screenshot.
+ *
+ * `PAL.tacit` plus its "Only in person" badge is the working precedent for a non-hue semantic
+ * slot; this is the same shape with the hue removed entirely.
+ *
+ * Exported as its own frozen token — the shape `RESERVED_BEAM` established — so that "the
+ * marking is never the beam" and "the marking carries no colour" are properties a test states
+ * directly rather than conventions somebody has to remember.
+ */
+export const AUTHORED_TUNING = {
+  /**
+   * Approximately-equal, because that is what these figures are: a shape someone chose, not a
+   * measurement anything took. Deliberately not a warning triangle — the numbers are not
+   * wrong, they are authored, and a warning would read as a fault in the simulation.
+   */
+  glyph: '≈',
+  /** What the glyph means, spelled out wherever there is room for it. */
+  label: 'authored tuning',
+  /** The long form, for a tooltip or an assistive-technology label. */
+  description: 'This figure is authored tuning, not a measurement.',
+} as const
+
+/** The marking's accessible label for one named figure. */
+export function authoredTuningLabel(what: string): string {
+  return `${what} — ${AUTHORED_TUNING.label}`
+}
+
 /** Interactive, selected. Already means "live", which is why it carries in-progress. */
 export const ACCENT = PAL.shilv
 

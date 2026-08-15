@@ -130,11 +130,46 @@
 }
 
 .tile__label {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
   margin: 0 0 0.2rem;
   font-size: 0.65rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-faint);
+}
+
+/* ---------------------------------------------------------------------------
+   The authored-tuning marking (R27, R36)
+   --------------------------------------------------------------------------- */
+
+/*
+ * Everything that carries meaning here is the glyph and the label. The colour is chrome and is
+ * set on the element in `Marking.tsx` rather than here, so the marking travels with the
+ * component wherever it lands rather than depending on a stylesheet a canvas surface never
+ * loads. Sized down and never bold: it has to be present on every figure without competing
+ * with the figure it marks.
+ */
+.mark {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2rem;
+  flex: 0 0 auto;
+  font-size: 0.7em;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  /* Never selectable into a copied figure: pasting "4800 ≈" somewhere else would carry the
+     glyph without the explanation that makes it mean anything. */
+  user-select: none;
+}
+
+.mark__glyph {
+  font-weight: 400;
+}
+
+.mark__label {
+  font-size: 0.9em;
 }
 
 .tile__row {
@@ -496,6 +531,39 @@
   grid-column: 2;
   color: var(--text-faint);
   font-size: 0.7rem;
+}
+
+/* ---------------------------------------------------------------------------
+   What an option costs (R35)
+   --------------------------------------------------------------------------- */
+
+.consequence {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.1rem 0.5rem;
+  margin-top: 0.15rem;
+  font-size: 0.7rem;
+}
+
+.consequence__figure {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2rem;
+}
+
+.consequence__label {
+  color: var(--text-faint);
+}
+
+.consequence__delta {
+  font-variant-numeric: tabular-nums;
+}
+
+.consequence__note {
+  flex-basis: 100%;
+  font-size: 0.68rem;
 }
 
 .decision__cost {

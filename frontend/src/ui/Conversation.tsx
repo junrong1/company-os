@@ -14,8 +14,9 @@
 import { useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
-import { PAL, deptColour } from '../design/tokens'
+import { type MetricDef, PAL, deptColour } from '../design/tokens'
 import { type AnsweredQuestion, useRunStore } from '../net/store'
+import { OptionConsequence } from './Consequence'
 import type { CommandSender } from './Panels'
 import {
   type AssignableItem,
@@ -37,6 +38,9 @@ import {
  * panel forever.
  */
 const EMPTY_ANSWERS: AnsweredQuestion[] = []
+
+/** The same trick for the metric table, which is absent until genesis lands. */
+const EMPTY_METRIC_DEFS: MetricDef[] = []
 
 export interface ConversationProps {
   /** Who the CEO is standing next to, decided by the model from both parties' positions. */
@@ -244,6 +248,8 @@ function Offer({ item, onCommand }: { item: AssignableItem; onCommand?: CommandS
  */
 function Decision({ card, onCommand }: { card: StoppedCard; onCommand?: CommandSender }) {
   const [chosen, setChosen] = useState<number | null>(null)
+  // Genesis is written once and never replaced, so this is stable by reference.
+  const metricDefs = useRunStore((state) => state.genesis?.metricDefs) ?? EMPTY_METRIC_DEFS
 
   return (
     <section className="conversation__decision">
@@ -267,6 +273,10 @@ function Decision({ card, onCommand }: { card: StoppedCard; onCommand?: CommandS
           />
           <span className="option__label">{option.label}</span>
           <span className="option__detail">{option.detail}</span>
+          {/* The prose price and the arithmetic price, together. The detail line says what the
+              option does; the figures say what it costs. Withholding the second was the old
+              behaviour, and the marking is what makes showing it defensible (R35). */}
+          <OptionConsequence option={option} metricDefs={metricDefs} />
         </label>
       ))}
 

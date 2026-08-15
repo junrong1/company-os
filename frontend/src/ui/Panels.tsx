@@ -20,8 +20,9 @@
 import { useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
-import { PAL, RESERVED_BEAM, deptColour } from '../design/tokens'
+import { type MetricDef, PAL, RESERVED_BEAM, deptColour } from '../design/tokens'
 import { type CatalogEntry, type ItemStatus, type TrayEntry, useRunStore } from '../net/store'
+import { OptionConsequence } from './Consequence'
 import { FROM_TRAY_COST, resolvePayload } from './conversation-model'
 import { STATUS_LABEL, lockReason, progressPercent } from './panels-model'
 
@@ -233,6 +234,8 @@ export function WorkPanel({ onAssign }: { onAssign?: CommandSender }) {
 export function TrayPanel({ onResolve }: { onResolve?: CommandSender }) {
   const tray = useRunStore(useShallow((state) => state.tray))
   const catalog = useRunStore(useShallow((state) => state.genesis?.catalog ?? []))
+  // Genesis is written once and never replaced, so this is stable by reference.
+  const metricDefs = useRunStore((state) => state.genesis?.metricDefs) ?? EMPTY_METRIC_DEFS
 
   const byId = useMemo(() => {
     const index: Record<string, CatalogEntry> = {}
@@ -245,19 +248,30 @@ export function TrayPanel({ onResolve }: { onResolve?: CommandSender }) {
       <h2>Waiting on you</h2>
       {tray.length === 0 && <p className="hint">Nobody is stopped.</p>}
       {tray.map((entry) => (
-        <TrayCard key={`${entry.itemId}:${entry.cpIndex}`} entry={entry} item={byId[entry.itemId]} onResolve={onResolve} />
+        <TrayCard
+          key={`${entry.itemId}:${entry.cpIndex}`}
+          entry={entry}
+          item={byId[entry.itemId]}
+          metricDefs={metricDefs}
+          onResolve={onResolve}
+        />
       ))}
     </section>
   )
 }
 
+/** The metric table is absent until genesis lands, and a fresh `[]` would re-render forever. */
+const EMPTY_METRIC_DEFS: MetricDef[] = []
+
 function TrayCard({
   entry,
   item,
+  metricDefs,
   onResolve,
 }: {
   entry: TrayEntry
   item: CatalogEntry | undefined
+  metricDefs: readonly MetricDef[]
   onResolve?: CommandSender
 }) {
   const [chosen, setChosen] = useState<number | null>(null)
@@ -278,6 +292,11 @@ function TrayCard({
           />
           <span className="option__label">{option.label}</span>
           <span className="option__detail">{option.detail}</span>
+          {/* The same component the conversation renders, so the two surfaces cannot price one
+              option two ways. The tray still withholds the tacit line — that is the mechanic,
+              and it is held apart from the tray entry precisely so this card has nothing to
+              leak. What it no longer withholds is the arithmetic. */}
+          <OptionConsequence option={option} metricDefs={metricDefs} />
         </label>
       ))}
 

@@ -24,7 +24,16 @@
  * the full node at 2px stroke and the pip at 1px.
  */
 
-import { ACCENT, OK, PAL, TACIT, deptColour, loadColour, loadFillPermille } from '../design/tokens'
+import {
+  ACCENT,
+  AUTHORED_TUNING,
+  OK,
+  PAL,
+  TACIT,
+  deptColour,
+  loadColour,
+  loadFillPermille,
+} from '../design/tokens'
 import { type PixelContext, fitText, paintGrid, paintText } from '../design/text'
 import type { ItemStatus } from '../net/store'
 
@@ -248,10 +257,17 @@ export function drawNode(context: PixelContext, node: NodeView): void {
   paintGrid(context, GLYPHS[encoding.glyph], x + width - 16, y + 7, GLYPH_PALETTE, 1)
 
   paintText(context, fitText(node.label, width - 28), x + 10, y + 7, 1, encoding.label)
+
+  // The owning department's load, on the same scale the office's capacity tile shows — the
+  // ceiling comes off the wire for both, so the two cannot read against different domains.
+  //
+  // Marked, because it is a figure the client renders and R27 admits no exceptions. The marking
+  // is appended to the text rather than tinted in, since it must survive greyscale and the hue
+  // here is already spent saying "over ceiling".
   const percent = Math.round((node.loadPermille * 100) / Math.max(1, node.ceiling))
   paintText(
     context,
-    `LOAD ${percent}%`,
+    `LOAD ${percent}% ${AUTHORED_TUNING.glyph}`,
     x + 10,
     y + 18,
     1,
