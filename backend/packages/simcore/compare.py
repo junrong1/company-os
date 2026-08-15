@@ -38,6 +38,24 @@ run seed, tick, purpose and entity with no generator state, so a branch reproduc
 draws tick for tick by construction. An unattended branch also invokes no agent, because no CEO
 is inside it. The shared-input rule R23 asked for would have protected nothing.
 
+**A branch is a run nobody answers, and that is the honest projection.** `step()` raises a
+period consult to the domain service at each day boundary, and a branch replays `step()` in
+full — so a branch raises those requests too, into its own copy of `pending`, and abandons them
+a sim-day later when nothing has replied. Nothing leaves the process: `raise_request` only
+writes to state, the transport is the kernel service's job, and the branch's state is discarded
+seconds later. Two consequences worth stating rather than discovering.
+
+*It is correct.* A branch genuinely has nobody to answer it. There is no service that could,
+and R17 forbids an expert from choosing inside one anyway. Suppressing the consult would make
+the branch diverge from the step function, and "the branch prices the decision the way the run
+would" is the property that makes a projection worth reading at all.
+
+*It cannot bias a comparison.* Every branch at one checkpoint forks from the same state and
+raises and abandons exactly the same requests at exactly the same ticks, so the no-answer path
+is common to all of them and cancels out of the thing the CEO is actually comparing. What it
+does mean is that a branch's absolute figures describe a run whose domain service stays silent
+— which is a bound on how far a projection may be read, not an error in it.
+
 This module is pure `simcore` and the import-boundary tests hold it there. That constraint is
 the reason the runner is a library rather than a service call: the kernel service imports it,
 the report could, and neither has to stand a transport up to ask where an option leads.

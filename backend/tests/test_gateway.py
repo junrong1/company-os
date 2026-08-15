@@ -13,6 +13,8 @@ import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
+from contracts import canonical
+from contracts.envelope import EventKind
 from gateway import main as gateway_main
 from gateway import stream as streaming
 from gateway.commands import CommandLedger, Outcome, submit
@@ -274,6 +276,188 @@ def test_a_comparison_is_accepted_while_paused_unlike_every_other_player_command
     assert len(compared["produced_seq"]) == 1
     # And the pause held: a comparison stops no clock and starts none.
     assert runtime.runs[RUN].rate == 0
+
+
+# =========================================================================
+# The comparison, through the whole composed stack (R8, AE23)
+# =========================================================================
+
+
+def _stopped_at_a_decision(runtime, item: str = "wi_ap_map", person: str = "stf_ap"):
+    """Drive the composed run until somebody is waiting on the CEO."""
+    run = runtime.runs[RUN]
+    runtime.apply_command(
+        RUN,
+        _kind("ASSIGN_WORK"),
+        _encode({"item": item, "person": person, "via_manager": False}),
+    )
+    while run.state.items[item].status != "blocked":
+        runtime._advance(run, 1)
+    return run
+
+
+def test_a_comparison_through_the_composed_stack_returns_branch_summaries(
+    composed, api
+) -> None:
+    """AE23. The command path, the guard, the event and the client's read, together.
+
+    Driven through the composed stack rather than against the kernel directly, because the
+    repo's documented failure mode is golden-tested code with no call path — a capability that
+    passes its own tests and reaches no surface is not done. No model key is configured here
+    and none exists anywhere in this repo; the branches are arithmetic.
+    """
+    runtime, client = composed
+    run = _stopped_at_a_decision(runtime)
+
+    response = command(
+        api,
+        "compare_options",
+        {
+            "item": "wi_ap_map",
+            "cp_index": 0,
+            "person": "stf_ap",
+            "at_tick": run.state.tick,
+            "in_person": True,
+        },
+        "compare-1",
+    ).json()
+
+    assert response["status"] == Outcome.APPLIED, response["reason"]
+    assert len(response["produced_seq"]) == 1
+
+    # And the record the client will read is on the log, complete.
+    [record] = [
+        event
+        for event in client.read_events(RUN, after_seq=0)
+        if event.kind is EventKind.OPTIONS_COMPARED
+    ]
+    payload = record.decoded_payload()
+
+    assert payload["item"] == "wi_ap_map"
+    assert len(payload["branches"]) == 3
+    for branch in payload["branches"]:
+        assert branch["trajectories"]
+        assert branch["metrics"]["cash"]["at_tick"] == branch["stop_tick"]
+        assert branch["stop_reason"] in ("checkpoint", "horizon", "insolvent")
+
+
+def test_a_comparison_advances_nothing_and_leaves_the_run_where_it_was(composed, api) -> None:
+    """AE9 through the stack: the command that appends without mutating."""
+    runtime, _ = composed
+    run = _stopped_at_a_decision(runtime)
+
+    from simcore import hashing
+    from simcore import step as sim
+
+    before = hashing.state_hash(sim.snapshot(run.state)).overall
+    before_tick = run.state.tick
+
+    command(
+        api,
+        "compare_options",
+        {
+            "item": "wi_ap_map",
+            "cp_index": 0,
+            "person": "stf_ap",
+            "at_tick": before_tick,
+            "in_person": True,
+        },
+        "compare-1",
+    )
+
+    assert hashing.state_hash(sim.snapshot(run.state)).overall == before
+    assert run.state.tick == before_tick
+
+
+def test_a_stale_comparison_reaches_the_client_as_a_reason_not_an_error(composed, api) -> None:
+    """AE19. A rejection is a successful request whose answer is "no".
+
+    Answered 200 with a sentence rather than 4xx, because the client's banner shows the reason
+    and an error status would be handled by the transport layer as a failed request — which
+    reads as a dead button rather than as an explanation.
+    """
+    runtime, _ = composed
+    run = _stopped_at_a_decision(runtime)
+    at_tick = run.state.tick
+
+    # Settle it, so the comparison the CEO was about to ask for is against a run that has gone.
+    runtime.apply_command(
+        RUN,
+        _kind("RESOLVE_CHECKPOINT"),
+        _encode({"item": "wi_ap_map", "cp_index": 0, "option_index": 0, "in_person": True}),
+    )
+
+    response = command(
+        api,
+        "compare_options",
+        {
+            "item": "wi_ap_map",
+            "cp_index": 0,
+            "person": "stf_ap",
+            "at_tick": at_tick,
+            "in_person": True,
+        },
+        "compare-stale",
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == Outcome.REJECTED
+    assert "stale" in body["reason"]
+    assert body["produced_seq"] == [], "a rejection must produce no events"
+
+
+def test_a_run_resumed_after_a_restart_can_still_be_compared(tmp_path, monkeypatch) -> None:
+    """The comparison needs nothing but the state a resume rebuilds.
+
+    A branch forks from live state, so a run reconstructed from its log has everything a
+    comparison needs — and nothing about the comparison is itself persisted state, so there is
+    no risk of a resumed run holding a half-written one.
+    """
+    monkeypatch.setenv("COMPANY_OS_STORE_URL", f"sqlite:///{tmp_path}/compare-resume.sqlite3")
+
+    import single_process
+    from simcore import step as sim
+
+    async def restart() -> None:
+        # `stop()` rather than only stopping the writer, because that is what releases the
+        # lease. Two kernels against one store is what the lease exists to prevent, so a test
+        # that skipped the release would be blocked by a working safeguard.
+        first, _ = single_process.compose()
+        first.create_run(RUN, SEED, horizon_tick=simtime.TICKS_PER_SIM_DAY * 30)
+        stopped_at_tick = _stopped_at_a_decision(first).state.tick
+        await first.stop()
+
+        second, _ = single_process.compose()
+        try:
+            resumed = second.resume_run(RUN)
+            assert resumed.state.tick == stopped_at_tick
+            assert resumed.state.items["wi_ap_map"].status == "blocked"
+
+            envelopes = second.apply_command(
+                RUN,
+                _kind("COMPARE_OPTIONS"),
+                _encode(
+                    {
+                        "item": "wi_ap_map",
+                        "cp_index": 0,
+                        "person": "stf_ap",
+                        "at_tick": resumed.state.tick,
+                        "in_person": True,
+                    }
+                ),
+            )
+
+            assert len(envelopes) == 1
+            assert envelopes[0].kind is EventKind.OPTIONS_COMPARED
+            assert len(canonical.decode(envelopes[0].payload)["branches"]) == 3
+            # And the resumed run is still stopped exactly where it was.
+            assert resumed.state.tick == stopped_at_tick
+            assert sim.snapshot(resumed.state)["items"]["wi_ap_map"]["status"] == "blocked"
+        finally:
+            await second.stop()
+
+    asyncio.run(restart())
 
 
 def test_a_command_after_termination_is_rejected_and_mutates_nothing(composed) -> None:
