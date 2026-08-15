@@ -33,6 +33,8 @@ import {
   stoppedCard,
   tacitKey,
 } from '../src/ui/conversation-model'
+import { OptionConsequence } from '../src/ui/Consequence'
+import { Conversation } from '../src/ui/Conversation'
 import { TrayPanel } from '../src/ui/Panels'
 import { actorsFromStore, typingTarget } from '../src/ui/stage'
 import { useRunStore } from './helpers/store-helpers'
@@ -566,6 +568,48 @@ describe('an option says what it costs', () => {
     expect(figures[figures.length - 1].key).toBe(DRAW_FIGURE_KEY)
   })
 
+  it('renders every figure with its marking, and renders nothing when there is nothing', () => {
+    // R28 is a completeness claim about *rendered* figures, so it has to be asserted on the
+    // rendered output. Every sibling surface — the HUD tiles, the DAG load label, the branch
+    // columns — carries an explicit marking assertion; this is the fourth surface that renders
+    // an authored figure and it had none of its own.
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const defs = metricDefsFixture() as never
+
+    act(() => {
+      root.render(
+        createElement(OptionConsequence, {
+          option: optionOf('wi_ap_auto', 0, 0),
+          metricDefs: defs,
+        } as never),
+      )
+    })
+
+    const figures = host.querySelectorAll('.consequence__figure')
+    expect(figures.length).toBeGreaterThan(0)
+    for (const figure of figures) {
+      expect(figure.querySelector('[data-authored-tuning]')).not.toBeNull()
+    }
+    expect(host.querySelector('.consequence__note')?.textContent).toContain('Recorded as:')
+
+    // The empty case renders nothing at all rather than an empty shell — an option that moves
+    // nothing and records nothing has no consequence to show.
+    act(() => {
+      root.render(
+        createElement(OptionConsequence, {
+          option: { label: 'Nothing', detail: '', effect: {}, draw_delta: 0, note: '' },
+          metricDefs: defs,
+        } as never),
+      )
+    })
+    expect(host.querySelector('.consequence')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('renders no figures at all for an option that moves nothing', () => {
     // "Leave it at $10K" on the closing-cycle item authors an empty effect. A row of zeros
     // would read as a measurement that came back flat, and there was no measurement.
@@ -617,6 +661,7 @@ function comparedFrame(options: {
   person: string
   cpIndex?: number
   tick?: number
+  inPerson?: boolean
   branches?: Array<Record<string, unknown>>
 }): EventFrame {
   const tick = options.tick ?? 600
@@ -635,7 +680,7 @@ function comparedFrame(options: {
       cp_index: options.cpIndex ?? 0,
       person: options.person,
       requested_at_tick: tick,
-      in_person: true,
+      in_person: options.inPerson ?? true,
       branches: options.branches ?? [
         branchFixture(0, { stop_reason: 'horizon', unlocked: ['wi_ap_auto', 'wi_close'] }),
         branchFixture(1, { stop_reason: 'horizon', unlocked: ['wi_ap_auto'] }),
@@ -686,7 +731,7 @@ describe('the comparison', () => {
     useRunStore.getState().apply(comparedFrame({ seq: 3, item: id, person: want }))
 
     const state = useRunStore.getState()
-    const comparison = comparisonFor(id, 0, state.comparisons, state.tray)
+    const comparison = comparisonFor(id, 0, true, state.comparisons, state.tray)
 
     expect(comparison).not.toBeNull()
     expect(comparison?.branches).toHaveLength(3)
@@ -735,7 +780,7 @@ describe('the comparison', () => {
     expect(after).toBe(before)
     // And the projection did land, so the test is about where it went rather than about
     // nothing having happened.
-    expect(Object.keys(useRunStore.getState().comparisons)).toEqual([`${id}:0`])
+    expect(Object.keys(useRunStore.getState().comparisons)).toEqual([`${id}:0:here`])
   })
 
   it('drops a displayed result when the item leaves blocked, with no client-side timer', () => {
@@ -747,15 +792,15 @@ describe('the comparison', () => {
     useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
     useRunStore.getState().apply(comparedFrame({ seq: 3, item: id, person: want }))
 
-    expect(useRunStore.getState().comparisons[`${id}:0`]).toBeDefined()
+    expect(useRunStore.getState().comparisons[`${id}:0:here`]).toBeDefined()
 
     useRunStore.getState().apply(
       itemFrame({ seq: 4, kind: 'DECISION_RESOLVED', item: id, status: 'active' }),
     )
 
     const state = useRunStore.getState()
-    expect(state.comparisons[`${id}:0`]).toBeUndefined()
-    expect(comparisonFor(id, 0, state.comparisons, state.tray)).toBeNull()
+    expect(state.comparisons[`${id}:0:here`]).toBeUndefined()
+    expect(comparisonFor(id, 0, true, state.comparisons, state.tray)).toBeNull()
   })
 
   it('shows nothing once the tray no longer holds that checkpoint, whatever the slice holds', () => {
@@ -768,8 +813,8 @@ describe('the comparison', () => {
     useRunStore.getState().apply(comparedFrame({ seq: 3, item: id, person: want }))
 
     const held = useRunStore.getState().comparisons
-    expect(comparisonFor(id, 0, held, [])).toBeNull()
-    expect(comparisonFor(id, 0, held, useRunStore.getState().tray)).not.toBeNull()
+    expect(comparisonFor(id, 0, true, held, [])).toBeNull()
+    expect(comparisonFor(id, 0, true, held, useRunStore.getState().tray)).not.toBeNull()
   })
 
   it('replaces a second comparison at the same checkpoint rather than keeping both', () => {
@@ -784,8 +829,60 @@ describe('the comparison', () => {
 
     const held = useRunStore.getState().comparisons
     expect(Object.keys(held)).toHaveLength(1)
-    expect(held[`${id}:0`].forkTick).toBe(900n)
-    expect(held[`${id}:0`].atSeq).toBe(4n)
+    expect(held[`${id}:0:here`].forkTick).toBe(900n)
+    expect(held[`${id}:0:here`].atSeq).toBe(4n)
+  })
+
+  it('never shows one route the other route figures (R21)', () => {
+    // Both affordances are mounted at once whenever the CEO stands next to the blocked person,
+    // so a key without the route let a tray-run comparison satisfy the conversation's lookup —
+    // and the in-person panel would render tray-priced branches. The premium between the two
+    // is exactly what the panel exists to show, so the figures were wrong by the amount the
+    // feature is about.
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore
+      .getState()
+      .apply(comparedFrame({ seq: 3, item: id, person: want, inPerson: false }))
+
+    const state = useRunStore.getState()
+
+    // The tray asked, so the tray sees it and the conversation does not.
+    expect(comparisonFor(id, 0, false, state.comparisons, state.tray)).not.toBeNull()
+    expect(comparisonFor(id, 0, true, state.comparisons, state.tray)).toBeNull()
+
+    // And the two are held side by side rather than overwriting each other.
+    useRunStore
+      .getState()
+      .apply(comparedFrame({ seq: 4, item: id, person: want, inPerson: true }))
+    const both = useRunStore.getState()
+    expect(Object.keys(both.comparisons).sort()).toEqual([`${id}:0:here`, `${id}:0:tray`])
+    expect(comparisonFor(id, 0, true, both.comparisons, both.tray)?.inPerson).toBe(true)
+    expect(comparisonFor(id, 0, false, both.comparisons, both.tray)?.inPerson).toBe(false)
+  })
+
+  it('does not answer a fresh ask with the record from a previous one (R25)', () => {
+    // The record survives closing the panel — it is dropped only when the item leaves
+    // `blocked` — and a reload re-applies every historical record off the stream. Without the
+    // asked-at sequence, reopening rendered a projection thousands of ticks old as though it
+    // were the answer to the click just made, then silently swapped it half a second later.
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore.getState().apply(comparedFrame({ seq: 3, item: id, person: want, tick: 600 }))
+
+    const held = useRunStore.getState()
+    // Asked before that record arrived: it is the answer.
+    expect(comparisonFor(id, 0, true, held.comparisons, held.tray, 2n)).not.toBeNull()
+    // Asked after it arrived: it is a previous answer, and the panel waits for a new one.
+    expect(comparisonFor(id, 0, true, held.comparisons, held.tray, 3n)).toBeNull()
+    expect(comparisonFor(id, 0, true, held.comparisons, held.tray, 99n)).toBeNull()
+
+    // The newer record answers the newer ask.
+    useRunStore.getState().apply(comparedFrame({ seq: 40, item: id, person: want, tick: 5000 }))
+    const fresh = useRunStore.getState()
+    expect(comparisonFor(id, 0, true, fresh.comparisons, fresh.tray, 3n)?.forkTick).toBe(5000n)
   })
 
   it('renders a terminal branch by its reason rather than as an empty trajectory', () => {
@@ -816,7 +913,7 @@ describe('the comparison', () => {
       .getState()
       .apply(comparedFrame({ seq: 3, item: id, person: want, branches: [insolvent, reached] }))
 
-    const branches = useRunStore.getState().comparisons[`${id}:0`].branches
+    const branches = useRunStore.getState().comparisons[`${id}:0:here`].branches
 
     expect(stopSentence(branches[0])).toContain('runs out of cash')
     expect(stopSentence(branches[0])).toContain('4200')
@@ -839,7 +936,7 @@ describe('the comparison', () => {
       .getState()
       .apply(comparedFrame({ seq: 3, item: id, person: want, branches: [bounded, horizon] }))
 
-    const branches = useRunStore.getState().comparisons[`${id}:0`].branches
+    const branches = useRunStore.getState().comparisons[`${id}:0:here`].branches
 
     expect(branches[0].stopReason).toBe('bound')
     expect(stopSentence(branches[0])).toContain('continues past there')
@@ -859,7 +956,7 @@ describe('the comparison', () => {
       .getState()
       .apply(comparedFrame({ seq: 3, item: id, person: want, branches: [unknown] }))
 
-    const branch = useRunStore.getState().comparisons[`${id}:0`].branches[0]
+    const branch = useRunStore.getState().comparisons[`${id}:0:here`].branches[0]
     expect(branch.runway.value).toBeNull()
     expect(branch.runway.atTick).toBe(700n)
   })
@@ -961,7 +1058,9 @@ describe('the comparison', () => {
     expect(commands).toEqual([])
 
     act(() => {
-      useRunStore.getState().apply(comparedFrame({ seq: 3, item: id, person: want }))
+      useRunStore
+        .getState()
+        .apply(comparedFrame({ seq: 3, item: id, person: want, inPerson: false }))
     })
 
     expect(host.querySelectorAll('.branch').length).toBe(3)
@@ -981,6 +1080,96 @@ describe('the comparison', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('asks in person from the conversation, and from the tray from the tray (AE14)', () => {
+    // The route flag is load-bearing: the kernel prices in-person and from-the-tray
+    // differently, so a branch that priced the route the CEO is *not* about to take would be
+    // wrong by exactly that premium. The tray side was covered and this side was not — which
+    // made "opens from both surfaces" a claim only half the surfaces were tested for.
+    const { id, want } = itemWithCheckpoint()
+    const asked: Array<[string, number, string, boolean]> = []
+
+    act(() => {
+      useRunStore.getState().apply(genesisFrame())
+      useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(
+        createElement(Conversation, {
+          personId: want,
+          onCompare: (item: string, cp: number, person: string, inPerson: boolean) =>
+            asked.push([item, cp, person, inPerson]),
+        } as never),
+      )
+    })
+
+    const ask = host.querySelector('.compare__ask') as HTMLButtonElement
+    expect(ask).not.toBeNull()
+    act(() => ask.click())
+
+    // True, because the CEO is standing in front of them. The tray asserts the same call with
+    // the flag the other way round, so the pair states the distinction rather than one side.
+    expect(asked).toEqual([[id, 0, want, true]])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('renders the fallback sentence for a stop reason it does not recognise', () => {
+    // `readBranch` is deliberately total against a malformed or older payload, so it can
+    // produce a branch whose reason is none of the four. The column still has to say
+    // something rather than render an empty string where a sentence belongs.
+    const unknown = { ...branchFixture(0), stop_reason: 'something-new', stop_tick: 900 }
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore
+      .getState()
+      .apply(comparedFrame({ seq: 3, item: id, person: want, branches: [unknown] }))
+
+    const branch = useRunStore.getState().comparisons[`${id}:0:here`].branches[0]
+    expect(stopSentence(branch)).toBe('Stops at tick 900.')
+
+    // And a checkpoint stop that names no checkpoint still reads as a stop.
+    expect(stopSentence({ ...branch, stopReason: 'checkpoint', reached: null })).toContain(
+      'next decision',
+    )
+  })
+
+  it('keeps the comparisons slice by reference when an unrelated item moves', () => {
+    // A performance contract with teeth: items leave `blocked` on every assignment, delivery
+    // and attrition, and rebuilding the slice each time would hand it a new identity — waking
+    // any subscriber that reads the whole slice for a change that did not happen.
+    const catalogue = catalogFixture().filter((entry) => entry.checkpoints.length > 0)
+    expect(catalogue.length).toBeGreaterThanOrEqual(2)
+    const [held, other] = catalogue
+
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: held.id, person: held.want }))
+    useRunStore
+      .getState()
+      .apply(comparedFrame({ seq: 3, item: held.id, person: held.want }))
+
+    const before = useRunStore.getState().comparisons
+    useRunStore.getState().apply(
+      itemFrame({ seq: 4, kind: 'WORK_ASSIGNED', item: other.id, status: 'active' }),
+    )
+
+    expect(useRunStore.getState().comparisons).toBe(before)
+
+    // And the slice is genuinely replaced when the item it holds a comparison for moves,
+    // so the fast path is not simply never dropping anything.
+    useRunStore.getState().apply(
+      itemFrame({ seq: 5, kind: 'DECISION_RESOLVED', item: held.id, status: 'active' }),
+    )
+    expect(useRunStore.getState().comparisons).not.toBe(before)
+    expect(useRunStore.getState().comparisons).toEqual({})
   })
 
   it('reads the projected direction against where the run is now, not against zero', () => {

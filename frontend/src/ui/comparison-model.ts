@@ -80,11 +80,24 @@ export function comparePayload(
 export function comparisonFor(
   itemId: string,
   cpIndex: number,
+  inPerson: boolean,
   comparisons: Record<string, Comparison>,
   tray: ReadonlyArray<{ itemId: string; cpIndex: number }>,
+  /**
+   * The sequence the viewer asked at. A record older than this is a *previous* answer.
+   *
+   * Without it, a record survives closing the panel — it is only dropped when the item leaves
+   * `blocked` — so reopening the comparison thousands of ticks later renders the old
+   * projection instantly, as though it were the answer to the click that had just been made.
+   * A page reload does the same, because the stream resumes from the beginning and re-applies
+   * every historical comparison record. The new one silently swaps in about half a second
+   * later, and nothing marks the gap.
+   */
+  askedAtSeq: bigint = 0n,
 ): Comparison | null {
-  const held = comparisons[comparisonKey(itemId, cpIndex)]
+  const held = comparisons[comparisonKey(itemId, cpIndex, inPerson)]
   if (held === undefined) return null
+  if (held.atSeq <= askedAtSeq) return null
 
   const stillWaiting = tray.some(
     (entry) => entry.itemId === itemId && entry.cpIndex === cpIndex,

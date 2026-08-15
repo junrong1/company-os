@@ -280,9 +280,15 @@ export function optionConsequence(
 ): ConsequenceFigure[] {
   const figures: ConsequenceFigure[] = []
 
-  // `?? {}` rather than a trusted field: a run exported before genesis payload version 4 is
-  // still readable through the report path, where the rules-version gate that rejects a live
-  // resync does not apply. No figures is the honest answer for one of those.
+  // `?? {}` rather than a trusted field: a run created before genesis payload version 4 keeps
+  // its old-shaped catalog forever — the fold never re-derives it — and the rules version did
+  // not move for this change, so such a run is still resumable.
+  //
+  // What this renders for one is *indistinguishable from an option that costs nothing*, which
+  // is a real limitation rather than the honest answer an earlier version of this comment
+  // claimed. Telling the two apart needs `schema_ver`, which the store discards on the way in.
+  // Accepted for now because runs here are local and disposable; if that stops being true,
+  // this is the place that has to say "not recorded" instead of showing nothing.
   const effect = option.effect ?? {}
 
   for (const metric of metricDefs) {

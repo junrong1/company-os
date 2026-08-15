@@ -23,6 +23,8 @@ const GOLDEN = join(HERE, '..', '..', '..', 'backend', 'tests', 'fixtures', 'gol
 
 export interface GenesisFixture {
   kind: string
+  /** The payload schema version the kernel stamps on a GENESIS event. */
+  schema_ver: number
   payload: Record<string, unknown>
 }
 
@@ -105,7 +107,11 @@ export function genesisFrame(seq = 1): EventFrame {
     kind: 'GENESIS',
     seq: String(seq),
     tick: '0',
-    schema_ver: 2,
+    // Read off the generated fixture rather than written down here. The hardcoded copy had
+    // been stale for two payload versions — inert, since nothing reads `schema_ver`, but a
+    // number in a fixture that quietly stops being true is the same shape of problem as a
+    // bound nothing enforces.
+    schema_ver: fixture.schema_ver,
     rules_ver: String(fixture.payload.rules_ver ?? 'test'),
     run_id: 'run-1',
     command_id: '',

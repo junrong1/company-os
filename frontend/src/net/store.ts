@@ -254,9 +254,19 @@ export const TRAJECTORY_CAPACITY = 240
 // them down into `net/` inverted that, and put a `net -> ui` edge in a codebase that otherwise
 // only has `ui -> net`.
 
-/** The key a comparison is held under. One per checkpoint, which is one per decision. */
-export function comparisonKey(itemId: string, cpIndex: number): string {
-  return `${itemId}:${cpIndex}`
+/**
+ * The key a comparison is held under: one per checkpoint *per route*.
+ *
+ * The route belongs in the key, and leaving it out was a real bug. Both affordances are mounted
+ * at once whenever the CEO is standing next to the person who is blocked — the tray card and the
+ * conversation's decision card — so a comparison run from the tray would satisfy the
+ * conversation's lookup and render tray-priced branches under the in-person panel. The kernel
+ * prices the two routes differently on purpose (in person pays morale and visibility, the tray
+ * costs morale), which is exactly the premium the panel exists to show, so the figures would
+ * have been wrong by the amount the feature is about.
+ */
+export function comparisonKey(itemId: string, cpIndex: number, inPerson: boolean): string {
+  return `${itemId}:${cpIndex}:${inPerson ? 'here' : 'tray'}`
 }
 
 
@@ -705,7 +715,8 @@ function applyEvent(set: Setter, get: Getter, frame: EventFrame, seq: bigint): v
     if (comparison !== null) {
       patch.comparisons = {
         ...(patch.comparisons ?? state.comparisons),
-        [comparisonKey(comparison.itemId, comparison.cpIndex)]: comparison,
+        [comparisonKey(comparison.itemId, comparison.cpIndex, comparison.inPerson)]:
+          comparison,
       }
     }
   }

@@ -201,10 +201,23 @@ export function CompareAffordance({
   inPerson: boolean
   onCompare?: CompareSender
 }) {
-  const [open, setOpen] = useState(false)
+  // `null` while closed; the sequence the run was at when the CEO asked, once open. A record
+  // older than that is a previous answer — from before the panel was closed, or replayed off
+  // the stream after a reload — and showing it would answer this click with that one.
+  const [askedAtSeq, setAskedAtSeq] = useState<bigint | null>(null)
+  const open = askedAtSeq !== null
 
   const comparison = useRunStore(
-    useShallow((state) => comparisonFor(itemId, cpIndex, state.comparisons, state.tray)),
+    useShallow((state) =>
+      comparisonFor(
+        itemId,
+        cpIndex,
+        inPerson,
+        state.comparisons,
+        state.tray,
+        askedAtSeq ?? 0n,
+      ),
+    ),
   )
   const metricDefs = useRunStore((state) => state.genesis?.metricDefs) ?? NO_METRIC_DEFS
   const now = useRunStore(useShallow((state) => state.metrics))
@@ -228,7 +241,9 @@ export function CompareAffordance({
           type="button"
           className="compare__ask"
           onClick={() => {
-            setOpen(true)
+            // Stamped before the command goes out, so any record already on the stream is
+            // older by construction and cannot answer this click.
+            setAskedAtSeq(useRunStore.getState().appliedSeq)
             onCompare?.(itemId, cpIndex, personId, inPerson)
           }}
         >
@@ -244,7 +259,7 @@ export function CompareAffordance({
       {open && comparison === null && (
         <p className="compare__pending" style={{ color: PAL.textFaint }}>
           Running one branch per option…
-          <button type="button" className="compare__cancel" onClick={() => setOpen(false)}>
+          <button type="button" className="compare__cancel" onClick={() => setAskedAtSeq(null)}>
             Cancel
           </button>
         </p>
@@ -256,7 +271,7 @@ export function CompareAffordance({
           metricDefs={metricDefs}
           now={now}
           titles={titles}
-          onClose={() => setOpen(false)}
+          onClose={() => setAskedAtSeq(null)}
         />
       )}
     </div>

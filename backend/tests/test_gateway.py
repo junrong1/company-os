@@ -460,6 +460,52 @@ def test_a_run_resumed_after_a_restart_can_still_be_compared(tmp_path, monkeypat
     asyncio.run(restart())
 
 
+def test_a_malformed_number_is_a_reason_rather_than_a_500(composed, api) -> None:
+    """A client mistake is answered, not crashed on.
+
+    `canonical` rejects floats but passes strings and nulls straight through, so a bare
+    `int(...)` over a payload field is a 500 waiting to happen — and nothing above the dispatch
+    catches anything but `CommandRejected`, so it reached FastAPI's default handler. Verified
+    against every wrong shape a browser can actually send.
+
+    Swept across the older commands too: they shared the exposure, and fixing it for the new
+    one while leaving `resolve_checkpoint` crashing on the same input would have been a strange
+    place to stop.
+    """
+    runtime, _ = composed
+    run = _stopped_at_a_decision(runtime)
+
+    for label, value in (("a word", "abc"), ("null", None), ("a list", [0]), ("huge", "9" * 5000)):
+        for field in ("cp_index", "at_tick"):
+            payload = {
+                "item": "wi_ap_map",
+                "cp_index": 0,
+                "person": "stf_ap",
+                "at_tick": run.state.tick,
+                "in_person": True,
+            }
+            payload[field] = value
+            response = command(api, "compare_options", payload, f"{field}-{label}")
+
+            assert response.status_code == 200, f"{field}={label!r} crashed the request"
+            body = response.json()
+            assert body["status"] == Outcome.REJECTED
+            assert field in body["reason"]
+            assert body["produced_seq"] == []
+
+    # The two commands that carried the same shape before this change.
+    older = command(
+        api,
+        "resolve_checkpoint",
+        {"item": "wi_ap_map", "cp_index": "x", "option_index": 0, "in_person": True},
+        "older-resolve",
+    )
+    assert older.status_code == 200 and older.json()["status"] == Outcome.REJECTED
+
+    ceo = command(api, "submit_ceo_input", {"bitmask": None, "at_tick": "1"}, "older-input")
+    assert ceo.status_code == 200 and ceo.json()["status"] == Outcome.REJECTED
+
+
 def test_a_command_after_termination_is_rejected_and_mutates_nothing(composed) -> None:
     runtime, client = composed
     run = runtime.runs[RUN]

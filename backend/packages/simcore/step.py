@@ -101,7 +101,9 @@ MAX_QUESTION_CHARS = 500
 #: what a *checkpoint* can cost rather than what a client can ask for — and it is still a
 #: submission guard, because what it bounds is the work one command causes. Every authored
 #: checkpoint offers three; six leaves room for one to grow without this becoming the thing
-#: that has to be edited first, and still holds a single comparison under a second.
+#: that has to be edited first. Measured: 0.27s per branch at `MAX_BRANCH_DAYS`, so six is
+#: about 1.6 seconds worst case — all of it synchronous, on the request thread, holding the
+#: GIL. That is the real cost of this bound and it is stated rather than estimated.
 #:
 #: A guard rather than tuning, so it stays out of TUNING and out of the rules version. A
 #: comparison changes no state, so its bound cannot change what a recorded run means — and
@@ -2053,6 +2055,12 @@ def compare_options(
     if cp_index < 0 or cp_index >= len(spec.checkpoints):
         raise CommandRejected(f"{item_id} has no checkpoint {cp_index}")
 
+    # Bounded on both sides. The forward half is the render clock running away; the backward
+    # half is simply that a tick is unsigned, and without it a negative tag is written verbatim
+    # into an append-only log as the thing the client claimed "now" was.
+    if at_tick < 0:
+        raise CommandRejected(f"a tick is unsigned; this comparison is tagged at {at_tick}")
+
     if at_tick > state.tick + MAX_INPUT_LEAD_TICKS:
         raise CommandRejected(
             f"this comparison is tagged at tick {at_tick}, more than "
@@ -2092,14 +2100,17 @@ def compare_options(
             "to the next decision, so the bound is on what one command may cost."
         )
 
-    # Every branch is computed before anything is appended, and every branch is forked from the
-    # parent rather than from the branch before it. Outside any append transaction: the single
-    # writer holds one transaction per tick, and three branches inside it would stall every
-    # other run's clock and read as a store outage that is not happening.
-    branches = [
-        branching.run_branch(state, item_id, cp_index, index, in_person=in_person).to_state()
-        for index in range(len(options))
-    ]
+    # Every branch is computed before anything is appended, and every one of them is forked
+    # from a *single* capture of the parent — `run_comparison` takes that capture once and
+    # restores it per option. Calling the single-branch runner in a loop here would re-read the
+    # parent per option, and the parent moves: the tick loop advances it on another thread with
+    # no lock between them, so the columns would be forked from instants up to a sim-day apart.
+    #
+    # Outside any append transaction: the single writer holds one transaction per tick, and
+    # branches inside it would stall every other run's clock and read as a store outage that is
+    # not happening.
+    summaries = branching.run_comparison(state, item_id, cp_index, in_person=in_person)
+    branches = [summary.to_state() for summary in summaries]
 
     payload = {
         "tick": state.tick,

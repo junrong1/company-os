@@ -449,6 +449,13 @@ Not real — deliberately, and stated on screen:
    one decision does this identically, so it cannot tip the comparison one way — but a
    branch's absolute figures describe a run whose domain service stays silent, which
    is a bound on how far a projection may be read.
+6. **A comparison costs about a second and a half, on the request thread.** Six
+   branches at the bound, stepped synchronously in pure Python. It runs outside the
+   store's append transaction so it cannot stall the log writer, but it does occupy a
+   slot in the same worker pool the tick loops use — so enough simultaneous
+   comparisons would slow every run's clock in the process. Fine for one person at one
+   keyboard, which is what this is; it would need a process pool before it was
+   anything else.
 
 ---
 

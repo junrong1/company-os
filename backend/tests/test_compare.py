@@ -11,6 +11,8 @@ as far as the next decision and then reports where it stopped.
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -151,6 +153,46 @@ def test_two_branches_do_not_see_each_other(run: Recorder) -> None:
     assert first.to_state() == second.to_state()
 
 
+def test_every_branch_of_a_comparison_forks_from_one_instant(run: Recorder) -> None:
+    """The property the side-by-side reading depends on, under a moving parent.
+
+    A single-threaded assertion cannot see this: the bug was that each branch re-read the
+    parent, and in one thread the parent never moves between them. Measured against a ticker
+    on another thread — which is exactly the deployed topology, the tick loop on an anyio
+    worker and the command on Starlette's, with no lock between them — the three branches of
+    one comparison forked 360 ticks apart, two-thirds of a sim-day. The CEO read three columns
+    whose differences were partly just the parent drifting underneath them.
+    """
+    stop = threading.Event()
+
+    def ticker() -> None:
+        while not stop.is_set():
+            for _ in range(120):  # the kernel's own MAX_BATCH_TICKS
+                if run.state.items["wi_ap_map"].status != sim.STATUS_BLOCKED:
+                    return
+                sim.step(run.state)
+            time.sleep(0.01)
+
+    thread = threading.Thread(target=ticker, daemon=True)
+    thread.start()
+    try:
+        spreads = []
+        for _ in range(6):
+            summaries = compare.run_comparison(run.state, "wi_ap_map", 0, in_person=True)
+            forks = [summary.fork_tick for summary in summaries]
+            spreads.append(max(forks) - min(forks))
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+    assert spreads, "the ticker ended the run before a single comparison ran"
+    assert all(spread == 0 for spread in spreads), (
+        f"branches forked from different instants: {spreads}"
+    )
+    # And the parent really was moving, so the test is not passing on a stationary run.
+    assert run.state.tick > 0
+
+
 def test_the_same_branch_computed_twice_is_identical(run: Recorder) -> None:
     """AE10. No shared draw rule is needed for this, and R23 is dropped because of it.
 
@@ -216,6 +258,64 @@ def test_a_branch_whose_costs_cross_zero_terminates_on_insolvency() -> None:
     # And the parent is still solvent, which is the point of the whole exercise.
     assert run.state.metrics["cash"] == 1
     assert run.state.terminal_reason == ""
+
+
+def test_a_branch_that_ends_and_raises_on_one_tick_reports_the_ending(
+    run: Recorder, monkeypatch
+) -> None:
+    """The precedence, asserted directly because the natural collision is rare.
+
+    One tick can produce both: the day boundary applies costs in phase one, `_block` raises in
+    phase three, and `_check_termination` runs in phase seven. The first version checked the
+    checkpoint first and broke there, so a branch that bankrupted the company on the same tick
+    it raised a decision reported "runs to the next decision" and never mentioned the
+    insolvency — the single most important thing a comparison can say, silently dropped.
+
+    Constructed rather than hunted for: two searches over cash and assignment timing failed to
+    produce the collision from authored data, and a rule this consequential should not depend
+    on a fixture happening to hit a one-in-540 tick.
+    """
+    real_step = sim.step
+    fired = {"done": False}
+
+    def step_that_ends_and_raises(state: sim.State) -> list[sim.Emitted]:
+        produced = real_step(state)
+        if fired["done"] or state.tick < run.state.tick + 5:
+            return produced
+        fired["done"] = True
+        # Exactly what one tick looks like when the crossing quantum both stalls somebody and
+        # takes the company under.
+        state.terminal_reason = lifecycle.TERMINAL_INSOLVENT
+        state.terminal_tick = state.tick
+        return [
+            *produced,
+            sim.Emitted(
+                kind=EventKind.CHECKPOINT_RAISED,
+                payload={
+                    "tick": state.tick,
+                    "item": "wi_quotes",
+                    "person": "stf_buyer",
+                    "cp_index": 0,
+                    "kind": "decision",
+                    "label": "Decision",
+                    "tacit": "",
+                },
+            ),
+            sim.Emitted(
+                kind=EventKind.RUN_TERMINATED,
+                payload={"tick": state.tick, "reason": "insolvent", "detail": "cash ran out"},
+            ),
+        ]
+
+    monkeypatch.setattr(sim, "step", step_that_ends_and_raises)
+    summary = compare.run_branch(run.state, "wi_ap_map", 0, 0, in_person=True)
+
+    assert fired["done"], "the collision never fired, so this asserts nothing"
+    assert summary.stop_reason == lifecycle.TERMINAL_INSOLVENT
+    assert summary.stop_reason != compare.STOP_CHECKPOINT
+    assert summary.stop_detail == "cash ran out"
+    # And it does not also claim somebody is waiting at a decision in a run that has ended.
+    assert summary.stopped_at is None
 
 
 def test_every_figure_in_a_summary_names_the_tick_it_was_measured_at(run: Recorder) -> None:
@@ -445,6 +545,56 @@ def test_a_branch_of_an_option_that_does_not_exist_is_refused(run: Recorder) -> 
         compare.run_branch(run.state, "wi_ap_map", 0, 99, in_person=True)
     with pytest.raises(sim.CommandRejected):
         compare.run_branch(run.state, "wi_ap_map", 9, 0, in_person=True)
+
+
+def test_a_branch_of_an_already_settled_checkpoint_is_refused() -> None:
+    """Reachable, and only on the one item with two checkpoints.
+
+    The runner's blocked-status check does not say *which* checkpoint the item is stopped at,
+    so an item waiting at its second decision is still `blocked` when asked about its first —
+    which the CEO already settled. Constructing it through play rather than by forcing state,
+    because a guard tested against a state the simulation cannot produce proves nothing.
+    """
+    run = blocked_at_the_closing_cycle()
+    run.record(sim.resolve_checkpoint(run.state, "wi_close", 0, 1, in_person=True))
+    run.advance_until(lambda state: state.items["wi_close"].status == sim.STATUS_BLOCKED)
+
+    item = run.state.items["wi_close"]
+    assert item.resolved == [True, False], "the fixture no longer reaches the second decision"
+
+    with pytest.raises(sim.CommandRejected) as refusal:
+        compare.run_branch(run.state, "wi_close", 0, 0, in_person=True)
+
+    assert "already resolved" in str(refusal.value)
+
+
+def test_a_branch_of_a_checkpoint_not_yet_reached_is_refused() -> None:
+    """The other half of the same defence, through the shared `checkpoint_not_reached`.
+
+    The closing-cycle item stops at 30% and its second decision is at 75%, so asking about the
+    second while it waits at the first is a question the work has not arrived at.
+    """
+    run = blocked_at_the_closing_cycle()
+
+    with pytest.raises(sim.CommandRejected) as refusal:
+        compare.run_branch(run.state, "wi_close", 1, 0, in_person=True)
+
+    assert "has not reached that decision point yet" in str(refusal.value)
+
+
+def test_the_command_refuses_a_checkpoint_index_the_item_does_not_have(run: Recorder) -> None:
+    """`compare_options` carries its own bounds check, distinct from the runner's.
+
+    Every other out-of-range test drives `run_branch` directly, so this clause had no coverage
+    of its own — and it is the one a client can actually reach.
+    """
+    with pytest.raises(sim.CommandRejected) as refusal:
+        compare_at(run, cp_index=99)
+
+    assert "has no checkpoint 99" in str(refusal.value)
+
+    with pytest.raises(sim.CommandRejected):
+        compare_at(run, cp_index=-1)
 
 
 def test_a_branch_of_a_run_with_no_horizon_is_refused() -> None:

@@ -618,6 +618,31 @@ class KernelRuntime:
         run = self.runs[run_id]
         decoded = canonical.decode(payload) if payload else {}
 
+        def whole(key: str, default: int | None = None) -> int:
+            """One integer field off a client-supplied payload, or a reason why not.
+
+            Every command here coerces at least one field with `int(...)`, and a bare `int()`
+            over a value a browser chose is a 500 waiting to happen: `canonical` rejects floats
+            but passes strings and nulls straight through, so `{"cp_index": "abc"}` and
+            `{"cp_index": null}` both raise past the point where `CommandRejected` is caught.
+            Nothing above this catches anything else, so it reaches FastAPI's default handler
+            and the client gets an opaque 500 for what is a client mistake.
+
+            `default` of `None` means the field is required, which is the distinction the older
+            `[...]` versus `.get(...)` split was trying to draw and drew only for the
+            missing-key half.
+            """
+            if key not in decoded:
+                if default is not None:
+                    return default
+                raise sim.CommandRejected(f"this command needs {key!r} and the payload has none")
+            try:
+                return int(decoded[key])
+            except (TypeError, ValueError):
+                raise sim.CommandRejected(
+                    f"{key!r} is {decoded[key]!r}, which is not a whole number"
+                ) from None
+
         dispatch = {
             kernel_pb2.ASSIGN_WORK: lambda: (
                 sim.assign_via_manager(run.state, decoded["item"])
@@ -633,12 +658,12 @@ class KernelRuntime:
             kernel_pb2.RESOLVE_CHECKPOINT: lambda: sim.resolve_checkpoint(
                 run.state,
                 decoded["item"],
-                int(decoded["cp_index"]),
-                int(decoded["option_index"]),
+                whole("cp_index"),
+                whole("option_index"),
                 in_person=bool(decoded["in_person"]),
             ),
             kernel_pb2.SUBMIT_CEO_INPUT: lambda: sim.submit_ceo_input(
-                run.state, int(decoded["bitmask"]), int(decoded["at_tick"])
+                run.state, whole("bitmask"), whole("at_tick")
             ),
             kernel_pb2.REQUEST_HIRE: lambda: sim.request_hire(run.state, decoded["director"]),
             # `.get` rather than `[...]`: this is the one command carrying free-form text a
@@ -661,9 +686,9 @@ class KernelRuntime:
             kernel_pb2.COMPARE_OPTIONS: lambda: sim.compare_options(
                 run.state,
                 str(decoded.get("item", "")),
-                int(decoded.get("cp_index", -1)),
+                whole("cp_index", -1),
                 str(decoded.get("person", "")),
-                int(decoded.get("at_tick", 0)),
+                whole("at_tick", 0),
                 in_person=bool(decoded.get("in_person", False)),
             ),
         }

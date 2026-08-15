@@ -11,8 +11,10 @@ it copies the parent's prefix eagerly under a 5,000-event bound, the child share
 values with its parent, the child id is derived from parent and sequence alone so two branches
 at one tick collide, the child arrives paused with nothing to fold or advance it, and the
 append-only log refuses the deletion a discard would need. Meanwhile the kernel is a pure
-function that runs headless by design, and a full horizon is about 10,800 ticks at roughly a
-tenth of a second. So the branch runs here, in memory, and R24 is satisfied *structurally* —
+function that runs headless by design, and a default 20-day horizon is about 10,800 ticks at
+roughly 0.13 seconds — 0.27 at the bound this module caps branches at, so a full six-option
+comparison is about 1.6 seconds worst case. So the branch runs here, in memory, and R24 is
+satisfied *structurally* —
 a branch is never written to the store, so collision and leakage are not states this system
 can reach.
 
@@ -225,6 +227,36 @@ def runway_days(cash: int, daily_cost: int) -> int | None:
     return cash // daily_cost
 
 
+def run_comparison(
+    state: sim.State, item_id: str, cp_index: int, *, in_person: bool
+) -> list[BranchSummary]:
+    """Every option at one checkpoint, all forked from the same instant.
+
+    **The single capture is a correctness requirement, not an optimisation.** The obvious
+    implementation calls `run_branch` once per option, and each of those reads `state.tick` and
+    copies the parent afresh — which is correct only if the parent is standing still. It is not:
+    the tick loop advances `run.state` on an anyio worker thread while the command runs on
+    Starlette's, and nothing in the kernel locks between them. Measured with a two-thread
+    harness at the shipped batch cadence, the three branches of one comparison forked 360 ticks
+    apart — two-thirds of a sim-day. The CEO then reads three columns headed "where each option
+    leads" whose differences are partly just the parent drifting underneath them, and nothing on
+    screen says so.
+
+    Capturing once and restoring per branch makes "every branch forks from the same state" true
+    rather than merely intended. It also narrows the window in which a tick can tear a capture
+    from N to one, and it gives `unlocked_before` a fork-accurate reading — measured off the
+    copy, which `restore` has just proved equal to the instant it was taken.
+    """
+    _refuse_unless_forkable(state, item_id, cp_index, 0)
+
+    fork = _capture_of(state)
+    options = state.spec_of(item_id).checkpoints[cp_index].options
+    return [
+        _branch_from(fork, item_id, cp_index, index, in_person=in_person)
+        for index in range(len(options))
+    ]
+
+
 def run_branch(
     state: sim.State,
     item_id: str,
@@ -235,15 +267,33 @@ def run_branch(
 ) -> BranchSummary:
     """Follow one option to the next decision, and report where it got to.
 
+    One option, for a caller that wants exactly one. A *comparison* goes through
+    `run_comparison`, which forks every option from a single capture — see there for why that
+    distinction is load-bearing rather than tidy.
+
     Pure: the parent is read and never written, which `test_compare.py` asserts as a hash
     comparison before anything else in that file.
     """
     _refuse_unless_forkable(state, item_id, cp_index, option_index)
+    return _branch_from(_capture_of(state), item_id, cp_index, option_index, in_person=in_person)
 
-    fork_tick = state.tick
-    branch = _copy_of(state)
 
-    unlocked_before = _gates_open(state)
+def _branch_from(
+    fork: snapshot.Snapshot,
+    item_id: str,
+    cp_index: int,
+    option_index: int,
+    *,
+    in_person: bool,
+) -> BranchSummary:
+    """Run one option from an already-taken fork."""
+    branch = snapshot.restore(fork)
+    fork_tick = branch.tick
+
+    # From the copy, not the parent. The parent may have moved since the capture, and a gate it
+    # opened in that window would otherwise show up as work this option *closed* — the panel
+    # would say "Closes X" about work the run had just made available.
+    unlocked_before = _gates_open(branch)
 
     emitted = list(
         sim.resolve_checkpoint(branch, item_id, cp_index, option_index, in_person=in_person)
@@ -272,6 +322,21 @@ def run_branch(
         if simtime.is_day_boundary(branch.tick):
             _sample(trajectories, branch)
 
+        # Termination first, and the order is the whole of it. One tick can produce both — the
+        # day boundary applies costs in phase one, `_block` raises in phase three, and
+        # `_check_termination` runs in phase seven — and the first version of this checked the
+        # checkpoint first and broke there. A branch that bankrupted the company on the same
+        # tick it raised a decision would have reported "runs to the next decision" and never
+        # mentioned the insolvency, which is the single most important thing a comparison can
+        # say. A run that has ended has no decision left to reach.
+        if branch.terminal_reason:
+            stop_reason = branch.terminal_reason
+            terminal = next(
+                (event for event in produced if event.kind is EventKind.RUN_TERMINATED), None
+            )
+            stop_detail = "" if terminal is None else str(terminal.payload["detail"])
+            break
+
         raised = next(
             (event for event in produced if event.kind is EventKind.CHECKPOINT_RAISED), None
         )
@@ -289,14 +354,6 @@ def run_branch(
                 f"{raised.payload['person']} stopped at a {raised.payload['kind']} on "
                 f"{raised.payload['item']}. The branch reports it and takes no action."
             )
-            break
-
-        if branch.terminal_reason:
-            stop_reason = branch.terminal_reason
-            terminal = next(
-                (event for event in produced if event.kind is EventKind.RUN_TERMINATED), None
-            )
-            stop_detail = "" if terminal is None else str(terminal.payload["detail"])
             break
 
     if not stop_reason and branch.tick >= branch.horizon_tick:
@@ -321,7 +378,7 @@ def run_branch(
 
     fixed, draw_cost, salaries = sim.day_cost_terms(branch)
     burn = fixed + draw_cost + salaries
-    checkpoint = state.spec_of(item_id).checkpoints[cp_index]
+    checkpoint = branch.spec_of(item_id).checkpoints[cp_index]
     # Once, not once per direction: the predicate walks every authored item and re-evaluates
     # its gates, and the two sets below are differences over the same answer.
     unlocked_after = _gates_open(branch)
@@ -402,16 +459,46 @@ def _refuse_unless_forkable(
         raise sim.CommandRejected(not_reached_yet)
 
 
-def _copy_of(state: sim.State) -> sim.State:
-    """An independent state, equal to this one, through the snapshot round-trip.
+#: How many times a capture is retried when the parent moves underneath it.
+#:
+#: Small on purpose. A tick lands about once every 28ms at the shipped rate and a capture takes
+#: under a millisecond, so losing three in a row means the run is ticking far faster than the
+#: capture can complete and the honest answer is to say so rather than to spin.
+CAPTURE_ATTEMPTS = 3
+
+
+def _capture_of(state: sim.State) -> snapshot.Snapshot:
+    """A snapshot of this state, taken while the run may be moving underneath it.
 
     `snapshot.restore` re-hashes what it rebuilt and refuses a mismatch, so the round-trip is
     its own correctness argument — and it is the reason this is a round-trip rather than a
     `deepcopy`. A `deepcopy` would also be independent, and it would silently carry forward a
     field the snapshot has forgotten how to write; that omission has been caught four times by
     this guard already, each time by a subsystem that looked complete.
+
+    **The retry is here because the parent is not standing still.** `capture` reads the state
+    twice — once to hash it, once to encode it — and walks several dicts while doing so, and the
+    kernel holds no lock between the command path and the tick loop. A tick landing in the
+    middle produces either a snapshot that fails its own hash check (`SnapshotInvalid`) or a
+    `RuntimeError` from a dict that changed size mid-iteration. Neither is `CommandRejected`, so
+    without this both escape as an opaque 500 for something the client did nothing wrong to
+    cause.
+
+    Retrying is safe precisely because a capture mutates nothing: a torn read is discarded and
+    the next attempt starts fresh. Exhausting the attempts is reported as a refusal with a
+    reason, which is the honest answer — the run really is moving too fast to photograph.
     """
-    return snapshot.restore(snapshot.capture("branch", state, through_seq=0))
+    for attempt in range(CAPTURE_ATTEMPTS):
+        try:
+            return snapshot.capture("branch", state, through_seq=0)
+        except (snapshot.SnapshotInvalid, RuntimeError):
+            if attempt == CAPTURE_ATTEMPTS - 1:
+                raise sim.CommandRejected(
+                    "the run moved while its state was being copied, "
+                    f"{CAPTURE_ATTEMPTS} times running. Try the comparison again, or slow the "
+                    "clock first — a branch has to be forked from a single instant."
+                ) from None
+    raise AssertionError("unreachable: the loop either returns or raises")
 
 
 def _sample(trajectories: dict[str, list[Point]], branch: sim.State) -> None:

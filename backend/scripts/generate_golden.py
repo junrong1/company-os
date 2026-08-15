@@ -252,9 +252,19 @@ def genesis_vector() -> dict[str, Any]:
     to strings would test a format nothing sends. The one field the client must read as a
     bigint — the tick index — is exercised by `clock.json` and `walk.json` instead.
     """
+    from contracts.envelope import KIND_SCHEMA_VERSIONS
+
     _, emitted = sim.new_run(run_seed=0xC0FFEE)
     genesis = emitted[0]
-    return {"kind": genesis.kind.name, "payload": genesis.payload}
+    return {
+        "kind": genesis.kind.name,
+        # Emitted so the frontend's frame helper can read the version rather than write it
+        # down. The hardcoded copy had been stale for two payload versions — inert, since
+        # nothing reads `schema_ver`, but a number in a fixture that quietly stops being true
+        # is the same shape of problem as a bound nothing enforces.
+        "schema_ver": KIND_SCHEMA_VERSIONS[genesis.kind],
+        "payload": genesis.payload,
+    }
 
 
 def main() -> int:
