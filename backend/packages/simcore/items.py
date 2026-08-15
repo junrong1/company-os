@@ -597,20 +597,46 @@ def catalog_to_state() -> list[dict[str, Any]]:
     exactly what genesis is for — the same argument that already puts `floor` here rather
     than letting a viewport re-derive geometry.
 
-    **Two things are deliberately withheld.** `Checkpoint.tacit` is the line only an
+    **One thing is deliberately withheld.** `Checkpoint.tacit` is the line only an
     in-person resolution surfaces; shipping it at genesis would hand the client the whole
     mechanic the product is built on, and the art direction is explicit that inspecting
     shows less than conversation. It reaches the client only through a resolution that
-    earned it. And `Option.effect` is withheld because the prototype's tray prices an
-    option in prose, not in numbers: the client showing the deltas would let the CEO
-    optimise against arithmetic instead of judgement, and the kernel is the authority on
-    what an option actually did anyway.
+    earned it.
+
+    **`Option.effect` used to be withheld too, and no longer is (R35).** The stated reason
+    was that the client showing the deltas would let the CEO optimise against arithmetic
+    instead of judgement. What reverses it is the authored-tuning marking (R27, R36): a
+    figure that travels with a persistent glyph saying it was invented is visible *and*
+    labelled as invented, which is a better trade than a figure hidden and then imagined.
+    A CEO who cannot see what an option costs is not exercising judgement; they are
+    guessing, and the guess is against numbers they assume rather than numbers they read.
+
+    The recurring-draw key is split out rather than shipped inside `effect`, because it is
+    not a metric: `manualHours` is derived from the sum of department draws (R49), so a
+    client rendering `draw` as a metric delta would show a movement no metric makes. The
+    department it moves is the entry's own `director`, already on the wire.
 
     Copy arrives rendered. `brief` and `prompt` are templates over a figure derived from
     the options, and a client filling them itself would be a second implementation of
     authored copy in a second language — the duplicated-logic hazard the plan's Risks
     section names, with no golden vector cheap enough to guard it.
     """
+    from simcore import effects
+
+    def option_to_state(option: Option) -> dict[str, Any]:
+        metric_effect, draw = effects.split_draw(option.effect)
+        return {
+            "label": option.label,
+            "detail": option.detail,
+            # Metric deltas only, in the same integer units the metric tiles render.
+            "effect": metric_effect,
+            # Hours per month off (or onto) the owning department's recurring draw. Zero
+            # rather than absent, so a client never has to ask whether the key is missing
+            # because the option does not move the draw or because the payload is old.
+            "draw_delta": draw,
+            "note": option.note,
+        }
+
     return [
         {
             "id": item.id,
@@ -640,10 +666,7 @@ def catalog_to_state() -> list[dict[str, Any]]:
                     "kind": checkpoint.kind,
                     "label": checkpoint.label,
                     "prompt": rendered_prompt(item, cp_index),
-                    "options": [
-                        {"label": option.label, "detail": option.detail}
-                        for option in checkpoint.options
-                    ],
+                    "options": [option_to_state(option) for option in checkpoint.options],
                 }
                 for cp_index, checkpoint in enumerate(item.checkpoints)
             ],

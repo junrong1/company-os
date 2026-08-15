@@ -63,6 +63,7 @@ class EventKind(IntEnum):
     CHECKPOINT_RAISED = 21
     DECISION_RESOLVED = 22
     QUESTION_ANSWERED = 23
+    OPTIONS_COMPARED = 24
 
     # Work.
     WORK_ASSIGNED = 30
@@ -96,7 +97,11 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     # needs the graph has to be able to tell whether the event it is holding carries it.
     # 3: Phase 2 added `name`, `initials` and `title` to each roster entry, so a client can
     # say who the CEO is standing next to rather than showing them an id.
-    EventKind.GENESIS: 3,  # U4/U8
+    # 4: Phase 3 added `effect`, `draw_delta` and `note` to each catalog option, reversing the
+    # withholding `catalog_to_state`'s docstring used to state (R35). Additive, but a consumer
+    # that needs an option's consequence has to be able to tell whether the event it is holding
+    # carries it — the same argument that bumped this for the catalog and the roster names.
+    EventKind.GENESIS: 4,  # U4/U8
     EventKind.DAY_CHECKPOINT: 1,  # U3/U15
     EventKind.RATE_CHANGED: 1,  # U9
     EventKind.RUN_TERMINATED: 1,  # U8
@@ -119,6 +124,11 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     # tacit lines that way — but a *generated* answer cannot be, so storing it now is what
     # keeps the log's shape unchanged when a hearing API replaces the roster script.
     EventKind.QUESTION_ANSWERED: 1,  # Phase 2
+    # The branch summaries the CEO was shown, on the record so the second plan's citation
+    # contract has something to point at. Operational: it mutates no state, so the fold neither
+    # applies it nor regenerates it — regenerating would make every replay re-run N branches
+    # for no gain in what the replay proves.
+    EventKind.OPTIONS_COMPARED: 1,  # Phase 3
     EventKind.WORK_ASSIGNED: 2,  # U4
     EventKind.WORK_REASSIGNED: 2,  # U4
     EventKind.WORK_RETURNED_TO_BACKLOG: 2,  # U7

@@ -2,7 +2,8 @@ import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { PAL, RESERVED_BEAM, TACIT, loadColour } from '../src/design/tokens'
+import { AUTHORED_TUNING, PAL, RESERVED_BEAM, TACIT, loadColour } from '../src/design/tokens'
+import { FONT, paintText } from '../src/design/text'
 import { SEVERED_FRACTION, buildModel, drawGraph, drawPolyline } from '../src/dag/draw'
 import { stripOrder, stripWidth } from '../src/dag/strip'
 import {
@@ -195,6 +196,45 @@ describe('node encoding', () => {
       const pip = new RecordingContext()
       drawPip(pip, 0, 0, { status, dept: 'accounting' })
       expect(pip.colours()).not.toContain(RESERVED_BEAM)
+    }
+  })
+
+  it('marks the owning department load signal as authored tuning (R27)', () => {
+    // The DAG renders one number, and R27 admits no exceptions. Checked by painting the string
+    // the node should have drawn into a second recorder and asserting every one of its pixels
+    // is present in the node's own draw calls — which proves the *glyph* landed rather than
+    // proving a string was concatenated somewhere.
+    const permille = 400
+    const node = new RecordingContext()
+    drawNode(node, baseNode('active', permille))
+
+    const percent = Math.round((permille * 100) / CEILING)
+    const colour = PAL.jingyuhui
+    const originX = 1 * GRID + 10
+    const originY = 1 * GRID + 18
+
+    const expected = new RecordingContext()
+    paintText(expected, `LOAD ${percent}% ${AUTHORED_TUNING.glyph}`, originX, originY, 1, colour)
+
+    const drawn = new Set(node.geometry().split(';'))
+    for (const rect of expected.rects) {
+      expect(drawn.has(`${rect.x},${rect.y},${rect.width},${rect.height}`)).toBe(true)
+    }
+
+    // The marking has to be *ink*, not an advance. `paintText` skips an unmapped character by
+    // advancing the cursor, so a glyph missing from the face would draw nothing at all and the
+    // subset check above would still pass.
+    expect(FONT[AUTHORED_TUNING.glyph]).toBeTruthy()
+    const unmarked = new RecordingContext()
+    paintText(unmarked, `LOAD ${percent}%`, originX, originY, 1, colour)
+    expect(expected.rects.length).toBeGreaterThan(unmarked.rects.length)
+  })
+
+  it('marks the load signal without reaching for the reserved beam', () => {
+    for (const permille of [0, 400, 1000, 1400]) {
+      const context = new RecordingContext()
+      drawNode(context, baseNode('active', permille))
+      expect(context.colours()).not.toContain(RESERVED_BEAM)
     }
   })
 

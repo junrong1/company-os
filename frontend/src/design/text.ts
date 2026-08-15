@@ -63,6 +63,10 @@ export const FONT: Record<string, string> = {
   '-': '00000/00000/00000/11111/00000/00000/00000',
   '/': '00001/00010/00010/00100/01000/01000/10000',
   ' ': '00000/00000/00000/00000/00000/00000/00000',
+  // The authored-tuning marking (R36). In the face rather than drawn as a one-off shape, so
+  // the canvas surfaces mark a figure with the same character the DOM surfaces do — the
+  // marking is one token, and two glyphs for it would be two markings.
+  '≈': '00000/01011/11010/00000/01011/11010/00000',
 }
 
 /** Advance per character, in face units: 5 wide plus one column of tracking. */

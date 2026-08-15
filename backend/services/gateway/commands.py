@@ -36,9 +36,17 @@ log = svclog.get_logger("gateway")
 
 
 #: Commands that do not need a tick boundary, and are therefore accepted on a paused run.
-#: `set_rate` is the only one: it writes at the current tick rather than waiting for the next,
-#: and it is the sole way to lift a pause — guarding it would make a paused run unrecoverable.
-NEEDS_NO_TICK_BOUNDARY = frozenset({"set_rate"})
+#:
+#: `set_rate` writes at the current tick rather than waiting for the next, and it is the sole
+#: way to lift a pause — guarding it would make a paused run unrecoverable.
+#:
+#: `compare_options` is here for the other half of the guard's premise. The rule exists because
+#: a command that mutates state needs a boundary to mutate it at, and a paused run never
+#: reaches one. A comparison mutates nothing: it steps a copy and appends a record of what it
+#: showed. Pausing to weigh two options is also exactly when a CEO wants one, so rejecting it
+#: on a paused run would refuse the mechanic at the moment it is most useful. The append still
+#: works — pause stops the clock, not the writer.
+NEEDS_NO_TICK_BOUNDARY = frozenset({"set_rate", "compare_options"})
 
 
 class Outcome:

@@ -109,6 +109,119 @@ def test_termination_is_the_last_event_of_its_quantum() -> None:
     assert recorder.log[-1].kind is EventKind.RUN_TERMINATED
 
 
+def test_a_keyless_run_plays_to_its_horizon_with_comparisons_along_the_way() -> None:
+    """AE13, R8, R30. The whole of this phase is reachable with no model in the process.
+
+    Observed rather than assumed, which is the point of the test. No model key exists anywhere
+    in this repo yet, so "it works without one" is trivially true today and would stop being
+    checked the moment one arrived — this pins it while it is cheap. Nothing on the comparison
+    path consults the agents or the domain service: the branches are arithmetic, and R17
+    forbids an expert from choosing anyway, so an unattended branch has nobody to ask.
+
+    Driven the long way — assign, stop, compare, decide, repeat — because the criterion is that
+    a *run* completes with the mechanic in it, not that one call returns.
+    """
+    recorder = Recorder(horizon_tick=simtime.TICKS_PER_SIM_DAY * 20)
+    compared = 0
+
+    for item_id, person_id in (("wi_ap_map", "stf_ap"), ("wi_faq", "stf_cs")):
+        recorder.record(sim.assign_direct(recorder.state, item_id, person_id))
+        recorder.advance_until(lambda s: s.items[item_id].status == sim.STATUS_BLOCKED)
+
+        recorder.record(
+            sim.compare_options(
+                recorder.state,
+                item_id,
+                0,
+                person_id,
+                recorder.state.tick,
+                in_person=True,
+            )
+        )
+        compared += 1
+
+        recorder.record(
+            sim.resolve_checkpoint(recorder.state, item_id, 0, 0, in_person=True)
+        )
+
+    recorder.advance_until(lambda s: s.terminal_reason != "")
+
+    assert compared == 2
+    assert recorder.state.terminal_reason == lifecycle.TERMINAL_HORIZON
+    assert recorder.state.terminal_tick == simtime.TICKS_PER_SIM_DAY * 20
+
+    # The records are on the log, and the run still ends the way a run without them would.
+    records = [e for e in recorder.log if e.kind is EventKind.OPTIONS_COMPARED]
+    assert len(records) == 2
+    for record in records:
+        assert record.decoded_payload()["branches"]
+
+    # R30: every claim in the report still resolves to an event, with comparison records in the
+    # log. They are operational, so the report has to pass over them rather than trip on them —
+    # this is the assertion that passed before this phase and has to keep passing.
+    report = recorder.report()
+    sequences = {envelope.seq for envelope in recorder.log}
+    assert report.claims
+    for claim in report.claims:
+        assert claim.at_seq in sequences, f"{claim.label} resolves to no event"
+
+
+def test_a_branch_raises_its_requests_into_its_own_copy_and_nowhere_else() -> None:
+    """R8. A branch is a run nobody answers, and nothing it raises leaves the process.
+
+    `step()` raises a period consult to the domain service at each day boundary, and a branch
+    replays `step()` in full — so a branch does raise them. That was worth finding rather than
+    assuming: it is correct, because a branch genuinely has nobody to answer it and suppressing
+    the consult would make it diverge from the step function it is supposed to be a projection
+    of. What matters is that the requests go into the branch's own `pending` and are abandoned
+    there, so the parent never acquires one and no transport is ever reached.
+    """
+    recorder = Recorder(horizon_tick=simtime.TICKS_PER_SIM_DAY * 20)
+    recorder.record(sim.assign_direct(recorder.state, "wi_ap_map", "stf_ap"))
+    recorder.advance_until(lambda s: s.items["wi_ap_map"].status == sim.STATUS_BLOCKED)
+
+    pending_before = dict(recorder.state.pending)
+    period_before = recorder.state.last_period_consulted
+
+    emitted = sim.compare_options(
+        recorder.state, "wi_ap_map", 0, "stf_ap", recorder.state.tick, in_person=True
+    )
+
+    assert emitted
+    assert recorder.state.pending == pending_before
+    assert recorder.state.last_period_consulted == period_before
+
+
+def test_the_unanswered_path_is_common_to_every_branch_and_cannot_bias_one() -> None:
+    """The property that makes the point above harmless to the thing being compared.
+
+    Every branch at one checkpoint forks from the same state and raises and abandons exactly
+    the same requests at exactly the same ticks, so the no-answer path is common to all of them
+    and cancels out of what the CEO is actually comparing. Checked by counting the requests
+    each branch raised rather than by reasoning about it.
+    """
+    from contracts.envelope import EventKind as Kind
+    from simcore import compare as branching
+
+    recorder = Recorder(horizon_tick=simtime.TICKS_PER_SIM_DAY * 20)
+    recorder.record(sim.assign_direct(recorder.state, "wi_ap_map", "stf_ap"))
+    recorder.advance_until(lambda s: s.items["wi_ap_map"].status == sim.STATUS_BLOCKED)
+
+    raised = [
+        [
+            (event.payload["tick"], event.payload.get("service"))
+            for event in branching.run_branch(
+                recorder.state, "wi_ap_map", 0, index, in_person=True
+            ).emitted
+            if event.kind is Kind.REQUEST_RAISED
+        ]
+        for index in range(3)
+    ]
+
+    assert raised[0], "no request was raised at all, so this proves nothing"
+    assert raised[0] == raised[1] == raised[2]
+
+
 def test_a_forked_child_inherits_the_parents_horizon() -> None:
     """Immutable and inherited: a child that outlived its parent's bound would not be
     comparable, and comparing runs is what forking is for.

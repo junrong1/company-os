@@ -43,7 +43,7 @@ import anyio.to_thread
 
 from contracts.envelope import Envelope, EventKind
 from kernel import lease as lease_module
-from kernel.store import LogStore, StoreWriter
+from kernel.store import LogStore, RunAlreadyTerminated, StoreWriter
 from servicekit import logging as svclog
 from simcore import log as folder
 from simcore import step as sim
@@ -618,6 +618,31 @@ class KernelRuntime:
         run = self.runs[run_id]
         decoded = canonical.decode(payload) if payload else {}
 
+        def whole(key: str, default: int | None = None) -> int:
+            """One integer field off a client-supplied payload, or a reason why not.
+
+            Every command here coerces at least one field with `int(...)`, and a bare `int()`
+            over a value a browser chose is a 500 waiting to happen: `canonical` rejects floats
+            but passes strings and nulls straight through, so `{"cp_index": "abc"}` and
+            `{"cp_index": null}` both raise past the point where `CommandRejected` is caught.
+            Nothing above this catches anything else, so it reaches FastAPI's default handler
+            and the client gets an opaque 500 for what is a client mistake.
+
+            `default` of `None` means the field is required, which is the distinction the older
+            `[...]` versus `.get(...)` split was trying to draw and drew only for the
+            missing-key half.
+            """
+            if key not in decoded:
+                if default is not None:
+                    return default
+                raise sim.CommandRejected(f"this command needs {key!r} and the payload has none")
+            try:
+                return int(decoded[key])
+            except (TypeError, ValueError):
+                raise sim.CommandRejected(
+                    f"{key!r} is {decoded[key]!r}, which is not a whole number"
+                ) from None
+
         dispatch = {
             kernel_pb2.ASSIGN_WORK: lambda: (
                 sim.assign_via_manager(run.state, decoded["item"])
@@ -633,12 +658,12 @@ class KernelRuntime:
             kernel_pb2.RESOLVE_CHECKPOINT: lambda: sim.resolve_checkpoint(
                 run.state,
                 decoded["item"],
-                int(decoded["cp_index"]),
-                int(decoded["option_index"]),
+                whole("cp_index"),
+                whole("option_index"),
                 in_person=bool(decoded["in_person"]),
             ),
             kernel_pb2.SUBMIT_CEO_INPUT: lambda: sim.submit_ceo_input(
-                run.state, int(decoded["bitmask"]), int(decoded["at_tick"])
+                run.state, whole("bitmask"), whole("at_tick")
             ),
             kernel_pb2.REQUEST_HIRE: lambda: sim.request_hire(run.state, decoded["director"]),
             # `.get` rather than `[...]`: this is the one command carrying free-form text a
@@ -648,6 +673,23 @@ class KernelRuntime:
             # with a sentence of its own.
             kernel_pb2.ASK_PERSON: lambda: sim.ask_person(
                 run.state, str(decoded.get("person", "")), str(decoded.get("question", ""))
+            ),
+            # Runs its branches here, in the handler, and therefore *outside* the append
+            # transaction the writer opens below. That placement is the whole reason a
+            # comparison is affordable: the single writer holds one transaction per tick, and
+            # three branches at a tenth of a second each inside it would stall every other
+            # run's clock and read as a store outage that is not happening.
+            #
+            # `.get` rather than `[...]` for the same reason `ask_person` uses it: a payload
+            # missing a key is a client mistake to answer with a reason, and a KeyError here
+            # would escape as a 500 because nothing above catches anything but CommandRejected.
+            kernel_pb2.COMPARE_OPTIONS: lambda: sim.compare_options(
+                run.state,
+                str(decoded.get("item", "")),
+                whole("cp_index", -1),
+                str(decoded.get("person", "")),
+                whole("at_tick", 0),
+                in_person=bool(decoded.get("in_person", False)),
             ),
         }
 
@@ -662,13 +704,22 @@ class KernelRuntime:
         if not emitted:
             return []
 
-        result = self.writer.submit(
-            run_id=run_id,
-            emitted=emitted,
-            lease_handle=self.lease,
-            rules_ver=RULES_VERSION,
-            tick=run.state.tick,
-        )
+        try:
+            result = self.writer.submit(
+                run_id=run_id,
+                emitted=emitted,
+                lease_handle=self.lease,
+                rules_ver=RULES_VERSION,
+                tick=run.state.tick,
+            )
+        except RunAlreadyTerminated as ended:
+            # The run ended between this command being checked and its events being written.
+            # Every caller already checks for a terminal run before dispatching, so this is the
+            # race rather than the ordinary case — and it is a real window for a comparison,
+            # which spends over a second between its guard and its append. The store is right
+            # to refuse; what was wrong is that the refusal reached the client as an opaque 500
+            # instead of the sentence it already carries.
+            raise sim.CommandRejected(str(ended)) from None
 
         self._outcomes.setdefault(run_id, {})
         return result.envelopes

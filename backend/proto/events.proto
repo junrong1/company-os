@@ -98,6 +98,11 @@ enum EventKind {
   DECISION_RESOLVED = 22;
   QUESTION_ANSWERED = 23;
 
+  // A branch comparison the CEO ran at an open checkpoint. Operational: it mutates
+  // no state, so the fold neither applies it nor regenerates it. It is on the log so
+  // the figures the CEO was shown are still on the record afterwards.
+  OPTIONS_COMPARED = 24;
+
   // Work.
   WORK_ASSIGNED = 30;
   WORK_REASSIGNED = 31;

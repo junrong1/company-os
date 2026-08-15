@@ -275,3 +275,66 @@ def test_every_gateway_command_name_maps_to_a_kernel_enum_and_a_handler() -> Non
         assert f"kernel_pb2.{proto_name}" in dispatch_source, (
             f"{wire_name!r} maps to {proto_name!r}, which no handler in loop.py dispatches"
         )
+
+
+def test_the_registration_sweep_fails_when_a_registration_is_missing() -> None:
+    """The negative of the sweep above.
+
+    Without it, "every command is registered everywhere" would also be satisfied by a sweep
+    whose check could not fail — which is the failure mode of a sweep, and worse than no sweep
+    at all because it reports green. Both halves of the chain are exercised: a wire name with
+    no proto enum, and a proto enum no handler dispatches.
+    """
+    import sys
+
+    sys.path.insert(0, str(BACKEND))
+    from contracts.grpc import kernel_pb2
+
+    dispatch_source = (BACKEND / "services" / "kernel" / "loop.py").read_text(encoding="utf-8")
+
+    assert not hasattr(kernel_pb2, "NO_SUCH_COMMAND")
+    assert "kernel_pb2.NO_SUCH_COMMAND" not in dispatch_source
+
+    # And a real command that *is* dispatched, so the assertions above are about the missing
+    # case rather than about a check that never finds anything.
+    assert hasattr(kernel_pb2, "COMPARE_OPTIONS")
+    assert "kernel_pb2.COMPARE_OPTIONS" in dispatch_source
+
+
+def test_the_comparison_command_is_registered_in_every_place_that_has_to_agree() -> None:
+    """Four places, and nothing type-checks the chain between them.
+
+    The gateway takes a command kind as a string off REST; the kernel dispatches on a proto
+    enum; a third table maps between them; and the event the command produces has to be in the
+    fold's kind partition or the fold refuses it rather than skipping it. A command added to
+    three of the four reaches production and fails only when somebody sends it.
+    """
+    import sys
+
+    sys.path.insert(0, str(BACKEND))
+    from contracts.grpc import kernel_pb2
+    from simcore import log as folder
+
+    from single_process import COMMAND_KINDS
+
+    dispatch_source = (BACKEND / "services" / "kernel" / "loop.py").read_text(encoding="utf-8")
+
+    assert COMMAND_KINDS["compare_options"] == "COMPARE_OPTIONS"
+    assert hasattr(kernel_pb2, "COMPARE_OPTIONS")
+    assert "kernel_pb2.COMPARE_OPTIONS" in dispatch_source
+    assert EventKind.OPTIONS_COMPARED in folder.OPERATIONAL_KINDS
+
+
+def test_the_comparison_command_is_exempt_from_the_pause_guard() -> None:
+    """The first command besides `set_rate` accepted on a paused run.
+
+    A departure from an established rule, so it is asserted where the rule lives rather than
+    only where it is exercised — and asserted as an exemption *list*, so a third entry is a
+    deliberate edit here rather than something that appears in the guard unannounced.
+    """
+    import sys
+
+    sys.path.insert(0, str(BACKEND / "services"))
+    from gateway.commands import NEEDS_NO_TICK_BOUNDARY
+
+    assert NEEDS_NO_TICK_BOUNDARY == {"set_rate", "compare_options"}

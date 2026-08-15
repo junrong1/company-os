@@ -130,11 +130,46 @@
 }
 
 .tile__label {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
   margin: 0 0 0.2rem;
   font-size: 0.65rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-faint);
+}
+
+/* ---------------------------------------------------------------------------
+   The authored-tuning marking (R27, R36)
+   --------------------------------------------------------------------------- */
+
+/*
+ * Everything that carries meaning here is the glyph and the label. The colour is chrome and is
+ * set on the element in `Marking.tsx` rather than here, so the marking travels with the
+ * component wherever it lands rather than depending on a stylesheet a canvas surface never
+ * loads. Sized down and never bold: it has to be present on every figure without competing
+ * with the figure it marks.
+ */
+.mark {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2rem;
+  flex: 0 0 auto;
+  font-size: 0.7em;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  /* Never selectable into a copied figure: pasting "4800 ≈" somewhere else would carry the
+     glyph without the explanation that makes it mean anything. */
+  user-select: none;
+}
+
+.mark__glyph {
+  font-weight: 400;
+}
+
+.mark__label {
+  font-size: 0.9em;
 }
 
 .tile__row {
@@ -495,6 +530,181 @@
 .option__detail {
   grid-column: 2;
   color: var(--text-faint);
+  font-size: 0.7rem;
+}
+
+/* ---------------------------------------------------------------------------
+   What an option costs (R35)
+   --------------------------------------------------------------------------- */
+
+.consequence {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.1rem 0.5rem;
+  margin-top: 0.15rem;
+  font-size: 0.7rem;
+}
+
+.consequence__figure {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2rem;
+}
+
+.consequence__label {
+  color: var(--text-faint);
+}
+
+.consequence__delta {
+  font-variant-numeric: tabular-nums;
+}
+
+.consequence__note {
+  flex-basis: 100%;
+  font-size: 0.68rem;
+}
+
+/* ---------------------------------------------------------------------------
+   Where each option leads (R21, R22, R34)
+   --------------------------------------------------------------------------- */
+
+/*
+ * Under the option list, never in place of it. Closing returns the CEO to a list that never
+ * went away, which is what makes "a comparison informs a choice and never makes one" true of
+ * the layout as well as of the code.
+ */
+.compare {
+  margin-top: 0.4rem;
+}
+
+.compare__ask {
+  width: 100%;
+  font-size: 0.7rem;
+}
+
+.compare__pending {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.7rem;
+}
+
+.comparison {
+  margin-top: 0.4rem;
+  border-top: 1px solid var(--rule);
+  padding-top: 0.4rem;
+}
+
+.comparison__title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+  margin: 0;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.comparison__basis {
+  margin: 0.15rem 0 0.4rem;
+  font-size: 0.68rem;
+}
+
+/*
+ * Columns, and they scroll rather than wrap. Three branches read as a comparison only if they
+ * are side by side; stacked, they read as three separate answers and the whole point of the
+ * panel — scanning one row across — is gone.
+ */
+.comparison__columns {
+  display: flex;
+  gap: 0.4rem;
+  overflow-x: auto;
+}
+
+.branch {
+  flex: 1 0 11rem;
+  min-width: 11rem;
+  background: var(--gangqing);
+  border: 1px solid var(--rule);
+  padding: 0.35rem;
+}
+
+.branch__label {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
+.branch__stop {
+  margin: 0.15rem 0 0.35rem;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+}
+
+/* A branch that ran out of cash is the most important thing this panel can say. */
+.branch[data-stop='insolvent'] .branch__stop {
+  color: var(--zhuhong);
+}
+
+.branch__row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.3rem;
+  font-size: 0.68rem;
+}
+
+.branch__name {
+  color: var(--text-faint);
+}
+
+.branch__figure {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.2rem;
+}
+
+.branch__value {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The measured tick, on every figure. A projection read without one is indistinguishable
+   from a fact about now. */
+.branch__at {
+  font-size: 0.9em;
+}
+
+.branch__gates-at {
+  display: flex;
+  align-items: baseline;
+  gap: 0.2rem;
+  margin: 0.35rem 0 0;
+  font-size: 0.62rem;
+}
+
+.branch__gates {
+  margin: 0.35rem 0 0;
+  padding-left: 0.9rem;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+}
+
+.branch__gates li[data-gate='foreclosed'] {
+  color: var(--zhuhong);
+}
+
+.branch__note {
+  margin: 0.3rem 0 0;
+  font-size: 0.65rem;
+}
+
+.comparison__close {
+  margin-top: 0.4rem;
+  width: 100%;
   font-size: 0.7rem;
 }
 

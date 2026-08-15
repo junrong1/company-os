@@ -20,8 +20,12 @@
 import { useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
-import { PAL, RESERVED_BEAM, deptColour } from '../design/tokens'
+import { type MetricDef, NO_METRIC_DEFS, PAL, RESERVED_BEAM, deptColour } from '../design/tokens'
 import { type CatalogEntry, type ItemStatus, type TrayEntry, useRunStore } from '../net/store'
+import { CompareAffordance } from './Comparison'
+import { Mark } from './Marking'
+import type { CompareSender } from './comparison-model'
+import { OptionConsequence } from './Consequence'
 import { FROM_TRAY_COST, resolvePayload } from './conversation-model'
 import { STATUS_LABEL, lockReason, progressPercent } from './panels-model'
 
@@ -82,12 +86,20 @@ export function OrgPanel({ onWalkTo }: { onWalkTo?: (personId: string) => void }
     const [state, itemId, waiting] = encoded.split('|')
     const entry = roster[personId]
 
+    // Only one of these five branches renders a number, and the marking follows the number
+    // rather than the row — a row reading "Walking" has nothing to mark.
     let task = 'Free right now'
-    if (waiting === '1') task = 'Needs you'
-    else if (itemId !== '')
+    let showsAFigure = false
+    if (waiting === '1') {
+      task = 'Needs you'
+    } else if (itemId !== '') {
       task = `${itemId} — ${progressPercent(items[itemId] ?? 0, effort[itemId] ?? 0)}%`
-    else if (state === 'walking') task = 'Walking'
-    else if (state === 'meeting') task = 'In a meeting'
+      showsAFigure = true
+    } else if (state === 'walking') {
+      task = 'Walking'
+    } else if (state === 'meeting') {
+      task = 'In a meeting'
+    }
 
     return (
       <button
@@ -105,7 +117,12 @@ export function OrgPanel({ onWalkTo }: { onWalkTo?: (personId: string) => void }
         />
         <span className="person__body">
           <span className="person__name">{personId}</span>
-          <span className="person__task">{task}</span>
+          <span className="person__task">
+            {task}
+            {/* Progress is authored effort over authored effort. R28 admits no exceptions,
+                and this row renders a figure like any tile does. */}
+            {showsAFigure && <Mark of={`${personId} progress`} />}
+          </span>
         </span>
         {waiting === '1' && (
           // The one place amber is correct: a person is waiting on your decision.
@@ -182,10 +199,21 @@ export function WorkPanel({ onAssign }: { onAssign?: CommandSender }) {
               <p className="item__meta">
                 {STATUS_LABEL[status as ItemStatus] ?? status}
                 {assignee !== '' && ` · ${assignee}`}
-                {status !== 'backlog' &&
-                  ` · ${progressPercent(Number(doneUnits), entry.effort_units)}%`}
+                {status !== 'backlog' && (
+                  <>
+                    {` · ${progressPercent(Number(doneUnits), entry.effort_units)}%`}
+                    <Mark of={`${entry.title} progress`} />
+                  </>
+                )}
               </p>
-              {!available && <p className="item__locked">{reason}</p>}
+              {!available && (
+                <p className="item__locked">
+                  {reason}
+                  {/* The gate threshold and the visibility it is read against are both
+                      authored, so the sentence carries a figure like anything else. */}
+                  {reason.includes('%') && <Mark of={`${entry.title} gate`} />}
+                </p>
+              )}
               {available && status === 'backlog' && (
                 <div className="item__actions">
                   <button
@@ -230,9 +258,17 @@ export function WorkPanel({ onAssign }: { onAssign?: CommandSender }) {
  * that no tacit line was surfaced. The panel says so rather than leaving the CEO to discover
  * it in the report, because a cost you only learn about afterwards is not a choice.
  */
-export function TrayPanel({ onResolve }: { onResolve?: CommandSender }) {
+export function TrayPanel({
+  onResolve,
+  onCompare,
+}: {
+  onResolve?: CommandSender
+  onCompare?: CompareSender
+}) {
   const tray = useRunStore(useShallow((state) => state.tray))
   const catalog = useRunStore(useShallow((state) => state.genesis?.catalog ?? []))
+  // Genesis is written once and never replaced, so this is stable by reference.
+  const metricDefs = useRunStore((state) => state.genesis?.metricDefs) ?? NO_METRIC_DEFS
 
   const byId = useMemo(() => {
     const index: Record<string, CatalogEntry> = {}
@@ -245,7 +281,14 @@ export function TrayPanel({ onResolve }: { onResolve?: CommandSender }) {
       <h2>Waiting on you</h2>
       {tray.length === 0 && <p className="hint">Nobody is stopped.</p>}
       {tray.map((entry) => (
-        <TrayCard key={`${entry.itemId}:${entry.cpIndex}`} entry={entry} item={byId[entry.itemId]} onResolve={onResolve} />
+        <TrayCard
+          key={`${entry.itemId}:${entry.cpIndex}`}
+          entry={entry}
+          item={byId[entry.itemId]}
+          metricDefs={metricDefs}
+          onResolve={onResolve}
+          onCompare={onCompare}
+        />
       ))}
     </section>
   )
@@ -254,11 +297,15 @@ export function TrayPanel({ onResolve }: { onResolve?: CommandSender }) {
 function TrayCard({
   entry,
   item,
+  metricDefs,
   onResolve,
+  onCompare,
 }: {
   entry: TrayEntry
   item: CatalogEntry | undefined
+  metricDefs: readonly MetricDef[]
   onResolve?: CommandSender
+  onCompare?: CompareSender
 }) {
   const [chosen, setChosen] = useState<number | null>(null)
   const checkpoint = item?.checkpoints[entry.cpIndex]
@@ -278,6 +325,11 @@ function TrayCard({
           />
           <span className="option__label">{option.label}</span>
           <span className="option__detail">{option.detail}</span>
+          {/* The same component the conversation renders, so the two surfaces cannot price one
+              option two ways. The tray still withholds the tacit line — that is the mechanic,
+              and it is held apart from the tray entry precisely so this card has nothing to
+              leak. What it no longer withholds is the arithmetic. */}
+          <OptionConsequence option={option} metricDefs={metricDefs} />
         </label>
       ))}
 
@@ -301,6 +353,18 @@ function TrayCard({
           {FROM_TRAY_COST} Walk over to hear what they know.
         </p>
       </div>
+
+      {/* AE14: the comparison is reachable from here as well as from the conversation, and it
+          reads the same model — so the two surfaces cannot disagree about where an option
+          leads. `inPerson` is false because settling from the tray is what this card does, and
+          the branches have to price the route the CEO is actually about to take. */}
+      <CompareAffordance
+        itemId={entry.itemId}
+        cpIndex={entry.cpIndex}
+        personId={entry.personId}
+        inPerson={false}
+        onCompare={onCompare}
+      />
     </article>
   )
 }
@@ -342,14 +406,16 @@ export function OutputPanel() {
 
 export function Panels({
   onCommand,
+  onCompare,
   onWalkTo,
 }: {
   onCommand?: CommandSender
+  onCompare?: CompareSender
   onWalkTo?: (personId: string) => void
 }) {
   return (
     <div className="panels">
-      <TrayPanel onResolve={onCommand} />
+      <TrayPanel onResolve={onCommand} onCompare={onCompare} />
       <OrgPanel onWalkTo={onWalkTo} />
       <WorkPanel onAssign={onCommand} />
       <OutputPanel />

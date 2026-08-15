@@ -418,6 +418,14 @@ Real, and covered by the tests below:
 - A second surface over the same state: a dependency graph drawn on the office's own
   16px grid, with status carried by border form and glyph so it survives greyscale,
   and a chain strip that keeps blocked work visible while you are in the office.
+- Every option at a decision point states what it costs, in the same integer units
+  the metric tiles use — including the change to the department's recurring workload,
+  which is a different thing from a metric delta and is shown as one.
+- A branch comparison: at an open decision you can run one branch per option, each
+  forked at that tick and advanced to the first downstream decision it raises or to
+  the run's horizon, and read them side by side. A branch takes no action at anything
+  it reaches, never touches the parent run, and is discarded when you close it. It
+  needs no model key, and it is reachable from the conversation and from the tray.
 
 Not real — deliberately, and stated on screen:
 
@@ -427,6 +435,27 @@ Not real — deliberately, and stated on screen:
    no multiplayer. Reload and it is Day 1 again. This is what Phase 1 changes.
 3. **The company is invented.** Halstead Industrial, its ten people and its eight
    work items are plausible sample data, not a real customer's org.
+4. **Every number is authored tuning.** Cash, lead time, morale, visibility, the
+   recurring workload, the runway, the capacity heat, and every figure a branch
+   projects — all of them come from constants somebody chose, not from a measurement
+   anything took. The client says so on the figure itself rather than in a footnote:
+   each one carries a `≈` and the words "authored tuning", and the marking is a glyph
+   and a label rather than a colour, so it survives greyscale and a screenshot. What
+   the numbers are good for is comparing two decisions under one set of rules; what
+   they are not good for is telling you what your company would do.
+5. **A branch is a run nobody answers.** The kernel asks its domain service for each
+   period's effects, and inside a branch nothing replies, so those requests are raised
+   and abandoned exactly as they would be if the service were down. Every branch at
+   one decision does this identically, so it cannot tip the comparison one way — but a
+   branch's absolute figures describe a run whose domain service stays silent, which
+   is a bound on how far a projection may be read.
+6. **A comparison costs about a second and a half, on the request thread.** Six
+   branches at the bound, stepped synchronously in pure Python. It runs outside the
+   store's append transaction so it cannot stall the log writer, but it does occupy a
+   slot in the same worker pool the tick loops use — so enough simultaneous
+   comparisons would slow every run's clock in the process. Fine for one person at one
+   keyboard, which is what this is; it would need a process pool before it was
+   anything else.
 
 ---
 

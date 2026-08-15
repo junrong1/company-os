@@ -171,8 +171,9 @@ def test_the_kind_table_is_pinned() -> None:
     unannounced.
     """
     # 26 since Phase 2 added QUESTION_ANSWERED for the ask mechanic.
-    assert len(KIND_SCHEMA_VERSIONS) == 26
-    assert len(EventKind) == 27  # the 26 above, plus UNSPECIFIED
+    # 27 since Phase 3 added OPTIONS_COMPARED for the branch comparison.
+    assert len(KIND_SCHEMA_VERSIONS) == 27
+    assert len(EventKind) == 28  # the 27 above, plus UNSPECIFIED
 
 
 # --- integers only (R6) ---------------------------------------------------

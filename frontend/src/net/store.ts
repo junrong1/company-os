@@ -56,18 +56,38 @@ export interface CatalogEntry {
 }
 
 /**
+ * One way to settle a checkpoint, and what it costs.
+ *
+ * `effect` holds metric deltas only. The recurring-draw change is `draw_delta`, split out by
+ * the kernel because it is not a metric — `manualHours` is derived from the sum of department
+ * draws, so rendering `draw` as a metric movement would show a movement no metric makes. The
+ * department it moves is the catalog entry's own `director`.
+ *
+ * Every figure in here is authored tuning, and every surface that renders one has to say so.
+ */
+export interface OptionDef {
+  label: string
+  detail: string
+  effect: Record<string, number>
+  draw_delta: number
+  /** The sentence the deliverable's provenance records — what survives the run. */
+  note: string
+}
+
+/**
  * A decision point, as authored.
  *
  * No `tacit` field, and that is the mechanic rather than an omission: the line only an
  * in-person resolution surfaces is never shipped at genesis. It reaches the client on the
- * resolution that earned it.
+ * resolution that earned it. The option's arithmetic *is* shipped, at genesis payload version
+ * 4 — see `catalog_to_state` for why that withholding was reversed and this one was not.
  */
 export interface CheckpointDef {
   at_percent: number
   kind: string
   label: string
   prompt: string
-  options: Array<{ label: string; detail: string }>
+  options: OptionDef[]
 }
 
 export interface RosterEntry {
@@ -224,6 +244,101 @@ export interface TrajectoryPoint {
 /** How many points a trajectory keeps. Bounded: a long run must not grow the client. */
 export const TRAJECTORY_CAPACITY = 240
 
+// =========================================================================
+// Branch comparisons
+// =========================================================================
+//
+// These live here rather than in `ui/comparison-model.ts` because they are wire shapes, and the
+// store owns wire shapes — `CatalogEntry`, `OptionDef`, `PersonView` and the rest are all
+// defined here and imported *by* the ui models. Defining them in the ui layer and importing
+// them down into `net/` inverted that, and put a `net -> ui` edge in a codebase that otherwise
+// only has `ui -> net`.
+
+/**
+ * The key a comparison is held under: one per checkpoint *per route*.
+ *
+ * The route belongs in the key, and leaving it out was a real bug. Both affordances are mounted
+ * at once whenever the CEO is standing next to the person who is blocked — the tray card and the
+ * conversation's decision card — so a comparison run from the tray would satisfy the
+ * conversation's lookup and render tray-priced branches under the in-person panel. The kernel
+ * prices the two routes differently on purpose (in person pays morale and visibility, the tray
+ * costs morale), which is exactly the premium the panel exists to show, so the figures would
+ * have been wrong by the amount the feature is about.
+ */
+export function comparisonKey(itemId: string, cpIndex: number, inPerson: boolean): string {
+  return `${itemId}:${cpIndex}:${inPerson ? 'here' : 'tray'}`
+}
+
+
+/** One sample on a projected trajectory, and the tick it was measured at. */
+export interface ProjectedPoint {
+  tick: bigint
+  value: number
+}
+
+/**
+ * One number in a branch summary, and the tick it was measured at (R22).
+ *
+ * `value` is `null` where the kernel could not know it — a runway before the branch has paid a
+ * day of costs. That is a different thing from zero, and rendering it as zero would say the
+ * company is insolvent at the moment the answer is merely unknown.
+ */
+export interface ProjectedFigure {
+  value: number | null
+  atTick: bigint
+}
+
+/**
+ * Why a branch stopped. The kernel's own vocabulary, not a second one.
+ *
+ * `bound` is distinct from `horizon` on purpose: "ran to the end of the run" and "ran as far as
+ * a comparison goes, and the run continues past here" are different facts, and rendering the
+ * second as the first would overstate what the projection covers.
+ */
+export type StopReason = 'checkpoint' | 'horizon' | 'insolvent' | 'bound' | ''
+
+/** The checkpoint a branch stopped at, reached and unsettled. */
+export interface ReachedCheckpoint {
+  itemId: string
+  cpIndex: number
+  label: string
+  kind: string
+  personId: string
+  tick: bigint
+}
+
+/** One option, followed to the next decision. */
+export interface Branch {
+  optionIndex: number
+  optionLabel: string
+  optionNote: string
+  forkTick: bigint
+  stopTick: bigint
+  stopReason: StopReason
+  stopDetail: string
+  reached: ReachedCheckpoint | null
+  trajectories: Record<string, ProjectedPoint[]>
+  metrics: Record<string, ProjectedFigure>
+  runway: ProjectedFigure
+  dailyCost: ProjectedFigure
+  unlocked: string[]
+  foreclosed: string[]
+  /** The tick the gate lists were read at — the branch's own stop, which differs per branch. */
+  gatesAtTick: bigint
+}
+
+/** One comparison: every option at one checkpoint, as the kernel reported it. */
+export interface Comparison {
+  itemId: string
+  cpIndex: number
+  personId: string
+  forkTick: bigint
+  inPerson: boolean
+  branches: Branch[]
+  /** The sequence the record arrived at. Newer wins, so a re-read cannot go backwards. */
+  atSeq: bigint
+}
+
 export type ConnectionStatus = 'idle' | 'connecting' | 'live' | 'resyncing' | 'lost'
 
 export interface RunStore {
@@ -263,6 +378,21 @@ export interface RunStore {
    * leak — the only reader is the conversation.
    */
   tacitLines: Record<string, string>
+  /**
+   * Branch comparisons, keyed `item:cpIndex`.
+   *
+   * Held apart from `trajectories` on purpose, and the distinction is the whole point of the
+   * mechanic. `trajectories` is the parent run's *actual* history, written only from what the
+   * store read off an event; a branch's points are a *projection* carrying a measured tick and
+   * an authored basis. Folding one into the other would make the HUD's sparklines draw a
+   * future nobody has lived, and there would be no way to tell afterwards which points were
+   * which.
+   *
+   * A second comparison at one checkpoint replaces the first. That matches how the decision
+   * card is keyed today, and it is the safe direction: the kernel computes every branch before
+   * appending, so a record that arrives is complete, and the newer one describes a later fork.
+   */
+  comparisons: Record<string, Comparison>
   /**
    * What each person has said, newest first, keyed by person id.
    *
@@ -310,6 +440,7 @@ function emptyRun(): Omit<
     deliverables: [],
     terminal: null,
     tacitLines: {},
+    comparisons: {},
     answers: {},
     ceo: { xMilli: 0, yMilli: 0, facing: 'down' },
     ceoEcho: null,
@@ -552,6 +683,12 @@ function applyEvent(set: Setter, get: Getter, frame: EventFrame, seq: bigint): v
     // which can move an item out of `blocked` without a DECISION_RESOLVED to clear the tray.
     if (status !== 'blocked') {
       patch.tray = (patch.tray ?? state.tray).filter((entry) => entry.itemId !== itemId)
+      // And the comparison goes with the tray entry, from the same branch and by the same
+      // rule (R25). A displayed result whose checkpoint has been settled, reassigned, or lost
+      // its owner is a projection from a run that no longer exists. Dropped here — derived
+      // from the wire's own authority — rather than by a client-side timer, which would be a
+      // second opinion about a question the wire already answers.
+      patch.comparisons = withoutItem(patch.comparisons ?? state.comparisons, itemId)
     }
   }
 
@@ -570,6 +707,19 @@ function applyEvent(set: Setter, get: Getter, frame: EventFrame, seq: bigint): v
         assignee: '',
       })
       patch.tray = (patch.tray ?? state.tray).filter((entry) => entry.itemId !== returned)
+      patch.comparisons = withoutItem(patch.comparisons ?? state.comparisons, returned)
+    }
+  }
+
+  // --- comparisons ------------------------------------------------------
+  if (frame.kind === 'OPTIONS_COMPARED') {
+    const comparison = readComparison(payload, seq)
+    if (comparison !== null) {
+      patch.comparisons = {
+        ...(patch.comparisons ?? state.comparisons),
+        [comparisonKey(comparison.itemId, comparison.cpIndex, comparison.inPerson)]:
+          comparison,
+      }
     }
   }
 
@@ -681,6 +831,128 @@ function withItem(
     resolvedCount: 0,
   }
   return { ...items, [id]: { ...existing, ...patch, id } }
+}
+
+/**
+ * Drop every comparison belonging to an item, whichever of its checkpoints it was at.
+ *
+ * Returns the *same reference* when there is nothing to drop, which is the common case — items
+ * leave `blocked` on every assignment, reassignment, delivery and attrition, and a comparison is
+ * rare and short-lived. Rebuilding the map regardless would hand the slice a new identity on
+ * effectively every one of those events, waking any subscriber that reads the whole slice for a
+ * change that did not happen.
+ */
+function withoutItem(
+  comparisons: Record<string, Comparison>,
+  itemId: string,
+): Record<string, Comparison> {
+  if (!Object.values(comparisons).some((comparison) => comparison.itemId === itemId)) {
+    return comparisons
+  }
+
+  const next: Record<string, Comparison> = {}
+  for (const [key, comparison] of Object.entries(comparisons)) {
+    if (comparison.itemId !== itemId) next[key] = comparison
+  }
+  return next
+}
+
+/**
+ * Read a comparison record off the wire.
+ *
+ * Total, like every other reader here: this runs inside the WebSocket message handler, and a
+ * throw would escape `apply` and take the stream down over one malformed frame. A record that
+ * names no item is dropped rather than stored under an empty key.
+ */
+function readComparison(
+  payload: Record<string, unknown>,
+  seq: bigint,
+): Comparison | null {
+  const itemId = toStr(payload.item)
+  if (itemId === '') return null
+
+  const branches = Array.isArray(payload.branches) ? payload.branches : []
+
+  return {
+    itemId,
+    cpIndex: toInt(payload.cp_index, -1),
+    personId: toStr(payload.person),
+    forkTick: toBig(payload.tick),
+    inPerson: payload.in_person === true,
+    branches: branches.filter(isRecord).map(readBranch),
+    atSeq: seq,
+  }
+}
+
+function readBranch(record: Record<string, unknown>): Branch {
+  const reached = record.stopped_at
+
+  return {
+    optionIndex: toInt(record.option_index, -1),
+    optionLabel: toStr(record.option_label),
+    optionNote: toStr(record.option_note),
+    forkTick: toBig(record.fork_tick),
+    stopTick: toBig(record.stop_tick),
+    stopReason: toStr(record.stop_reason) as StopReason,
+    stopDetail: toStr(record.stop_detail),
+    reached: isRecord(reached)
+      ? {
+          itemId: toStr(reached.item),
+          cpIndex: toInt(reached.cp_index, -1),
+          label: toStr(reached.label),
+          kind: toStr(reached.kind),
+          personId: toStr(reached.person),
+          tick: toBig(reached.tick),
+        }
+      : null,
+    trajectories: readProjectedSeries(record.trajectories),
+    metrics: readFigures(record.metrics),
+    runway: readFigure(record.runway),
+    dailyCost: readFigure(record.daily_cost),
+    unlocked: readStrings(record.unlocked),
+    foreclosed: readStrings(record.foreclosed),
+    gatesAtTick: toBig(record.gates_at_tick),
+  }
+}
+
+function readProjectedSeries(value: unknown): Record<string, ProjectedPoint[]> {
+  if (!isRecord(value)) return {}
+  const series: Record<string, ProjectedPoint[]> = {}
+  for (const [key, points] of Object.entries(value)) {
+    if (!Array.isArray(points)) continue
+    series[key] = points
+      .filter(isRecord)
+      .map((point) => ({ tick: toBig(point.tick), value: toInt(point.value) }))
+  }
+  return series
+}
+
+function readFigures(value: unknown): Record<string, ProjectedFigure> {
+  if (!isRecord(value)) return {}
+  const figures: Record<string, ProjectedFigure> = {}
+  for (const [key, figure] of Object.entries(value)) {
+    figures[key] = readFigure(figure)
+  }
+  return figures
+}
+
+/**
+ * One figure, keeping `null` distinct from zero.
+ *
+ * A runway the kernel could not know — no day of costs paid yet — arrives as `null`, and
+ * coercing it to zero here would render "insolvent" where the honest answer is "not yet
+ * knowable". The two are the same pixel width and opposite in meaning.
+ */
+function readFigure(value: unknown): ProjectedFigure {
+  if (!isRecord(value)) return { value: null, atTick: 0n }
+  return {
+    value: typeof value.value === 'number' ? Math.trunc(value.value) : null,
+    atTick: toBig(value.at_tick),
+  }
+}
+
+function readStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((entry) => String(entry)) : []
 }
 
 function extendTrajectories(
@@ -892,6 +1164,13 @@ function readSnapshot(
       facing: toStr(ceo.facing, 'down'),
     }
   }
+
+  // Comparisons do not survive a resync. A resync means the client was too far behind to catch
+  // up by replay, so the fork tick every held projection was measured at is somewhere in a
+  // stretch of the run this client never saw. Keeping them would leave figures on screen whose
+  // basis is a state the client can no longer account for — and the CEO can ask again for the
+  // cost of a tenth of a second.
+  patch.comparisons = {}
 
   // A snapshot carries no tray of its own; it is rebuilt from the items that are blocked.
   if (patch.items !== undefined) {

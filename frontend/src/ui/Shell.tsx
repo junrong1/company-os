@@ -26,6 +26,7 @@ import { Dag } from '../dag/Dag'
 import { Renderer } from '../render/index'
 import { EventStream, newIdempotencyKey, submitCommand } from '../net/stream'
 import { runState, subscribeTo, useRunStore } from '../net/store'
+import { comparePayload } from './comparison-model'
 import { Conversation } from './Conversation'
 import { selectConversation } from './conversation-model'
 import { Hud } from './Hud'
@@ -347,6 +348,25 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
     [command],
   )
 
+  /**
+   * Ask for a branch comparison.
+   *
+   * Built here rather than in the panel that offers it, for the same reason `sendInput` is:
+   * the tag comes from the *render* clock, and the render clock lives with the renderer that
+   * drives it. The store's tick is the last one the kernel actually said out loud — events
+   * land on about five ticks in twelve hundred — so a request tagged from it would describe a
+   * moment well inside the run's past. That was a real defect on the input path, and threading
+   * a tick getter down through two layers of panel is how the client would end up with a
+   * second answer to "what time is it".
+   */
+  const compare = useCallback(
+    (itemId: string, cpIndex: number, personId: string, inPerson: boolean) => {
+      const now = readClockTick.current?.() ?? runState().tick
+      command('compare_options', comparePayload(itemId, cpIndex, personId, now, inPerson))
+    },
+    [command],
+  )
+
   const banner = useMemo(() => {
     if (terminal !== null) return `The run ended: ${terminal.reason}`
     if (rejection !== null) return rejection
@@ -427,14 +447,16 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
 
         {/* Only over the office. On the chain view there is no floor to be standing on, and a
             conversation panel there would claim a proximity the stage is not showing. */}
-        {stage === 'office' && <Conversation personId={nearby} onCommand={command} />}
+        {stage === 'office' && (
+          <Conversation personId={nearby} onCommand={command} onCompare={compare} />
+        )}
       </div>
 
       {/* Persists in both modes: a severed chain shows violet while you are still standing in
           the office, so you never need to open the DAG to learn that something stopped. */}
       <ChainStrip />
 
-      <Panels onCommand={command} />
+      <Panels onCommand={command} onCompare={compare} />
     </main>
   )
 }

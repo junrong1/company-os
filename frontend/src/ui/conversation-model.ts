@@ -18,7 +18,8 @@
  * from both positions every frame rather than only when the CEO moves.
  */
 
-import type { CatalogEntry, PersonView, RosterEntry, TrayEntry } from '../net/store'
+import { type Direction, type MetricDef, directionOf } from '../design/tokens'
+import type { CatalogEntry, OptionDef, PersonView, RosterEntry, TrayEntry } from '../net/store'
 
 /** Within this, a conversation opens. The prototype's `TALK_RANGE`, in milli-tiles. */
 export const OPEN_RADIUS_MILLI = 1900
@@ -220,9 +221,119 @@ export const IN_PERSON_COST = 'Deciding here surfaces what they know, and they w
 export const FROM_TRAY_COST =
   'Settling from the tray records no tacit line, and it costs morale.'
 
-export interface DecisionOption {
+/**
+ * One way to settle a checkpoint, as the surface holds it.
+ *
+ * An alias rather than a narrower local shape. The kernel ships the whole option at genesis,
+ * and a second interface here listing a subset would be the place a genuine shape change went
+ * unnoticed — the same argument `catalogFixture` makes about typing the fixture as the store's
+ * own `CatalogEntry`.
+ */
+export type DecisionOption = OptionDef
+
+/**
+ * The key the recurring-draw figure carries.
+ *
+ * Not a metric key, and deliberately not one: `manualHours` is derived from the sum of the
+ * department draws, so a draw change rendered as a `manualHours` delta would be a second,
+ * disagreeing statement of the same movement.
+ */
+export const DRAW_FIGURE_KEY = 'draw'
+
+/** What the recurring-draw figure is called, and the unit it is measured in. */
+export const DRAW_FIGURE_LABEL = 'Recurring draw'
+export const DRAW_FIGURE_UNIT = 'h/mo'
+
+/**
+ * One number on an option's authored consequence.
+ *
+ * `text` carries the sign, because a consequence that reads "3" where it means "−3" is worse
+ * than no figure at all. Every one of these is authored tuning and is rendered with the
+ * marking that says so (R28) — the marking is a property of the figure, so nothing that
+ * renders one can render it unmarked.
+ */
+export interface ConsequenceFigure {
+  key: string
   label: string
-  detail: string
+  delta: number
+  text: string
+}
+
+function signed(delta: number, unit: string): string {
+  return `${delta > 0 ? '+' : delta < 0 ? '−' : ''}${Math.abs(delta)}${unit}`
+}
+
+/**
+ * What an option costs, as figures the surface can render (R35).
+ *
+ * Ordered by the metric table rather than by the authored effect's key order, so two options at
+ * one checkpoint list their figures in the same order and can be read down the column. The
+ * recurring-draw figure comes last because it is not a metric.
+ *
+ * An option that moves nothing returns an empty list, which is what lets the surface render no
+ * figures rather than a row of zeros — a row of zeros reads as a measurement, and there was no
+ * measurement.
+ */
+export function optionConsequence(
+  option: DecisionOption,
+  metricDefs: readonly MetricDef[],
+): ConsequenceFigure[] {
+  const figures: ConsequenceFigure[] = []
+
+  // `?? {}` rather than a trusted field: a run created before genesis payload version 4 keeps
+  // its old-shaped catalog forever — the fold never re-derives it — and the rules version did
+  // not move for this change, so such a run is still resumable.
+  //
+  // What this renders for one is *indistinguishable from an option that costs nothing*, which
+  // is a real limitation rather than the honest answer an earlier version of this comment
+  // claimed. Telling the two apart needs `schema_ver`, which the store discards on the way in.
+  // Accepted for now because runs here are local and disposable; if that stops being true,
+  // this is the place that has to say "not recorded" instead of showing nothing.
+  const effect = option.effect ?? {}
+
+  for (const metric of metricDefs) {
+    const delta = effect[metric.key]
+    if (typeof delta !== 'number' || delta === 0) continue
+    figures.push({
+      key: metric.key,
+      label: metric.label,
+      delta,
+      text: signed(delta, metric.chip_unit),
+    })
+  }
+
+  const draw = option.draw_delta ?? 0
+  if (draw !== 0) {
+    figures.push({
+      key: DRAW_FIGURE_KEY,
+      label: DRAW_FIGURE_LABEL,
+      delta: draw,
+      text: signed(draw, DRAW_FIGURE_UNIT),
+    })
+  }
+
+  return figures
+}
+
+/**
+ * Whether a figure is good news, in the metric's own terms.
+ *
+ * The draw is the case a uniform rule gets wrong: less recurring work is a win, so a negative
+ * draw change is favourable — the same asymmetry `manualHours` carries, and for the same
+ * reason, since the metric is the sum of the draws. That is why this resolves a `good`
+ * direction and hands it to `directionOf` rather than calling `direction`: the draw figure has
+ * no `MetricDef` to pass, and inventing one to satisfy the signature would be worse than
+ * naming the number.
+ */
+export function consequenceDirection(
+  figure: ConsequenceFigure,
+  metricDefs: readonly MetricDef[],
+): Direction {
+  const good =
+    figure.key === DRAW_FIGURE_KEY
+      ? -1
+      : (metricDefs.find((metric) => metric.key === figure.key)?.good ?? 1)
+  return directionOf(figure.delta, good)
 }
 
 /** A person stopped at a decision, as the conversation shows it. */

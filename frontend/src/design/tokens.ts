@@ -71,6 +71,45 @@ export const PAL = {
  */
 export const RESERVED_BEAM = PAL.beam
 
+// =========================================================================
+// The authored-tuning marking
+// =========================================================================
+
+/**
+ * Every number this product renders is invented, and every surface has to say so.
+ *
+ * R27 and R28: no figure appears without its marking travelling with it. R36 adds the part
+ * that makes it a design constraint rather than a label — **the marking is a dedicated token,
+ * never a hue.** Amber is reserved for a person waiting on the CEO, and a "these numbers are
+ * made up" signal expressed as colour would either spend that reserve or invent a second one
+ * competing with it. So the marking is a glyph and a short label, and it survives greyscale,
+ * a colour-blind reader and a screenshot.
+ *
+ * `PAL.tacit` plus its "Only in person" badge is the working precedent for a non-hue semantic
+ * slot; this is the same shape with the hue removed entirely.
+ *
+ * Exported as its own frozen token — the shape `RESERVED_BEAM` established — so that "the
+ * marking is never the beam" and "the marking carries no colour" are properties a test states
+ * directly rather than conventions somebody has to remember.
+ */
+export const AUTHORED_TUNING = {
+  /**
+   * Approximately-equal, because that is what these figures are: a shape someone chose, not a
+   * measurement anything took. Deliberately not a warning triangle — the numbers are not
+   * wrong, they are authored, and a warning would read as a fault in the simulation.
+   */
+  glyph: '≈',
+  /** What the glyph means, spelled out wherever there is room for it. */
+  label: 'authored tuning',
+  /** The long form, for a tooltip or an assistive-technology label. */
+  description: 'This figure is authored tuning, not a measurement.',
+} as const
+
+/** The marking's accessible label for one named figure. */
+export function authoredTuningLabel(what: string): string {
+  return `${what} — ${AUTHORED_TUNING.label}`
+}
+
 /** Interactive, selected. Already means "live", which is why it carries in-progress. */
 export const ACCENT = PAL.shilv
 
@@ -190,7 +229,31 @@ export interface MetricDef {
   display_max: number
 }
 
+/**
+ * The empty metric table, as one shared reference.
+ *
+ * A fresh `[]` from a selector would be a new reference every call, and the store's equality
+ * check is `Object.is` on the selector's output — so a panel reading the metric table before
+ * genesis has landed would re-render forever. Shared rather than declared once per panel that
+ * needs it: three copies of a sentinel is three chances for one to become an inline literal.
+ */
+export const NO_METRIC_DEFS: readonly MetricDef[] = []
+
 export type Direction = 'favourable' | 'unfavourable' | 'flat'
+
+/**
+ * Whether a movement is good news, given which direction counts as an improvement.
+ *
+ * The lower half of `direction`, split out because two callers need the rule without holding a
+ * `MetricDef`. The recurring-draw figure is not a metric — `manualHours` is derived from the
+ * sum of the draws — and a projected figure is read against where the run is now rather than
+ * against zero. Both were open-coding the sign comparison, which is one rule in three places
+ * and exactly what drifts silently.
+ */
+export function directionOf(delta: number, good: number): Direction {
+  if (delta === 0) return 'flat'
+  return Math.sign(delta) === Math.sign(good) ? 'favourable' : 'unfavourable'
+}
 
 /**
  * Whether a movement is good news for this metric.
@@ -201,8 +264,7 @@ export type Direction = 'favourable' | 'unfavourable' | 'flat'
  * as a regression. That rule is the kernel's to state, and the HUD's to read.
  */
 export function direction(metric: MetricDef, delta: number): Direction {
-  if (delta === 0) return 'flat'
-  return Math.sign(delta) === Math.sign(metric.good) ? 'favourable' : 'unfavourable'
+  return directionOf(delta, metric.good)
 }
 
 /** The hue a delta renders in. Never the beam — a metric movement is not a person waiting. */

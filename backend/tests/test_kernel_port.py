@@ -15,6 +15,7 @@ import json
 
 import pytest
 
+from simcore import effects
 from simcore import hashing
 from simcore import items as work
 from simcore import people as roster
@@ -815,10 +816,76 @@ def test_the_catalog_withholds_the_tacit_line() -> None:
     for entry in catalog:
         for checkpoint in entry["checkpoints"]:
             assert "tacit" not in checkpoint
-            # Prose, not arithmetic: an option is priced in its detail line. Shipping the
-            # deltas would let the CEO optimise against numbers instead of judgement.
+            # The option's arithmetic *is* shipped now (R35), and the tacit line still is
+            # not. Pinned as an exact key set so that reversing one withholding cannot
+            # quietly carry the other along with it.
             for option in checkpoint["options"]:
-                assert set(option) == {"label", "detail"}
+                assert set(option) == {"label", "detail", "effect", "draw_delta", "note"}
+
+
+def test_each_catalog_option_carries_its_authored_consequence() -> None:
+    """R35, AE20: what an option costs reaches the decision surface.
+
+    The reversal of a deliberate withholding, and the docstring on `catalog_to_state`
+    records why. What makes it defensible is the marking: the figure is visible and
+    labelled as authored tuning rather than hidden and imagined.
+    """
+    _, genesis = sim.new_run(run_seed=SEED)
+    by_id = {entry["id"]: entry for entry in genesis[0].payload["catalog"]}
+
+    for item in work.ITEMS:
+        for cp_index, checkpoint in enumerate(item.checkpoints):
+            shipped = by_id[item.id]["checkpoints"][cp_index]["options"]
+            assert len(shipped) == len(checkpoint.options)
+            for option, authored in zip(shipped, checkpoint.options, strict=True):
+                metric_effect, draw = effects.split_draw(authored.effect)
+                assert option["effect"] == metric_effect
+                assert option["draw_delta"] == draw
+                # The sentence the deliverable's provenance records — the one that
+                # survives the run.
+                assert option["note"] == authored.note
+
+
+def test_the_draw_key_never_reaches_the_client_as_a_metric_delta() -> None:
+    """R49: `manualHours` is the sum of the department draws, not an authored delta.
+
+    An option carrying the recurring-draw pseudo-key inside `effect` would render as a
+    metric movement no metric makes. It is split into `draw_delta`, which the department
+    the entry already names owns.
+    """
+    _, genesis = sim.new_run(run_seed=SEED)
+    catalog = genesis[0].payload["catalog"]
+
+    with_draw = [
+        (entry["id"], option)
+        for entry in catalog
+        for checkpoint in entry["checkpoints"]
+        for option in checkpoint["options"]
+        if option["draw_delta"] != 0
+    ]
+    assert with_draw, "the fixture would prove nothing if no option moved a draw"
+
+    for entry in catalog:
+        for checkpoint in entry["checkpoints"]:
+            for option in checkpoint["options"]:
+                assert effects.DRAW_KEY not in option["effect"]
+                assert set(option["effect"]) <= set(effects.METRIC_KEYS)
+
+
+def test_an_option_that_costs_nothing_ships_an_empty_effect() -> None:
+    """The approval checkpoint on the closing-cycle item authors `{}`.
+
+    Shipped as an empty map rather than as zeros for every metric, so the client can render
+    no figures at all instead of a row of zeros that reads as a measurement.
+    """
+    _, genesis = sim.new_run(run_seed=SEED)
+    by_id = {entry["id"]: entry for entry in genesis[0].payload["catalog"]}
+
+    unchanged = by_id["wi_close"]["checkpoints"][1]["options"][1]
+    assert unchanged["label"] == "Leave it at $10K"
+    assert unchanged["effect"] == {}
+    assert unchanged["draw_delta"] == 0
+    assert unchanged["note"]
 
 
 def test_catalog_copy_arrives_rendered() -> None:

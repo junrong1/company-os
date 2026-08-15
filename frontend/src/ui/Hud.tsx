@@ -24,6 +24,7 @@ import {
   overCeiling,
 } from '../design/tokens'
 import { type TrajectoryPoint, useRunStore } from '../net/store'
+import { Mark } from './Marking'
 import {
   CAPACITY_TILE,
   DEFAULT_COMPOSITION,
@@ -74,7 +75,13 @@ function MetricTile({ metric, value, delta, points }: MetricTileProps) {
 
   return (
     <article className="tile" data-tile={metric.key} data-trend={trend}>
-      <p className="tile__label">{metric.label}</p>
+      <p className="tile__label">
+        {metric.label}
+        {/* On the label rather than beside the value: this tile renders a value, a delta and a
+            sparkline, and they are all the same authored figure seen three ways. One marking
+            covers the tile; three would read as three separate claims. */}
+        <Mark of={metric.label} />
+      </p>
       <div className="tile__row">
         <span className="tile__value">{formatValue(metric, value)}</span>
         <span className="tile__unit">{metric.unit === '/100' ? '' : metric.unit}</span>
@@ -113,7 +120,14 @@ function RunwayTile({ cash, dailyCost }: { cash: number; dailyCost: number }) {
   const days = runwayDays(cash, dailyCost)
   return (
     <article className="tile tile--fixed" data-tile={RUNWAY_TILE}>
-      <p className="tile__label">Runway</p>
+      <p className="tile__label">
+        Runway
+        {/* Marked whatever it reads. Runway is `null` before the first day's costs and zero at
+            insolvency, and both of those are still authored arithmetic — a marking that
+            appeared only once there was a number would be absent at exactly the two moments
+            the figure is most likely to be believed. */}
+        <Mark of="Runway" />
+      </p>
       <div className="tile__row">
         <span className="tile__value">{days === null ? '—' : days}</span>
         <span className="tile__unit">{days === null ? 'no burn yet' : 'days'}</span>
@@ -133,7 +147,13 @@ function PressureTile({ pressure }: { pressure: Pressure }) {
       // Neutral chrome, always. The beam belongs to the people this counts, not to the count.
       style={{ color: pressureColour(pressure) }}
     >
-      <p className="tile__label">Waiting on you</p>
+      <p className="tile__label">
+        Waiting on you
+        {/* The count is a fact about the log; the *supply* it is counted against is authored,
+            and so is the wait measured in ticks. Marking the tile rather than picking the two
+            derived halves out of it keeps R28 simple: nothing here is presented as measured. */}
+        <Mark of="Decision pressure" />
+      </p>
       <div className="tile__row">
         <span className="tile__value">{pressure.waiting}</span>
         <span className="tile__unit">of {pressure.supply} this run</span>
@@ -160,7 +180,12 @@ function CapacityTile({
 
   return (
     <article className="tile tile--wide" data-tile={CAPACITY_TILE}>
-      <p className="tile__label">Capacity</p>
+      <p className="tile__label">
+        Capacity
+        {/* The load percentage is per-mille of an authored monthly capacity against an authored
+            ceiling — every part of it invented, including the scale it is read against. */}
+        <Mark of="Capacity" />
+      </p>
       {lines.length === 0 && <p className="tile__foot">no departments yet</p>}
       {lines.map(([director, permille]) => (
         <div className="heat" key={director} data-over={overCeiling(permille, ceiling)}>

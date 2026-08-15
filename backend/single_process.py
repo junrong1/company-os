@@ -61,6 +61,7 @@ COMMAND_KINDS = {
     "set_rate": "SET_RATE",
     "request_hire": "REQUEST_HIRE",
     "ask_person": "ASK_PERSON",
+    "compare_options": "COMPARE_OPTIONS",
 }
 
 

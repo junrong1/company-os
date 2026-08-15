@@ -4,13 +4,16 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  AUTHORED_TUNING,
   LOAD_RAMP,
   RESERVED_BEAM,
+  authoredTuningLabel,
   direction,
   loadColour,
   loadFillPermille,
   overCeiling,
 } from '../src/design/tokens'
+import { Hud, type HudProps } from '../src/ui/Hud'
 import { type Frame, type MetricDefLike, useRunStore } from './helpers/store-helpers'
 import {
   COMPOSITION_STORAGE_KEY,
@@ -454,6 +457,151 @@ describe('a burst of events', () => {
 
     expect(renders.count).toBeGreaterThan(before)
     expect(useRunStore.getState().metrics.cash).toBe(4700)
+  })
+})
+
+// =========================================================================
+// R27, R28, R36: every rendered figure says it is authored tuning
+// =========================================================================
+
+describe('the authored-tuning marking', () => {
+  it('is a glyph and a label, and carries no colour at all (R36)', () => {
+    // The load-bearing half of R36. Amber is reserved for a person waiting on the CEO, and a
+    // "these numbers are invented" signal expressed as hue would either spend that reserve or
+    // invent a second one competing with it. Asserted over the token rather than over a
+    // rendered tile, so it holds for every surface including the ones drawn on canvas.
+    expect(AUTHORED_TUNING.glyph).toBeTruthy()
+    expect(AUTHORED_TUNING.label).toBeTruthy()
+
+    for (const value of Object.values(AUTHORED_TUNING)) {
+      expect(value).not.toMatch(/^#[0-9a-f]{3,8}$/i)
+      expect(value).not.toBe(RESERVED_BEAM)
+    }
+  })
+
+  it('survives greyscale, because none of its meaning is in a colour', () => {
+    // "Present in greyscale" checked the only way it can be checked without a screenshot: the
+    // marking's whole content is text, so flattening every colour to one value loses nothing.
+    const marked = `${AUTHORED_TUNING.glyph} ${AUTHORED_TUNING.label}`
+    expect(marked.trim()).toBe(marked.trim().replace(/#[0-9a-f]{3,8}/gi, ''))
+    expect(authoredTuningLabel('Cash')).toContain(AUTHORED_TUNING.label)
+    expect(authoredTuningLabel('Cash')).toContain('Cash')
+  })
+})
+
+describe('the marking sweep over the HUD', () => {
+  let host: HTMLDivElement
+  let root: ReturnType<typeof createRoot> | null = null
+
+  beforeEach(() => {
+    host = document.createElement('div')
+    document.body.appendChild(host)
+  })
+
+  afterEach(() => {
+    act(() => root?.unmount())
+    root = null
+    host.remove()
+  })
+
+  /** Render the HUD at its default composition, with a run far enough along to have figures. */
+  function mountHud(): void {
+    act(() => {
+      useRunStore.getState().apply(genesisFrame() as Frame)
+      useRunStore.getState().apply(metricsFrame({ seq: 5 }) as Frame)
+      useRunStore
+        .getState()
+        .apply(loadFrame({ seq: 6, load: { dir_admin: 900, dir_sales: 400 } }) as Frame)
+    })
+    act(() => {
+      root = createRoot(host)
+      // `storage: null` so the composition is the default rather than whatever a previous
+      // test left in the shared jsdom localStorage.
+      root.render(createElement<HudProps>(Hud, { storage: null }))
+    })
+  }
+
+  it('marks every tile in the default composition (R27, AE11)', () => {
+    mountHud()
+
+    const tiles = Array.from(host.querySelectorAll('[data-tile]'))
+    // A sweep rather than one assertion per tile: the failure mode is a tile added later
+    // without the marking, and a per-tile list would silently not cover it.
+    expect(tiles.map((tile) => tile.getAttribute('data-tile')).sort()).toEqual(
+      [...DEFAULT_COMPOSITION].sort(),
+    )
+
+    for (const tile of tiles) {
+      expect(
+        tile.querySelector('[data-authored-tuning]'),
+        `${tile.getAttribute('data-tile')} renders a figure with no authored-tuning marking`,
+      ).not.toBeNull()
+    }
+  })
+
+  it('fails the sweep for a tile added to the composition without one', () => {
+    // The negative. Without this, "every tile is marked" would also be satisfied by a sweep
+    // that found no tiles, or by one whose check could not fail.
+    mountHud()
+
+    const unmarked = document.createElement('article')
+    unmarked.setAttribute('data-tile', 'smuggled')
+    host.querySelector('.hud')?.appendChild(unmarked)
+
+    const missing = Array.from(host.querySelectorAll('[data-tile]')).filter(
+      (tile) => tile.querySelector('[data-authored-tuning]') === null,
+    )
+    expect(missing.map((tile) => tile.getAttribute('data-tile'))).toEqual(['smuggled'])
+  })
+
+  it('marks a metric with too little history to draw a trajectory', () => {
+    // One point is flat, not empty — and a flat neutral tile is still an authored figure. The
+    // marking must not be a thing that only appears once a sparkline has a shape.
+    act(() => {
+      useRunStore.getState().apply(genesisFrame() as Frame)
+    })
+    act(() => {
+      root = createRoot(host)
+      root.render(createElement<HudProps>(Hud, { storage: null }))
+    })
+
+    const cash = host.querySelector('[data-tile="cash"]')
+    expect(cash?.getAttribute('data-trend')).toBe('flat')
+    expect(cash?.querySelector('[data-authored-tuning]')).not.toBeNull()
+  })
+
+  it('marks the runway before the first day of costs and at insolvency', () => {
+    // Both ends of `runwayDays`: `null` when there is no burn to divide by, and zero when the
+    // cash has already gone. Those are the two moments the figure is most likely to be
+    // believed, so they are the two the marking must not be missing at.
+    expect(runwayDays(4800, 0)).toBeNull()
+    expect(runwayDays(-10, 20)).toBe(0)
+
+    act(() => {
+      useRunStore.getState().apply(genesisFrame() as Frame)
+    })
+    act(() => {
+      root = createRoot(host)
+      root.render(createElement<HudProps>(Hud, { storage: null }))
+    })
+
+    const runway = host.querySelector(`[data-tile="${RUNWAY_TILE}"]`)
+    // No DAILY_COSTS_APPLIED has landed, so this is the `null` case.
+    expect(runway?.querySelector('.tile__value')?.textContent).toBe('—')
+    expect(runway?.querySelector('[data-authored-tuning]')).not.toBeNull()
+
+    act(() => {
+      useRunStore.getState().apply(metricsFrame({ seq: 7, cash: -10 }) as Frame)
+    })
+    expect(runway?.querySelector('.tile__value')?.textContent).toBe('0')
+    expect(runway?.querySelector('[data-authored-tuning]')).not.toBeNull()
+  })
+
+  it('draws no beam on any tile it marks', () => {
+    // The marking must not have quietly reached for the one reserved hue on its way in.
+    mountHud()
+    const rendered = host.innerHTML.toLowerCase()
+    expect(rendered).not.toContain(RESERVED_BEAM.toLowerCase())
   })
 })
 

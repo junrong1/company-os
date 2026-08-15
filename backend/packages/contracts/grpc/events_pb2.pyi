@@ -21,6 +21,7 @@ class EventKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     CHECKPOINT_RAISED: _ClassVar[EventKind]
     DECISION_RESOLVED: _ClassVar[EventKind]
     QUESTION_ANSWERED: _ClassVar[EventKind]
+    OPTIONS_COMPARED: _ClassVar[EventKind]
     WORK_ASSIGNED: _ClassVar[EventKind]
     WORK_REASSIGNED: _ClassVar[EventKind]
     WORK_RETURNED_TO_BACKLOG: _ClassVar[EventKind]
@@ -48,6 +49,7 @@ CEO_INPUT: EventKind
 CHECKPOINT_RAISED: EventKind
 DECISION_RESOLVED: EventKind
 QUESTION_ANSWERED: EventKind
+OPTIONS_COMPARED: EventKind
 WORK_ASSIGNED: EventKind
 WORK_REASSIGNED: EventKind
 WORK_RETURNED_TO_BACKLOG: EventKind
