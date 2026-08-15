@@ -16,6 +16,8 @@ import { useShallow } from 'zustand/react/shallow'
 
 import { type MetricDef, PAL, deptColour } from '../design/tokens'
 import { type AnsweredQuestion, useRunStore } from '../net/store'
+import { CompareAffordance } from './Comparison'
+import type { CompareSender } from './comparison-model'
 import { OptionConsequence } from './Consequence'
 import type { CommandSender } from './Panels'
 import {
@@ -46,9 +48,10 @@ export interface ConversationProps {
   /** Who the CEO is standing next to, decided by the model from both parties' positions. */
   personId: string | null
   onCommand?: CommandSender
+  onCompare?: CompareSender
 }
 
-export function Conversation({ personId, onCommand }: ConversationProps) {
+export function Conversation({ personId, onCommand, onCompare }: ConversationProps) {
   const header = useRunStore(
     useShallow((state) =>
       conversationHeader(
@@ -125,7 +128,13 @@ export function Conversation({ personId, onCommand }: ConversationProps) {
       </header>
 
       {stopped !== null && (
-        <Decision key={`${stopped.itemId}:${stopped.cpIndex}`} card={stopped} onCommand={onCommand} />
+        <Decision
+          key={`${stopped.itemId}:${stopped.cpIndex}`}
+          card={stopped}
+          personId={header.id}
+          onCommand={onCommand}
+          onCompare={onCompare}
+        />
       )}
 
       {/* Only when they are free. Offering to hand new work to someone standing at a decision
@@ -246,7 +255,17 @@ function Offer({ item, onCommand }: { item: AssignableItem; onCommand?: CommandS
  * is not hearing this. Keyed on the checkpoint by the caller, so moving to a different decision
  * clears the selected option instead of carrying it across.
  */
-function Decision({ card, onCommand }: { card: StoppedCard; onCommand?: CommandSender }) {
+function Decision({
+  card,
+  personId,
+  onCommand,
+  onCompare,
+}: {
+  card: StoppedCard
+  personId: string
+  onCommand?: CommandSender
+  onCompare?: CompareSender
+}) {
   const [chosen, setChosen] = useState<number | null>(null)
   // Genesis is written once and never replaced, so this is stable by reference.
   const metricDefs = useRunStore((state) => state.genesis?.metricDefs) ?? EMPTY_METRIC_DEFS
@@ -296,6 +315,18 @@ function Decision({ card, onCommand }: { card: StoppedCard; onCommand?: CommandS
       <p className="conversation__cost" style={{ color: PAL.textFaint }}>
         {card.cost}
       </p>
+
+      {/* Under the options, never in place of them. Closing the comparison returns the CEO to
+          exactly this list, with nothing committed (R34). `inPerson` is true here because the
+          CEO is standing in front of the person — the branches price the route they are
+          actually about to take. */}
+      <CompareAffordance
+        itemId={card.itemId}
+        cpIndex={card.cpIndex}
+        personId={personId}
+        inPerson
+        onCompare={onCompare}
+      />
     </section>
   )
 }

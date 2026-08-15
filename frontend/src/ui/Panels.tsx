@@ -22,6 +22,8 @@ import { useShallow } from 'zustand/react/shallow'
 
 import { type MetricDef, PAL, RESERVED_BEAM, deptColour } from '../design/tokens'
 import { type CatalogEntry, type ItemStatus, type TrayEntry, useRunStore } from '../net/store'
+import { CompareAffordance } from './Comparison'
+import type { CompareSender } from './comparison-model'
 import { OptionConsequence } from './Consequence'
 import { FROM_TRAY_COST, resolvePayload } from './conversation-model'
 import { STATUS_LABEL, lockReason, progressPercent } from './panels-model'
@@ -231,7 +233,13 @@ export function WorkPanel({ onAssign }: { onAssign?: CommandSender }) {
  * that no tacit line was surfaced. The panel says so rather than leaving the CEO to discover
  * it in the report, because a cost you only learn about afterwards is not a choice.
  */
-export function TrayPanel({ onResolve }: { onResolve?: CommandSender }) {
+export function TrayPanel({
+  onResolve,
+  onCompare,
+}: {
+  onResolve?: CommandSender
+  onCompare?: CompareSender
+}) {
   const tray = useRunStore(useShallow((state) => state.tray))
   const catalog = useRunStore(useShallow((state) => state.genesis?.catalog ?? []))
   // Genesis is written once and never replaced, so this is stable by reference.
@@ -254,6 +262,7 @@ export function TrayPanel({ onResolve }: { onResolve?: CommandSender }) {
           item={byId[entry.itemId]}
           metricDefs={metricDefs}
           onResolve={onResolve}
+          onCompare={onCompare}
         />
       ))}
     </section>
@@ -268,11 +277,13 @@ function TrayCard({
   item,
   metricDefs,
   onResolve,
+  onCompare,
 }: {
   entry: TrayEntry
   item: CatalogEntry | undefined
   metricDefs: readonly MetricDef[]
   onResolve?: CommandSender
+  onCompare?: CompareSender
 }) {
   const [chosen, setChosen] = useState<number | null>(null)
   const checkpoint = item?.checkpoints[entry.cpIndex]
@@ -320,6 +331,18 @@ function TrayCard({
           {FROM_TRAY_COST} Walk over to hear what they know.
         </p>
       </div>
+
+      {/* AE14: the comparison is reachable from here as well as from the conversation, and it
+          reads the same model — so the two surfaces cannot disagree about where an option
+          leads. `inPerson` is false because settling from the tray is what this card does, and
+          the branches have to price the route the CEO is actually about to take. */}
+      <CompareAffordance
+        itemId={entry.itemId}
+        cpIndex={entry.cpIndex}
+        personId={entry.personId}
+        inPerson={false}
+        onCompare={onCompare}
+      />
     </article>
   )
 }
@@ -361,14 +384,16 @@ export function OutputPanel() {
 
 export function Panels({
   onCommand,
+  onCompare,
   onWalkTo,
 }: {
   onCommand?: CommandSender
+  onCompare?: CompareSender
   onWalkTo?: (personId: string) => void
 }) {
   return (
     <div className="panels">
-      <TrayPanel onResolve={onCommand} />
+      <TrayPanel onResolve={onCommand} onCompare={onCompare} />
       <OrgPanel onWalkTo={onWalkTo} />
       <WorkPanel onAssign={onCommand} />
       <OutputPanel />

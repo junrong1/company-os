@@ -1,6 +1,15 @@
+import { act, createElement } from 'react'
+import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { MetricDef } from '../src/design/tokens'
 import type { EventFrame, OptionDef, PersonView, RosterEntry } from '../src/net/store'
+import {
+  comparePayload,
+  comparisonFor,
+  projectedDirection,
+  stopSentence,
+} from '../src/ui/comparison-model'
 import {
   CLOSE_RADIUS_MILLI,
   DRAW_FIGURE_KEY,
@@ -24,6 +33,7 @@ import {
   stoppedCard,
   tacitKey,
 } from '../src/ui/conversation-model'
+import { TrayPanel } from '../src/ui/Panels'
 import { actorsFromStore, typingTarget } from '../src/ui/stage'
 import { useRunStore } from './helpers/store-helpers'
 import {
@@ -593,6 +603,368 @@ describe('an option says what it costs', () => {
     expect(
       optionConsequence(card!.options[0], state.genesis?.metricDefs ?? []).length,
     ).toBeGreaterThan(0)
+  })
+})
+
+// =========================================================================
+// R21, R22, R34: where each option leads
+// =========================================================================
+
+/** An OPTIONS_COMPARED frame, in the shape the kernel's record actually has. */
+function comparedFrame(options: {
+  seq: number
+  item: string
+  person: string
+  cpIndex?: number
+  tick?: number
+  branches?: Array<Record<string, unknown>>
+}): EventFrame {
+  const tick = options.tick ?? 600
+  return {
+    kind: 'OPTIONS_COMPARED',
+    seq: String(options.seq),
+    tick: String(tick),
+    schema_ver: 1,
+    rules_ver: 'test',
+    run_id: 'run-1',
+    command_id: '',
+    request_id: '',
+    payload: {
+      tick,
+      item: options.item,
+      cp_index: options.cpIndex ?? 0,
+      person: options.person,
+      requested_at_tick: tick,
+      in_person: true,
+      branches: options.branches ?? [
+        branchFixture(0, { stop_reason: 'horizon', unlocked: ['wi_ap_auto', 'wi_close'] }),
+        branchFixture(1, { stop_reason: 'horizon', unlocked: ['wi_ap_auto'] }),
+        branchFixture(2, { stop_reason: 'insolvent', runway: { value: 0, at_tick: 4200 } }),
+      ],
+    },
+  }
+}
+
+function branchFixture(
+  optionIndex: number,
+  over: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    option_index: optionIndex,
+    option_label: `Option ${optionIndex}`,
+    option_note: `Recorded ${optionIndex}`,
+    in_person: true,
+    fork_tick: 600,
+    stop_tick: 10800,
+    stop_reason: 'horizon',
+    stop_detail: 'the branch reached the run horizon',
+    stopped_at: null,
+    trajectories: {
+      cash: [
+        { tick: 600, value: 4800 },
+        { tick: 5400, value: 4400 },
+        { tick: 10800, value: 4100 },
+      ],
+    },
+    metrics: {
+      cash: { value: 4100, at_tick: 10800 },
+      visibility: { value: 24, at_tick: 10800 },
+    },
+    runway: { value: 117, at_tick: 10800 },
+    daily_cost: { value: 35, at_tick: 10800 },
+    unlocked: [],
+    foreclosed: [],
+    ...over,
+  }
+}
+
+describe('the comparison', () => {
+  it('renders one column per option, each figure naming its tick (R22, AE15)', () => {
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore.getState().apply(comparedFrame({ seq: 3, item: id, person: want }))
+
+    const state = useRunStore.getState()
+    const comparison = comparisonFor(id, 0, state.comparisons, state.tray)
+
+    expect(comparison).not.toBeNull()
+    expect(comparison?.branches).toHaveLength(3)
+    expect(comparison?.forkTick).toBe(600n)
+
+    for (const branch of comparison?.branches ?? []) {
+      // Every figure carries the tick it was measured at. A projection read without its
+      // measurement point is indistinguishable from a fact about now.
+      for (const figure of Object.values(branch.metrics)) {
+        expect(figure.atTick).toBe(10800n)
+      }
+      expect(branch.runway.atTick).toBeGreaterThan(0n)
+      for (const points of Object.values(branch.trajectories)) {
+        expect(points[0].tick).toBe(branch.forkTick)
+        expect(points[points.length - 1].tick).toBe(branch.stopTick)
+      }
+    }
+  })
+
+  it('leaves the parent live trajectory store untouched', () => {
+    // The distinction the whole slice exists for. A branch's points are a projection; folding
+    // them into `trajectories` would make the HUD's sparklines draw a future nobody has lived,
+    // with no way to tell afterwards which points were which.
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(metricsFrame({ seq: 2, cash: 4800 }))
+    useRunStore.getState().apply(raisedFrame({ seq: 3, item: id, person: want }))
+
+    const before = JSON.stringify(
+      useRunStore.getState().trajectories,
+      (_, value) => (typeof value === 'bigint' ? value.toString() : value),
+    )
+
+    useRunStore.getState().apply(comparedFrame({ seq: 4, item: id, person: want }))
+
+    const after = JSON.stringify(
+      useRunStore.getState().trajectories,
+      (_, value) => (typeof value === 'bigint' ? value.toString() : value),
+    )
+    expect(after).toBe(before)
+    // And the projection did land, so the test is about where it went rather than about
+    // nothing having happened.
+    expect(Object.keys(useRunStore.getState().comparisons)).toEqual([`${id}:0`])
+  })
+
+  it('drops a displayed result when the item leaves blocked, with no client-side timer', () => {
+    // R25, derived from the wire's own authority. The same store branch that drops a tray
+    // entry drops the comparison, so resolution, reassignment, attrition and a return to the
+    // backlog are all covered by one rule rather than four.
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore.getState().apply(comparedFrame({ seq: 3, item: id, person: want }))
+
+    expect(useRunStore.getState().comparisons[`${id}:0`]).toBeDefined()
+
+    useRunStore.getState().apply(
+      itemFrame({ seq: 4, kind: 'DECISION_RESOLVED', item: id, status: 'active' }),
+    )
+
+    const state = useRunStore.getState()
+    expect(state.comparisons[`${id}:0`]).toBeUndefined()
+    expect(comparisonFor(id, 0, state.comparisons, state.tray)).toBeNull()
+  })
+
+  it('shows nothing once the tray no longer holds that checkpoint, whatever the slice holds', () => {
+    // The second guard, and it is deliberately redundant with the one above: the tray is the
+    // wire's statement of what is still waiting, and a result shown against a checkpoint that
+    // is not is a projection from a run that no longer exists.
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore.getState().apply(comparedFrame({ seq: 3, item: id, person: want }))
+
+    const held = useRunStore.getState().comparisons
+    expect(comparisonFor(id, 0, held, [])).toBeNull()
+    expect(comparisonFor(id, 0, held, useRunStore.getState().tray)).not.toBeNull()
+  })
+
+  it('replaces a second comparison at the same checkpoint rather than keeping both', () => {
+    // Resolved during implementation, and replacing is the safe direction: the kernel computes
+    // every branch before appending, so a record that arrives is complete, and the newer one
+    // describes a later fork.
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore.getState().apply(comparedFrame({ seq: 3, item: id, person: want, tick: 600 }))
+    useRunStore.getState().apply(comparedFrame({ seq: 4, item: id, person: want, tick: 900 }))
+
+    const held = useRunStore.getState().comparisons
+    expect(Object.keys(held)).toHaveLength(1)
+    expect(held[`${id}:0`].forkTick).toBe(900n)
+    expect(held[`${id}:0`].atSeq).toBe(4n)
+  })
+
+  it('renders a terminal branch by its reason rather than as an empty trajectory', () => {
+    const insolvent = {
+      ...branchFixture(0),
+      stop_reason: 'insolvent',
+      stop_tick: 4200,
+      runway: { value: 0, at_tick: 4200 },
+    }
+    const reached = {
+      ...branchFixture(1),
+      stop_reason: 'checkpoint',
+      stop_tick: 2400,
+      stopped_at: {
+        item: 'wi_quotes',
+        cp_index: 0,
+        label: 'Decision',
+        kind: 'decision',
+        person: 'stf_buyer',
+        tick: 2400,
+      },
+    }
+
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore
+      .getState()
+      .apply(comparedFrame({ seq: 3, item: id, person: want, branches: [insolvent, reached] }))
+
+    const branches = useRunStore.getState().comparisons[`${id}:0`].branches
+
+    expect(stopSentence(branches[0])).toContain('runs out of cash')
+    expect(stopSentence(branches[0])).toContain('4200')
+    expect(stopSentence(branches[1])).toContain('Nothing is settled')
+    expect(branches[1].reached?.itemId).toBe('wi_quotes')
+  })
+
+  it('keeps a runway the kernel could not know distinct from zero', () => {
+    // The two are the same pixel width and opposite in meaning: "not yet knowable" and
+    // "insolvent". Coercing the null on the way in would render one as the other.
+    const unknown = { ...branchFixture(0), runway: { value: null, at_tick: 700 } }
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore
+      .getState()
+      .apply(comparedFrame({ seq: 3, item: id, person: want, branches: [unknown] }))
+
+    const branch = useRunStore.getState().comparisons[`${id}:0`].branches[0]
+    expect(branch.runway.value).toBeNull()
+    expect(branch.runway.atTick).toBe(700n)
+  })
+
+  it('sends the same payload from both routes, with only the route flag differing (AE14)', () => {
+    // The tray and the conversation open the same comparison for the same checkpoint. The one
+    // thing that legitimately differs is the route, because the kernel prices the two
+    // differently and a branch has to price the one the CEO is about to take.
+    const walked = comparePayload('wi_ap_map', 0, 'stf_ap', 1234n, true)
+    const trayed = comparePayload('wi_ap_map', 0, 'stf_ap', 1234n, false)
+
+    expect(walked).toEqual({
+      item: 'wi_ap_map',
+      cp_index: 0,
+      person: 'stf_ap',
+      // A string, matching the convention every tick on the wire follows: `Number` works for
+      // the whole of a normal run and starts silently losing the low bits above 2^53.
+      at_tick: '1234',
+      in_person: true,
+    })
+    expect({ ...trayed, in_person: true }).toEqual(walked)
+  })
+
+  it('drops every held comparison on a resync', () => {
+    // A resync means the client was too far behind to catch up by replay, so the fork tick
+    // every held projection was measured at is somewhere in a stretch of the run this client
+    // never saw. Keeping them would leave figures on screen whose basis cannot be accounted
+    // for — and the CEO can ask again for the cost of a tenth of a second.
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore.getState().apply(comparedFrame({ seq: 3, item: id, person: want }))
+    expect(Object.keys(useRunStore.getState().comparisons)).toHaveLength(1)
+
+    useRunStore.getState().apply({
+      kind: 'RESYNC',
+      head_seq: '40',
+      state: { metrics: { cash: 4000 }, items: {}, people: {}, lifecycle: { tick: 4000 } },
+    })
+
+    expect(useRunStore.getState().comparisons).toEqual({})
+  })
+
+  it('survives a record that names no item rather than storing one under an empty key', () => {
+    // Total, like every other reader in the store: this runs inside the WebSocket message
+    // handler, and a throw would escape `apply` and take the stream down over one bad frame.
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply({
+      kind: 'OPTIONS_COMPARED',
+      seq: '9',
+      tick: '600',
+      schema_ver: 1,
+      rules_ver: 'test',
+      run_id: 'run-1',
+      command_id: '',
+      request_id: '',
+      payload: { tick: 600, branches: 'not an array' },
+    })
+
+    expect(useRunStore.getState().comparisons).toEqual({})
+    expect(useRunStore.getState().appliedSeq).toBe(9n)
+  })
+
+  it('opens from both surfaces and closes without committing anything (R34, AE14)', () => {
+    // The one claim in this unit that is genuinely about the rendered surface rather than
+    // about a rule: closing sends nothing, and the option list it sits under never went away.
+    const { id, want } = itemWithCheckpoint()
+    const asked: Array<[string, number, string, boolean]> = []
+    const commands: string[] = []
+
+    act(() => {
+      useRunStore.getState().apply(genesisFrame())
+      useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    act(() => {
+      root.render(
+        createElement(TrayPanel, {
+          onResolve: (kind: string) => commands.push(kind),
+          onCompare: (item: string, cp: number, person: string, inPerson: boolean) =>
+            asked.push([item, cp, person, inPerson]),
+        } as never),
+      )
+    })
+
+    // The option list is on the card before the comparison is opened.
+    expect(host.querySelectorAll('.option').length).toBeGreaterThan(0)
+
+    const ask = host.querySelector('.compare__ask') as HTMLButtonElement
+    expect(ask).not.toBeNull()
+    act(() => ask.click())
+
+    // The tray route asks for the tray's own pricing, because that is the route it settles by.
+    expect(asked).toEqual([[id, 0, want, false]])
+    expect(commands).toEqual([])
+
+    act(() => {
+      useRunStore.getState().apply(comparedFrame({ seq: 3, item: id, person: want }))
+    })
+
+    expect(host.querySelectorAll('.branch').length).toBe(3)
+    // Every figure in every column carries the marking (AE11).
+    for (const figure of host.querySelectorAll('.branch__figure')) {
+      expect(figure.querySelector('[data-authored-tuning]')).not.toBeNull()
+    }
+
+    const close = host.querySelector('.comparison__close') as HTMLButtonElement
+    act(() => close.click())
+
+    // Back to the option list, nothing sent, nothing committed.
+    expect(host.querySelectorAll('.branch').length).toBe(0)
+    expect(host.querySelectorAll('.option').length).toBeGreaterThan(0)
+    expect(commands).toEqual([])
+    expect(asked).toHaveLength(1)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('reads the projected direction against where the run is now, not against zero', () => {
+    // The comparison the CEO is making is "better or worse than where I am", and the metric's
+    // own favourable direction decides which. Lead time falling is a win; cash falling is not.
+    const defs = metricDefsFixture() as never as MetricDef[]
+    const leadTime = defs.find((metric) => metric.key === 'leadTime')
+    const cash = defs.find((metric) => metric.key === 'cash')
+
+    expect(projectedDirection({ value: 9, atTick: 10n }, 12, leadTime)).toBe('favourable')
+    expect(projectedDirection({ value: 4100, atTick: 10n }, 4800, cash)).toBe('unfavourable')
+    expect(projectedDirection({ value: 4800, atTick: 10n }, 4800, cash)).toBe('flat')
+    // Not knowable is neither, and must not read as a fall to zero.
+    expect(projectedDirection({ value: null, atTick: 10n }, 4800, cash)).toBe('flat')
   })
 })
 

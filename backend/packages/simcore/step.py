@@ -2005,8 +2005,16 @@ def compare_options(
     situation moves: resolving it, completing the item, reassigning it and losing its assignee
     to attrition each take the item out of `blocked`. The person is checked too, because a
     reassignment followed by the work re-reaching the same checkpoint puts a *different* person
-    in front of the same question. The tick is refused if it runs ahead of the kernel's clock,
-    which is the client having tagged from a render clock that got in front of the run.
+    in front of the same question.
+
+    **The tick is bounded, not pinned.** The client tags from its render clock, which is the
+    only authority it has for "now" — the store's tick is the last one the kernel said out loud
+    and events land on about five ticks in twelve hundred, so tagging from it would put every
+    comparison well into the run's past. The render clock is an estimate and legitimately runs
+    ahead of the kernel's tick between position echoes, so refusing anything ahead at all would
+    reject nearly every real comparison while catching nothing. What is refused is a tag that
+    has run away — the same sim-day of lead `submit_ceo_input` allows, and absurdly generous
+    against an echo interval of one sim-hour.
 
     This is deliberately not backed by a recorded blocked-at tick. Adding one would put a field
     into hashed state and bump the state-shape version, which invalidates every existing
@@ -2028,10 +2036,11 @@ def compare_options(
     if cp_index < 0 or cp_index >= len(spec.checkpoints):
         raise CommandRejected(f"{item_id} has no checkpoint {cp_index}")
 
-    if at_tick > state.tick:
+    if at_tick > state.tick + MAX_INPUT_LEAD_TICKS:
         raise CommandRejected(
-            f"this comparison is tagged at tick {at_tick}, ahead of the run's clock "
-            f"(now {state.tick}). Nothing has happened there yet to compare."
+            f"this comparison is tagged at tick {at_tick}, more than "
+            f"{MAX_INPUT_LEAD_TICKS} ticks ahead of the run's clock (now {state.tick}). "
+            "Nothing has happened there yet to compare."
         )
 
     # Blocked *at this checkpoint*, which the person's own runtime records because `_block` set

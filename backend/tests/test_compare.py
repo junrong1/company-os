@@ -577,15 +577,36 @@ def test_a_comparison_naming_the_wrong_person_is_refused_as_stale(run: Recorder)
     assert "dir_admin" in str(refusal.value)
 
 
-def test_a_comparison_tagged_ahead_of_the_clock_is_refused(run: Recorder) -> None:
-    """The client's render clock got in front of the run.
+def test_a_tag_a_little_ahead_of_the_clock_is_accepted(run: Recorder) -> None:
+    """The client tags from its render clock, which legitimately runs ahead.
 
-    Not the same failure as staleness, and it says so: nothing has happened at that tick yet,
-    so there is nothing there to compare rather than something that has moved on.
+    The store's tick is the last one the kernel said out loud, and events land on about five
+    ticks in twelve hundred — so tagging from it would put every comparison well into the run's
+    past. The render clock is the smooth estimate that exists for exactly this, and it drifts
+    ahead between position echoes an hour apart. Refusing anything ahead at all would reject
+    nearly every real comparison while catching nothing, which is why the guard is a bound
+    rather than a pin.
+    """
+    assert sim.compare_options(
+        run.state, "wi_ap_map", 0, "stf_ap", run.state.tick + 60, in_person=True
+    )
+
+
+def test_a_tag_that_has_run_away_from_the_clock_is_refused(run: Recorder) -> None:
+    """Not the same failure as staleness, and it says so.
+
+    Nothing has happened at that tick yet, so there is nothing there to compare rather than
+    something that has moved on. The bound is the sim-day of lead `submit_ceo_input` allows,
+    which is absurdly generous against an echo interval of one sim-hour.
     """
     with pytest.raises(sim.CommandRejected) as refusal:
         sim.compare_options(
-            run.state, "wi_ap_map", 0, "stf_ap", run.state.tick + 1, in_person=True
+            run.state,
+            "wi_ap_map",
+            0,
+            "stf_ap",
+            run.state.tick + sim.MAX_INPUT_LEAD_TICKS + 1,
+            in_person=True,
         )
 
     assert "ahead" in str(refusal.value)
