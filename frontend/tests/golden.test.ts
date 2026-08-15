@@ -17,6 +17,7 @@ import {
   WALK_TILES_NUMERATOR,
 } from '../src/render/interpolate'
 import { AV_DARK, AV_LIGHT, avatarColor, idHash, paletteIndex } from '../src/render/palette'
+import { assertFixtureIsCurrent, genesisFixture } from './helpers/frames'
 
 /**
  * The golden vectors, asserted on the TypeScript side.
@@ -58,6 +59,27 @@ describe('the fixtures themselves', () => {
 
   it('fail loudly rather than skipping when one is missing', () => {
     expect(() => load('no-such-vector.json')).toThrow(/missing/)
+  })
+
+  it('fail loudly with the regeneration instruction when the genesis payload is stale', () => {
+    // A missing fixture throws; a *stale* one parses cleanly and renders nothing, which is the
+    // worse failure because it reports green. The helper checks the shape on read, so this
+    // states that the check exists and says what to do rather than only that it fires.
+    expect(() => genesisFixture()).not.toThrow()
+
+    const stale = {
+      kind: 'GENESIS',
+      payload: {
+        catalog: [
+          {
+            id: 'wi_ap_map',
+            checkpoints: [{ options: [{ label: 'PDF is the record', detail: 'Searchable.' }] }],
+          },
+        ],
+      },
+    }
+    expect(() => assertFixtureIsCurrent(stale as never)).toThrow(/stale/)
+    expect(() => assertFixtureIsCurrent(stale as never)).toThrow(/generate_golden\.py/)
   })
 
   it('carry integers as strings, so precision cannot be lost on parse', () => {

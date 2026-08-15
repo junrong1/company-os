@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { EventFrame, PersonView, RosterEntry } from '../src/net/store'
+import type { EventFrame, OptionDef, PersonView, RosterEntry } from '../src/net/store'
 import {
   CLOSE_RADIUS_MILLI,
+  DRAW_FIGURE_KEY,
+  DRAW_FIGURE_LABEL,
+  DRAW_FIGURE_UNIT,
   FROM_TRAY_COST,
   askPayload,
   askable,
@@ -11,8 +14,10 @@ import {
   IN_PERSON_COST,
   OPEN_RADIUS_MILLI,
   SWITCH_MARGIN_MILLI,
+  consequenceDirection,
   conversationHeader,
   distanceMilli,
+  optionConsequence,
   personActivity,
   resolvePayload,
   selectConversation,
@@ -26,6 +31,7 @@ import {
   genesisFixture,
   genesisFrame,
   itemFrame,
+  metricDefsFixture,
   metricsFrame,
 } from './helpers/frames'
 
@@ -343,6 +349,21 @@ function raisedFrame(options: {
   }
 }
 
+/**
+ * One authored option, straight off the generated fixture.
+ *
+ * Named rather than found by predicate, so a test that quotes a figure quotes the option that
+ * actually carries it — and fails loudly if that option is ever re-authored, which is the point
+ * of pinning an authored number at all.
+ */
+function optionOf(itemId: string, cpIndex: number, optionIndex: number): OptionDef {
+  const entry = catalogFixture().find((candidate) => candidate.id === itemId)
+  if (entry === undefined) throw new Error(`no catalog entry ${itemId}`)
+  const option = entry.checkpoints[cpIndex]?.options[optionIndex]
+  if (option === undefined) throw new Error(`no option ${itemId}:${cpIndex}:${optionIndex}`)
+  return option
+}
+
 /** The first catalogue item that actually has a checkpoint to stop at. */
 function itemWithCheckpoint(): { id: string; want: string } {
   const entry = catalogFixture().find((candidate) => candidate.checkpoints.length > 0)
@@ -466,6 +487,112 @@ describe('what the tray can and cannot reach', () => {
     useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
 
     expect(useRunStore.getState().tacitLines[tacitKey(id, 0)]).toBe(RAISED_TACIT)
+  })
+})
+
+// =========================================================================
+// R35: what an option costs, on the option
+// =========================================================================
+
+describe('an option says what it costs', () => {
+  it('carries the authored effect and note for every option at a checkpoint (R35, AE20)', () => {
+    const withCheckpoints = catalogFixture().filter((entry) => entry.checkpoints.length > 0)
+    expect(withCheckpoints.length).toBeGreaterThan(0)
+
+    for (const entry of withCheckpoints) {
+      for (const checkpoint of entry.checkpoints) {
+        expect(checkpoint.options.length).toBeGreaterThan(0)
+        for (const option of checkpoint.options) {
+          // The kernel splits the pseudo-key out, so `effect` is metrics and nothing else.
+          expect(option.effect).toBeTypeOf('object')
+          expect(typeof option.draw_delta).toBe('number')
+          // The sentence the deliverable's provenance records. Every authored option has one;
+          // an option with no note would produce a deliverable that cannot say what was
+          // decided.
+          expect(option.note).toBeTruthy()
+        }
+      }
+    }
+  })
+
+  it('renders each figure with its metric label, its sign and its unit', () => {
+    const option = optionOf('wi_ap_map', 0, 0)
+    const figures = optionConsequence(option, metricDefsFixture() as never)
+
+    const byKey = Object.fromEntries(figures.map((figure) => [figure.key, figure]))
+    expect(byKey.visibility.text).toBe('+6%')
+    expect(byKey.leadTime.text).toBe('−1d')
+    expect(byKey.morale.text).toBe('−1')
+  })
+
+  it('reads the metric table for what counts as good news, rather than the sign (R35)', () => {
+    const defs = metricDefsFixture() as never
+    // Lead time falling is a win and morale falling is not, and the two deltas have the same
+    // sign. A uniform rising-is-good rule would colour them identically.
+    const figures = optionConsequence(optionOf('wi_ap_map', 0, 0), defs)
+    const byKey = Object.fromEntries(figures.map((figure) => [figure.key, figure]))
+
+    expect(consequenceDirection(byKey.leadTime, defs)).toBe('favourable')
+    expect(consequenceDirection(byKey.morale, defs)).toBe('unfavourable')
+  })
+
+  it('surfaces the recurring draw in its own unit, never as a metric delta', () => {
+    const defs = metricDefsFixture() as never
+    // "Approve it" on the automation item takes forty hours a month off accounting's draw.
+    const option = optionOf('wi_ap_auto', 0, 0)
+    expect(option.draw_delta).toBe(-40)
+
+    const figures = optionConsequence(option, defs)
+    const draw = figures.find((figure) => figure.key === DRAW_FIGURE_KEY)
+
+    expect(draw?.text).toBe(`−40${DRAW_FIGURE_UNIT}`)
+    expect(draw?.label).toBe(DRAW_FIGURE_LABEL)
+    // `manualHours` is the *sum* of the department draws, so a draw change rendered as a
+    // manualHours delta would be a second, disagreeing statement of one movement.
+    expect(figures.some((figure) => figure.key === 'manualHours')).toBe(false)
+    // Less recurring work is a win, even though the number is negative.
+    expect(consequenceDirection(draw!, defs)).toBe('favourable')
+    // And the draw sorts after the metrics, so two options read down the same column.
+    expect(figures[figures.length - 1].key).toBe(DRAW_FIGURE_KEY)
+  })
+
+  it('renders no figures at all for an option that moves nothing', () => {
+    // "Leave it at $10K" on the closing-cycle item authors an empty effect. A row of zeros
+    // would read as a measurement that came back flat, and there was no measurement.
+    const option = optionOf('wi_close', 1, 1)
+    expect(option.effect).toEqual({})
+    expect(option.draw_delta).toBe(0)
+    expect(optionConsequence(option, metricDefsFixture() as never)).toEqual([])
+    // The note still renders: "no change" is precisely what that option is for.
+    expect(option.note).toBeTruthy()
+  })
+
+  it('shows no figures for a payload written before the option carried any', () => {
+    // A run exported before genesis payload version 4 is still readable through the report
+    // path, where the rules-version gate that rejects a live resync does not apply. No figures
+    // is the honest answer for one of those — `undefined` reaching the renderer is not.
+    const older = { label: 'Old', detail: 'From an older payload' } as never
+    expect(optionConsequence(older, metricDefsFixture() as never)).toEqual([])
+  })
+
+  it('reaches the decision surface with no model key configured (AE23)', () => {
+    // Nothing on this path consults a model, an agent or a bench: the figures ride on the
+    // genesis event and are read straight off it. Asserted by driving the surface from
+    // genesis and a raise alone, which is every frame a keyless run produces here.
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+
+    const state = useRunStore.getState()
+    const card = stoppedCard(want, state.tray, state.genesis?.catalog ?? [], state.tacitLines)
+
+    expect(card?.options.length).toBeGreaterThan(0)
+    for (const option of card?.options ?? []) {
+      expect(option.note).toBeTruthy()
+    }
+    expect(
+      optionConsequence(card!.options[0], state.genesis?.metricDefs ?? []).length,
+    ).toBeGreaterThan(0)
   })
 })
 

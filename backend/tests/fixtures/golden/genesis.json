@@ -13,15 +13,33 @@
             "options": [
               {
                 "detail": "Paper becomes reference only. Everything gets searchable, but thirty suppliers need telling.",
-                "label": "PDF is the record"
+                "draw_delta": 0,
+                "effect": {
+                  "leadTime": -1,
+                  "morale": -1,
+                  "visibility": 6
+                },
+                "label": "PDF is the record",
+                "note": "PDF is the system of record"
               },
               {
                 "detail": "Nothing changes on the floor. We can map it, but the waste stays.",
-                "label": "Paper is the record"
+                "draw_delta": 0,
+                "effect": {
+                  "visibility": 3
+                },
+                "label": "Paper is the record",
+                "note": "Paper stays the system of record"
               },
               {
                 "detail": "Priya picks. Morale goes up, the rule drifts.",
-                "label": "Let the team decide"
+                "draw_delta": 0,
+                "effect": {
+                  "morale": 3,
+                  "visibility": 1
+                },
+                "label": "Let the team decide",
+                "note": "Record of truth delegated to the team"
               }
             ],
             "prompt": "Invoices arrive twice \u2014 once on paper, once as a PDF. Which one is the record? I cannot make that call."
@@ -57,15 +75,33 @@
             "options": [
               {
                 "detail": "Roll out to every invoice. The investment pays back and the human check stays.",
-                "label": "Approve it"
+                "draw_delta": -40,
+                "effect": {
+                  "cash": -120,
+                  "leadTime": -1,
+                  "morale": 3
+                },
+                "label": "Approve it",
+                "note": "OCR matching approved for all invoices"
               },
               {
                 "detail": "Top ten suppliers only. A third of the cost, a third of the benefit.",
-                "label": "Approve a limited rollout"
+                "draw_delta": -15,
+                "effect": {
+                  "cash": -40,
+                  "morale": 1
+                },
+                "label": "Approve a limited rollout",
+                "note": "Limited rollout to the top ten suppliers"
               },
               {
                 "detail": "No spend this year. The manual work stays.",
-                "label": "Reject it"
+                "draw_delta": 0,
+                "effect": {
+                  "morale": -3
+                },
+                "label": "Reject it",
+                "note": "Automation rejected"
               }
             ],
             "prompt": "The OCR matching quote is in: $120K up front, $8K a month, and forty hours of manual work disappear every month. I need your approval."
@@ -101,15 +137,32 @@
             "options": [
               {
                 "detail": "One record. The hours vanish, but sales can no longer quote dates at the customer table.",
-                "label": "Kill the spreadsheet"
+                "draw_delta": -25,
+                "effect": {
+                  "leadTime": -1,
+                  "morale": -2
+                },
+                "label": "Kill the spreadsheet",
+                "note": "Spreadsheet retired, system is the record"
               },
               {
                 "detail": "$60K of development. Sales keeps working the way it works; only the double entry goes.",
-                "label": "Change the system to fit sales"
+                "draw_delta": -18,
+                "effect": {
+                  "cash": -60,
+                  "morale": 2
+                },
+                "label": "Change the system to fit sales",
+                "note": "System modified to match how sales works"
               },
               {
                 "detail": "Do not touch it. The double entry stays.",
-                "label": "Leave it alone"
+                "draw_delta": 0,
+                "effect": {
+                  "morale": -1
+                },
+                "label": "Leave it alone",
+                "note": "Duplicate entry continues"
               }
             ],
             "prompt": "We enter the same figures twice \u2014 the sales spreadsheet and the order system. Which one do we kill?"
@@ -143,15 +196,29 @@
             "options": [
               {
                 "detail": "Goes to customers. Largest effect, and our mistakes go public too.",
-                "label": "Publish it externally"
+                "draw_delta": -30,
+                "effect": {
+                  "leadTime": -2,
+                  "morale": 1
+                },
+                "label": "Publish it externally",
+                "note": "FAQ published externally"
               },
               {
                 "detail": "Answer templates for the team. Half the effect, none of the exposure.",
-                "label": "Keep it internal"
+                "draw_delta": -12,
+                "effect": {},
+                "label": "Keep it internal",
+                "note": "FAQ kept as internal templates"
               },
               {
                 "detail": "Take no quality risk.",
-                "label": "Hold off"
+                "draw_delta": 0,
+                "effect": {
+                  "morale": -2
+                },
+                "label": "Hold off",
+                "note": "FAQ publication deferred"
               }
             ],
             "prompt": "Publishing the FAQ should cut tickets 25%. The trade-off is that answer quality gets uneven. Do we publish?"
@@ -185,15 +252,32 @@
             "options": [
               {
                 "detail": "80% of orders go single-quote. Controls stay where the money is.",
-                "label": "One quote under $50K"
+                "draw_delta": -14,
+                "effect": {
+                  "leadTime": -2,
+                  "morale": 2
+                },
+                "label": "One quote under $50K",
+                "note": "Single quote permitted under $50K"
               },
               {
                 "detail": "Fastest possible. We also lose the ability to defend a price.",
-                "label": "One quote on everything"
+                "draw_delta": -20,
+                "effect": {
+                  "leadTime": -3,
+                  "morale": -4
+                },
+                "label": "One quote on everything",
+                "note": "Single quote on all purchases"
               },
               {
                 "detail": "No change. Audit-proof and slow.",
-                "label": "Keep all three"
+                "draw_delta": 0,
+                "effect": {
+                  "morale": -1
+                },
+                "label": "Keep all three",
+                "note": "Three-quote rule retained"
               }
             ],
             "prompt": "Three quotes on everything costs us 2.5 days per order. Do we change the rule?"
@@ -227,15 +311,34 @@
             "options": [
               {
                 "detail": "Rewrite the post. The listing goes dark for two weeks.",
-                "label": "The hiring manager version"
+                "draw_delta": 0,
+                "effect": {
+                  "leadTime": -3,
+                  "morale": 1,
+                  "visibility": 4
+                },
+                "label": "The hiring manager version",
+                "note": "Hiring manager requirements take precedence"
               },
               {
                 "detail": "The listing keeps running. We absorb the gap at interview stage.",
-                "label": "The job post"
+                "draw_delta": 0,
+                "effect": {
+                  "morale": -2
+                },
+                "label": "The job post",
+                "note": "Existing job post stands"
               },
               {
                 "detail": "More hours, but it stops recurring.",
-                "label": "Put them in a room weekly"
+                "draw_delta": 6,
+                "effect": {
+                  "leadTime": -4,
+                  "morale": 2,
+                  "visibility": 6
+                },
+                "label": "Put them in a room weekly",
+                "note": "Weekly requirements alignment introduced"
               }
             ],
             "prompt": "The job post does not match what the hiring manager actually wants. Which one is right?"
@@ -269,15 +372,34 @@
             "options": [
               {
                 "detail": "Needs supplier cooperation. Worth two days.",
-                "label": "Paper invoices first"
+                "draw_delta": 0,
+                "effect": {
+                  "leadTime": -2,
+                  "visibility": 3
+                },
+                "label": "Paper invoices first",
+                "note": "Paper invoice wait tackled first"
               },
               {
                 "detail": "Entirely internal, so it moves fast. Worth a day and a half.",
-                "label": "Idle approvals first"
+                "draw_delta": 0,
+                "effect": {
+                  "leadTime": -1,
+                  "morale": 1,
+                  "visibility": 3
+                },
+                "label": "Idle approvals first",
+                "note": "Approval delays tackled first"
               },
               {
                 "detail": "Fastest, and it spikes the team workload.",
-                "label": "Both at once"
+                "draw_delta": 10,
+                "effect": {
+                  "leadTime": -3,
+                  "morale": -3
+                },
+                "label": "Both at once",
+                "note": "Both causes tackled simultaneously"
               }
             ],
             "prompt": "Two things stall the close. Which do we fix first? The floor cannot absorb both at once."
@@ -289,15 +411,30 @@
             "options": [
               {
                 "detail": "Approvals drop 70%. Controls stay in place.",
-                "label": "Raise it to $30K"
+                "draw_delta": -18,
+                "effect": {
+                  "leadTime": -1,
+                  "morale": 2
+                },
+                "label": "Raise it to $30K",
+                "note": "Approval threshold raised to $30K"
               },
               {
                 "detail": "No policy change. The delay stays.",
-                "label": "Leave it at $10K"
+                "draw_delta": 0,
+                "effect": {},
+                "label": "Leave it at $10K",
+                "note": "Approval threshold unchanged"
               },
               {
                 "detail": "Fastest. Fraud detection becomes after-the-fact.",
-                "label": "Remove manager approval"
+                "draw_delta": -26,
+                "effect": {
+                  "leadTime": -2,
+                  "morale": -5
+                },
+                "label": "Remove manager approval",
+                "note": "Manager approval removed"
               }
             ],
             "prompt": "We can automate the manager approval above $10K with a value threshold. Where do you set it? This changes the authority policy, so it is your call."
@@ -331,15 +468,32 @@
             "options": [
               {
                 "detail": "Easy to defend as payback. The painful work waits.",
-                "label": "Rank by hours saved"
+                "draw_delta": -20,
+                "effect": {
+                  "visibility": 4
+                },
+                "label": "Rank by hours saved",
+                "note": "Ranked by hours saved"
               },
               {
                 "detail": "Customers feel it. The hours stay.",
-                "label": "Rank by lead time"
+                "draw_delta": 0,
+                "effect": {
+                  "leadTime": -3,
+                  "visibility": 4
+                },
+                "label": "Rank by lead time",
+                "note": "Ranked by lead time"
               },
               {
                 "detail": "It sticks, and it is harder to defend with numbers.",
-                "label": "Rank by where it hurts"
+                "draw_delta": -8,
+                "effect": {
+                  "morale": 6,
+                  "visibility": 6
+                },
+                "label": "Rank by where it hurts",
+                "note": "Ranked by where the pain is"
               }
             ],
             "prompt": "Pick the ranking criterion. Change the criterion and the order changes."

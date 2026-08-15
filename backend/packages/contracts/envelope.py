@@ -96,7 +96,11 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     # needs the graph has to be able to tell whether the event it is holding carries it.
     # 3: Phase 2 added `name`, `initials` and `title` to each roster entry, so a client can
     # say who the CEO is standing next to rather than showing them an id.
-    EventKind.GENESIS: 3,  # U4/U8
+    # 4: Phase 3 added `effect`, `draw_delta` and `note` to each catalog option, reversing the
+    # withholding `catalog_to_state`'s docstring used to state (R35). Additive, but a consumer
+    # that needs an option's consequence has to be able to tell whether the event it is holding
+    # carries it — the same argument that bumped this for the catalog and the roster names.
+    EventKind.GENESIS: 4,  # U4/U8
     EventKind.DAY_CHECKPOINT: 1,  # U3/U15
     EventKind.RATE_CHANGED: 1,  # U9
     EventKind.RUN_TERMINATED: 1,  # U8

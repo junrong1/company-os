@@ -56,18 +56,38 @@ export interface CatalogEntry {
 }
 
 /**
+ * One way to settle a checkpoint, and what it costs.
+ *
+ * `effect` holds metric deltas only. The recurring-draw change is `draw_delta`, split out by
+ * the kernel because it is not a metric — `manualHours` is derived from the sum of department
+ * draws, so rendering `draw` as a metric movement would show a movement no metric makes. The
+ * department it moves is the catalog entry's own `director`.
+ *
+ * Every figure in here is authored tuning, and every surface that renders one has to say so.
+ */
+export interface OptionDef {
+  label: string
+  detail: string
+  effect: Record<string, number>
+  draw_delta: number
+  /** The sentence the deliverable's provenance records — what survives the run. */
+  note: string
+}
+
+/**
  * A decision point, as authored.
  *
  * No `tacit` field, and that is the mechanic rather than an omission: the line only an
  * in-person resolution surfaces is never shipped at genesis. It reaches the client on the
- * resolution that earned it.
+ * resolution that earned it. The option's arithmetic *is* shipped, at genesis payload version
+ * 4 — see `catalog_to_state` for why that withholding was reversed and this one was not.
  */
 export interface CheckpointDef {
   at_percent: number
   kind: string
   label: string
   prompt: string
-  options: Array<{ label: string; detail: string }>
+  options: OptionDef[]
 }
 
 export interface RosterEntry {

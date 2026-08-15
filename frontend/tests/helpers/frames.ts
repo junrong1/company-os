@@ -42,7 +42,45 @@ export function genesisFixture(): GenesisFixture {
   }
 
   cached = JSON.parse(readFileSync(path, 'utf8')) as GenesisFixture
+  assertFixtureIsCurrent(cached)
   return cached
+}
+
+/**
+ * The fields the client's own types say a catalog option carries.
+ *
+ * Missing is not the same as absent-by-design: `tacit` is withheld on purpose and is asserted
+ * absent elsewhere, while these three are the payload's current shape. A fixture predating
+ * them parses fine and renders nothing, so without this check the suite would report green
+ * while every option's consequence was silently empty.
+ */
+const OPTION_FIELDS = ['label', 'detail', 'effect', 'draw_delta', 'note'] as const
+
+const REGENERATE =
+  'Regenerate it with `cd backend && uv run python scripts/generate_golden.py`. This is a ' +
+  'failure, not a skip: a stale fixture parses cleanly and renders nothing, so the suite ' +
+  'would report green while nothing was being checked.'
+
+export function assertFixtureIsCurrent(fixture: GenesisFixture): void {
+  const catalog = fixture.payload.catalog
+  if (!Array.isArray(catalog) || catalog.length === 0) {
+    throw new Error(`golden fixture genesis.json carries no catalog. ${REGENERATE}`)
+  }
+
+  for (const entry of catalog as CatalogEntry[]) {
+    for (const checkpoint of entry.checkpoints ?? []) {
+      for (const option of checkpoint.options ?? []) {
+        for (const field of OPTION_FIELDS) {
+          if (!(field in option)) {
+            throw new Error(
+              `golden fixture genesis.json is stale: an option on ${entry.id} has no ` +
+                `${field}. ${REGENERATE}`,
+            )
+          }
+        }
+      }
+    }
+  }
 }
 
 /**
