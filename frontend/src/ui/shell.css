@@ -678,6 +678,14 @@
   font-size: 0.9em;
 }
 
+.branch__gates-at {
+  display: flex;
+  align-items: baseline;
+  gap: 0.2rem;
+  margin: 0.35rem 0 0;
+  font-size: 0.62rem;
+}
+
 .branch__gates {
   margin: 0.35rem 0 0;
   padding-left: 0.9rem;

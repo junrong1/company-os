@@ -727,6 +727,58 @@ def test_a_branch_does_not_repeat_what_the_comparison_already_says(run: Recorder
     assert summary.in_person is True
 
 
+def test_a_branch_declines_an_answer_queued_for_the_parent(run: Recorder) -> None:
+    """R22, made structural rather than contingent.
+
+    `step` applies queued answers, and an agent answer resolves a checkpoint outright. Nothing
+    outside tests queues one today, so "nothing inside a branch settles anything" happened to
+    hold — but it held by luck, not by construction. The copy drops the queue, which is the
+    branch declining to answer a question that was never asked of it.
+    """
+    run.state.queued_answers = {run.state.tick + 1: [{"kind": "agent", "choice": "whatever"}]}
+    before = run.hash
+
+    summary = compare.run_branch(run.state, "wi_ap_map", 0, 0, in_person=True)
+
+    # Exactly one decision in the branch: the one it is a branch of.
+    resolutions = [
+        event for event in summary.emitted if event.kind is EventKind.DECISION_RESOLVED
+    ]
+    assert len(resolutions) == 1
+    assert resolutions[0].payload["tick"] == summary.fork_tick
+    # And the parent keeps its own queue — the branch declined it, it did not consume it.
+    assert run.state.queued_answers
+    assert run.hash == before
+
+
+def test_the_gate_lists_name_the_tick_they_were_read_at(run: Recorder) -> None:
+    """R22 again: every figure names its tick, and these are figures too.
+
+    One branch can stop days before another, so a longer-running column opens more work simply
+    by running longer. Without the tick, two columns look comparable when they are not.
+    """
+    summary = compare.run_branch(run.state, "wi_ap_map", 0, 0, in_person=True)
+
+    assert summary.gates_at_tick == summary.stop_tick
+    assert summary.to_state()["gates_at_tick"] == summary.stop_tick
+
+
+def test_a_branch_runway_is_always_knowable(run: Recorder) -> None:
+    """The `None` shape is defensive, and this states why it never fires here.
+
+    `runway_days` returns `None` only for a burn of zero, and the fixed daily cost is a
+    positive authored constant — so a branch always has something to divide by. Asserted rather
+    than assumed, because the client renders a distinct em dash for the null case and a dead
+    branch that quietly became live would show it without anybody noticing.
+    """
+    assert rates.TUNING["fixed_cost_per_day"] > 0
+
+    for index in range(len(work.spec("wi_ap_map").checkpoints[0].options)):
+        summary = compare.run_branch(run.state, "wi_ap_map", 0, index, in_person=True)
+        assert summary.runway.value is not None
+        assert summary.daily_cost.value is not None and summary.daily_cost.value > 0
+
+
 def test_a_comparison_records_no_item_status(run: Recorder) -> None:
     """A comparison moves nothing, so it must not claim to.
 

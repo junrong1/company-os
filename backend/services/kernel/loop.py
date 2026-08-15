@@ -43,7 +43,7 @@ import anyio.to_thread
 
 from contracts.envelope import Envelope, EventKind
 from kernel import lease as lease_module
-from kernel.store import LogStore, StoreWriter
+from kernel.store import LogStore, RunAlreadyTerminated, StoreWriter
 from servicekit import logging as svclog
 from simcore import log as folder
 from simcore import step as sim
@@ -704,13 +704,22 @@ class KernelRuntime:
         if not emitted:
             return []
 
-        result = self.writer.submit(
-            run_id=run_id,
-            emitted=emitted,
-            lease_handle=self.lease,
-            rules_ver=RULES_VERSION,
-            tick=run.state.tick,
-        )
+        try:
+            result = self.writer.submit(
+                run_id=run_id,
+                emitted=emitted,
+                lease_handle=self.lease,
+                rules_ver=RULES_VERSION,
+                tick=run.state.tick,
+            )
+        except RunAlreadyTerminated as ended:
+            # The run ended between this command being checked and its events being written.
+            # Every caller already checks for a terminal run before dispatching, so this is the
+            # race rather than the ordinary case — and it is a real window for a comparison,
+            # which spends over a second between its guard and its append. The store is right
+            # to refuse; what was wrong is that the refusal reached the client as an opaque 500
+            # instead of the sentence it already carries.
+            raise sim.CommandRejected(str(ended)) from None
 
         self._outcomes.setdefault(run_id, {})
         return result.envelopes

@@ -323,6 +323,8 @@ export interface Branch {
   dailyCost: ProjectedFigure
   unlocked: string[]
   foreclosed: string[]
+  /** The tick the gate lists were read at — the branch's own stop, which differs per branch. */
+  gatesAtTick: bigint
 }
 
 /** One comparison: every option at one checkpoint, as the kernel reported it. */
@@ -909,6 +911,7 @@ function readBranch(record: Record<string, unknown>): Branch {
     dailyCost: readFigure(record.daily_cost),
     unlocked: readStrings(record.unlocked),
     foreclosed: readStrings(record.foreclosed),
+    gatesAtTick: toBig(record.gates_at_tick),
   }
 }
 

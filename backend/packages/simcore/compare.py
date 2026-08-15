@@ -134,9 +134,11 @@ class Point:
 class Figure:
     """One number, and the tick it was measured at (R22).
 
-    `value` is `None` for a figure that is not yet knowable — a runway before the branch has
-    paid a day of costs. Reporting a number there would say "you have forever" at exactly the
-    moment the answer is unknown, and reporting zero would say the opposite.
+    `value` is `None` for a figure that is not knowable. No branch produces one today: the only
+    such figure is a runway, and `runway_days` returns `None` only for a burn of zero, while
+    the fixed daily cost is a positive authored constant. Kept as a shape rather than removed
+    because `runway_days` states the rule the client's own runway tile states — and a rule that
+    holds only because one constant happens to be non-zero is worth keeping expressible.
     """
 
     value: int | None
@@ -174,6 +176,11 @@ class BranchSummary:
     daily_cost: Figure
     unlocked: list[str]
     foreclosed: list[str]
+    #: The tick the two gate lists above were read at — the branch's own stop, which differs
+    #: between branches. Every other figure names its tick for exactly this reason: one branch
+    #: can stop days before another, and a longer-running one opens more simply by running
+    #: longer. Without the tick, two columns look comparable when they are not.
+    gates_at_tick: int = 0
 
     #: What the branch emitted. Returned rather than appended: the runner is a library and has
     #: no log. Kept off `to_state` — a comparison record carries what the CEO was shown, not a
@@ -209,6 +216,7 @@ class BranchSummary:
             "daily_cost": self.daily_cost.to_state(),
             "unlocked": list(self.unlocked),
             "foreclosed": list(self.foreclosed),
+            "gates_at_tick": self.gates_at_tick,
         }
 
 
@@ -289,6 +297,14 @@ def _branch_from(
     """Run one option from an already-taken fork."""
     branch = snapshot.restore(fork)
     fork_tick = branch.tick
+
+    # An answer the parent has queued would be applied by `step` inside the branch, and an
+    # agent answer resolves a checkpoint (`_apply_agent_answer`) — so the module's claim that
+    # nothing inside a branch settles anything was true only because no production caller
+    # queues one yet. Dropped from the copy, which makes the claim structural instead of
+    # contingent. The parent keeps its own queue: this is the branch declining to answer a
+    # question that was never asked of it.
+    branch.queued_answers = {}
 
     # From the copy, not the parent. The parent may have moved since the capture, and a gate it
     # opened in that window would otherwise show up as work this option *closed* — the panel
@@ -404,6 +420,7 @@ def _branch_from(
         daily_cost=Figure(value=burn, at_tick=branch.tick),
         unlocked=sorted(unlocked_after - unlocked_before),
         foreclosed=sorted(unlocked_before - unlocked_after),
+        gates_at_tick=branch.tick,
         emitted=emitted,
     )
 

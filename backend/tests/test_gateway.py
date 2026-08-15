@@ -20,6 +20,7 @@ from gateway import stream as streaming
 from gateway.commands import CommandLedger, Outcome, submit
 from kernel.store import LogStore, make_engine
 from simcore import time as simtime
+from simcore.step import CommandRejected
 
 RUN = "run-gateway"
 SEED = 0xC0FFEE
@@ -504,6 +505,39 @@ def test_a_malformed_number_is_a_reason_rather_than_a_500(composed, api) -> None
 
     ceo = command(api, "submit_ceo_input", {"bitmask": None, "at_tick": "1"}, "older-input")
     assert ceo.status_code == 200 and ceo.json()["status"] == Outcome.REJECTED
+
+
+def test_a_run_that_ends_mid_command_answers_with_a_reason(composed) -> None:
+    """The race the append-only store is right to refuse, answered rather than crashed on.
+
+    Every caller checks for a terminal run before dispatching, so this is the window between
+    that check and the append — ordinarily microseconds, but over a second for a comparison,
+    which is the only command that spends that long between its guard and its write. The store
+    refuses correctly; what was wrong is that its refusal reached the client as an opaque 500.
+    """
+    runtime, _ = composed
+    run = _stopped_at_a_decision(runtime)
+
+    # The guard passes, and the run ends before the write — exactly the race, made certain.
+    run.state.terminal_reason = ""
+    payload = _encode(
+        {
+            "item": "wi_ap_map",
+            "cp_index": 0,
+            "person": "stf_ap",
+            "at_tick": run.state.tick,
+            "in_person": True,
+        }
+    )
+    runtime.store.terminate_run(
+        RUN, terminal_seq=runtime.store.head_seq(RUN), reason="horizon"
+    )
+
+    with pytest.raises(CommandRejected) as refusal:
+        runtime.apply_command(RUN, _kind("COMPARE_OPTIONS"), payload)
+
+    assert str(refusal.value)
+    assert "500" not in str(refusal.value)
 
 
 def test_a_command_after_termination_is_rejected_and_mutates_nothing(composed) -> None:

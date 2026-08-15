@@ -110,6 +110,13 @@ function Column({
         />
       </div>
 
+      {/* Named with the tick they were read at, like every other figure. One branch can stop
+          days before another, so a longer-running column opens more work simply by running
+          longer — without the tick the two look comparable when they are not. */}
+      <p className="branch__gates-at" style={{ color: PAL.textFaint }}>
+        Gates as of tick {branch.gatesAtTick.toString()}
+        <Mark of={`${branch.optionLabel}, gates`} />
+      </p>
       <ul className="branch__gates" data-unlocked={branch.unlocked.length}>
         {branch.unlocked.map((itemId) => (
           <li key={`open:${itemId}`} data-gate="unlocked">
