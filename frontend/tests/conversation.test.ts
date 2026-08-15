@@ -35,7 +35,7 @@ import {
 } from '../src/ui/conversation-model'
 import { OptionConsequence } from '../src/ui/Consequence'
 import { Conversation } from '../src/ui/Conversation'
-import { TrayPanel } from '../src/ui/Panels'
+import { OrgPanel, TrayPanel, WorkPanel } from '../src/ui/Panels'
 import { actorsFromStore, typingTarget } from '../src/ui/stage'
 import { useRunStore } from './helpers/store-helpers'
 import {
@@ -831,6 +831,65 @@ describe('the comparison', () => {
     expect(Object.keys(held)).toHaveLength(1)
     expect(held[`${id}:0:here`].forkTick).toBe(900n)
     expect(held[`${id}:0:here`].atSeq).toBe(4n)
+  })
+
+  it('marks the figures the panels render, not only the ones the HUD does (R27, R28)', () => {
+    // The HUD sweep covers HUD tiles. These three are figures on the *panels* — a person's
+    // progress in the org chart, an item's progress in the work list, and the visibility a
+    // locked item is waiting on — and every one of them is authored effort or an authored
+    // gate. "Every number the client renders" was not true while they were bare.
+    const { id, want } = itemWithCheckpoint()
+
+    act(() => {
+      useRunStore.getState().apply(genesisFrame())
+      useRunStore.getState().apply(
+        itemFrame({ seq: 2, kind: 'WORK_ASSIGNED', item: id, status: 'active', person: want }),
+      )
+    })
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => {
+      root.render(createElement('div', null, createElement(OrgPanel), createElement(WorkPanel)))
+    })
+
+    const withDigits = (nodes: Element[]) =>
+      nodes.filter((node) => /\d/.test(node.textContent ?? ''))
+
+    // The work list's progress readout, and the gate a locked item is waiting on.
+    const rendered = withDigits([
+      ...host.querySelectorAll('.item__meta'),
+      ...host.querySelectorAll('.item__locked'),
+    ])
+    expect(rendered.length).toBeGreaterThan(1)
+    for (const figure of rendered) {
+      expect(
+        figure.querySelector('[data-authored-tuning]'),
+        `unmarked figure: ${figure.textContent}`,
+      ).not.toBeNull()
+    }
+
+    // A row with no figure carries no marking: the rule is "mark the number", not "decorate
+    // every row". `waits on wi_ap_map` names work, not a quantity.
+    const nameOnly = [...host.querySelectorAll('.item__locked')].find(
+      (node) => !/\d/.test(node.textContent ?? ''),
+    )
+    expect(nameOnly).toBeDefined()
+    expect(nameOnly?.querySelector('[data-authored-tuning]')).toBeNull()
+
+    // The org chart's own progress figure is marked in the source but cannot be reached from
+    // here: its row reads `PersonView.itemId`, which no event ever sets — the client's copy of
+    // person state is whatever genesis or a resync said, which is the "staff do not move on
+    // the client" hole this phase inherits and does not touch. Asserted as the reason the rows
+    // above are all idle, so a future person-state event turns this into real coverage rather
+    // than quietly leaving an unmarked figure behind.
+    const tasks = [...host.querySelectorAll('.person__task')]
+    expect(tasks.length).toBeGreaterThan(0)
+    expect(withDigits(tasks)).toHaveLength(0)
+
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('never shows one route the other route figures (R21)', () => {

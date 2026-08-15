@@ -23,6 +23,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { type MetricDef, NO_METRIC_DEFS, PAL, RESERVED_BEAM, deptColour } from '../design/tokens'
 import { type CatalogEntry, type ItemStatus, type TrayEntry, useRunStore } from '../net/store'
 import { CompareAffordance } from './Comparison'
+import { Mark } from './Marking'
 import type { CompareSender } from './comparison-model'
 import { OptionConsequence } from './Consequence'
 import { FROM_TRAY_COST, resolvePayload } from './conversation-model'
@@ -85,12 +86,20 @@ export function OrgPanel({ onWalkTo }: { onWalkTo?: (personId: string) => void }
     const [state, itemId, waiting] = encoded.split('|')
     const entry = roster[personId]
 
+    // Only one of these five branches renders a number, and the marking follows the number
+    // rather than the row — a row reading "Walking" has nothing to mark.
     let task = 'Free right now'
-    if (waiting === '1') task = 'Needs you'
-    else if (itemId !== '')
+    let showsAFigure = false
+    if (waiting === '1') {
+      task = 'Needs you'
+    } else if (itemId !== '') {
       task = `${itemId} — ${progressPercent(items[itemId] ?? 0, effort[itemId] ?? 0)}%`
-    else if (state === 'walking') task = 'Walking'
-    else if (state === 'meeting') task = 'In a meeting'
+      showsAFigure = true
+    } else if (state === 'walking') {
+      task = 'Walking'
+    } else if (state === 'meeting') {
+      task = 'In a meeting'
+    }
 
     return (
       <button
@@ -108,7 +117,12 @@ export function OrgPanel({ onWalkTo }: { onWalkTo?: (personId: string) => void }
         />
         <span className="person__body">
           <span className="person__name">{personId}</span>
-          <span className="person__task">{task}</span>
+          <span className="person__task">
+            {task}
+            {/* Progress is authored effort over authored effort. R28 admits no exceptions,
+                and this row renders a figure like any tile does. */}
+            {showsAFigure && <Mark of={`${personId} progress`} />}
+          </span>
         </span>
         {waiting === '1' && (
           // The one place amber is correct: a person is waiting on your decision.
@@ -185,10 +199,21 @@ export function WorkPanel({ onAssign }: { onAssign?: CommandSender }) {
               <p className="item__meta">
                 {STATUS_LABEL[status as ItemStatus] ?? status}
                 {assignee !== '' && ` · ${assignee}`}
-                {status !== 'backlog' &&
-                  ` · ${progressPercent(Number(doneUnits), entry.effort_units)}%`}
+                {status !== 'backlog' && (
+                  <>
+                    {` · ${progressPercent(Number(doneUnits), entry.effort_units)}%`}
+                    <Mark of={`${entry.title} progress`} />
+                  </>
+                )}
               </p>
-              {!available && <p className="item__locked">{reason}</p>}
+              {!available && (
+                <p className="item__locked">
+                  {reason}
+                  {/* The gate threshold and the visibility it is read against are both
+                      authored, so the sentence carries a figure like anything else. */}
+                  {reason.includes('%') && <Mark of={`${entry.title} gate`} />}
+                </p>
+              )}
               {available && status === 'backlog' && (
                 <div className="item__actions">
                   <button
