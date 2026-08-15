@@ -860,6 +860,19 @@ def _consume_baseline_draw(state: State) -> None:
         cap.consume(department, per_tick)
 
 
+def day_cost_terms(state: State) -> tuple[int, int, int]:
+    """What a day costs this company: fixed, the recurring draw, and salaries.
+
+    Named and public because two callers need it and a second implementation would drift. The
+    day boundary applies it; a comparison branch divides cash by it to state a runway at its
+    stopping tick, and a runway computed from a second copy of this arithmetic would disagree
+    with the burn the same branch actually paid.
+    """
+    fixed = TUNING["fixed_cost_per_day"]
+    draw_cost = cap.manual_hours(state.capacity) * TUNING["draw_cost_per_monthly_hour"] // 100
+    return fixed, draw_cost, hiring.salary_total(state.hires)
+
+
 def _roll_over_day(state: State) -> list[Emitted]:
     """The day boundary: costs, draw refresh, morale feedback and attrition.
 
@@ -873,9 +886,7 @@ def _roll_over_day(state: State) -> list[Emitted]:
     # --- costs. A recurring draw is staffed work and carries into the burn (R60), and each
     # arrived hire adds a recurring salary (R24). Automating work therefore reduces the
     # burn, which is what stops returning work to the backlog from strictly dominating.
-    fixed = TUNING["fixed_cost_per_day"]
-    draw_cost = cap.manual_hours(state.capacity) * TUNING["draw_cost_per_monthly_hour"] // 100
-    salaries = hiring.salary_total(state.hires)
+    fixed, draw_cost, salaries = day_cost_terms(state)
     total = fixed + draw_cost + salaries
 
     _, effective = effects.apply_effect(state.metrics, {"cash": -total})
