@@ -415,9 +415,63 @@ export function buildStatic(floor: FloorData, make: () => HTMLCanvasElement): HT
 
   for (const room of floor.rooms) paintDoorFrame(context, grid, room.door[0], room.door[1])
 
+  paintDressing(context, floor, grid)
   paintDaylight(context, floor)
 
   return canvas
+}
+
+/**
+ * The props that make a room inhabited rather than merely furnished.
+ *
+ * R10 asks for artwork, plants and collaboration spaces, and the kernel's `floor.furniture` is
+ * where furniture that *matters* lives — a desk somebody sits at, a chair, a solid a person
+ * cannot walk through. Adding wall art to that list would mean a genesis payload change and a
+ * walkability change for something nobody interacts with.
+ *
+ * So dressing is the client's, and it is non-solid by construction: it only ever lands on a
+ * wall tile or on a floor tile the kernel has not already claimed, and it is baked into the
+ * static layer rather than depth-sorted, so it can never come between a person and their desk.
+ *
+ * Placement is a pure function of the tile, like `speck` and the sill dressing, so a resize
+ * does not redecorate.
+ */
+function paintDressing(
+  context: CanvasRenderingContext2D,
+  floor: FloorData,
+  grid: number[][],
+): void {
+  const atlas = new Map<string, string[]>(Object.entries(PROPS))
+  const claimed = new Set(floor.furniture.map(([x, y]) => `${x},${y}`))
+  for (const room of floor.rooms) {
+    for (const [sx, sy] of room.slots) claimed.add(`${sx},${sy}`)
+    claimed.add(`${room.door[0]},${room.door[1]}`)
+  }
+  for (const [wx, wy] of floor.windows) claimed.add(`${wx},${wy}`)
+
+  const place = (x: number, y: number, sprite: string): void => {
+    if (claimed.has(`${x},${y}`)) return
+    const grid5 = atlas.get(sprite)
+    if (grid5 === undefined) return
+    claimed.add(`${x},${y}`)
+    paint(context, grid5, x * TILE, y * TILE, ART)
+  }
+
+  for (const room of floor.rooms) {
+    const [x1, y1, x2, y2] = room.box
+    if (x2 - x1 < 3 || y2 - y1 < 3) continue
+
+    // Wall art, on the interior wall run above the room. The choice of piece is the tile's,
+    // so two rooms do not both get the same picture.
+    const artX = x1 + 2 + (speck(x1, y1) % Math.max(1, x2 - x1 - 3))
+    if (grid[y1 - 1]?.[artX] === WALL) {
+      place(artX, y1 - 1, speck(artX, y1) % 2 === 0 ? 'art' : 'pinboard')
+    }
+
+    // A plant in a corner the desks did not take, and a stool beside it in the larger rooms.
+    place(x2, y1, 'floorplant')
+    if (x2 - x1 >= 5) place(x1, y2, speck(x1, y2) % 2 === 0 ? 'stool' : 'lamp')
+  }
 }
 
 /**
@@ -505,15 +559,14 @@ export const PROP_INDEX = new Map(PROP_KEYS.map((key, index) => [key, index]))
 /**
  * How many logical pixels one prop grid is authored at.
  *
- * Deliberately *not* `TILE`. The props are still the 16×16 art the prototype drew and are
- * blitted into a 32-pixel tile at 2×, which is a placeholder until they are redrawn at the
- * new resolution. Committing mechanically doubled grids in the meantime would be several
- * hundred lines of art authored to be deleted, and it would bury the interesting part of the
- * redraw's diff in noise a converter produced.
- *
- * When the real 32×32 grids land, this becomes `TILE` and the scaling below disappears.
+ * The same as `TILE` again. For one commit it was 16 while the resolution change landed and
+ * the props were still the prototype's art scaled at the blit; now they are drawn at the size
+ * they are shown at, and the scaling is gone. Kept as its own name rather than folded back
+ * into `TILE` because they are different claims — one is how big a tile is drawn, the other
+ * is how big the art for it was authored — and the redraw is exactly the moment that
+ * distinction was load-bearing.
  */
-export const PROP_SOURCE = 16
+export const PROP_SOURCE = TILE
 
 /** Pre-render every prop once into a strip, so a frame is a blit rather than a repaint. */
 export function buildPropAtlas(make: () => HTMLCanvasElement): HTMLCanvasElement {

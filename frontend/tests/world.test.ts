@@ -18,6 +18,7 @@ import {
   walkable,
 } from '../src/render/floor'
 import { drawActor } from '../src/render/actors'
+import { ART } from '../src/render/sprites'
 import { FLOORS, GLASS, WALLC } from '../src/render/palettes'
 import { PAL, RESERVED_BEAM, ROOM_FLOOR, relativeLuminance } from '../src/design/tokens'
 
@@ -344,17 +345,23 @@ describe('choosing a zoom', () => {
 // =========================================================================
 
 describe('the baked layer', () => {
-  it('lays down nothing darker than the floor it is lighting', () => {
+  it('lays down no dark field, whatever it lays down in lines', () => {
     // The vignette was a 34% black radial over the whole office and it is the single thing
-    // that most made this product read as a control room. Stated as a property rather than
-    // as "the vignette was deleted", because the failure mode is it coming back as something
+    // that most made this product read as a control room. Stated as a property rather than as
+    // "the vignette was deleted", because the failure mode is it coming back as something
     // else — an edge shade, an ambient occlusion pass, a "subtle" overlay.
-    const layer = bake()
+    //
+    // Scoped to *fields* rather than to every fill, because the props baked into this layer
+    // are outlined in 鸽蓝 and have to be: an outline holds a shape apart from what is behind
+    // it, and a dark outline on a light floor is the art direction working rather than
+    // failing. A vignette is thousands of pixels; an outline is a line.
+    const FIELD = 64
 
-    for (const colour of layer.colours()) {
+    for (const fill of bake().fills) {
+      if (fill.width * fill.height <= FIELD) continue
       expect(
-        relativeLuminance(colour),
-        `${colour} is darker than the darkest thing the shell may paint`,
+        relativeLuminance(fill.fill),
+        `a ${fill.width}×${fill.height} field in ${fill.fill}`,
       ).toBeGreaterThan(relativeLuminance(PAL.jingyuhui) - 0.001)
     }
   })
@@ -374,6 +381,7 @@ describe('the baked layer', () => {
       ...Object.values(PAL),
       ...Object.values(WALLC),
       ...Object.values(GLASS),
+      ...Object.values(ART),
       ...Object.values(FLOORS).flatMap((style) => Object.values(style)),
     ])
 

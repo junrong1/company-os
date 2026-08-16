@@ -9,7 +9,7 @@ import {
   positionDiverged,
 } from '../src/render/clock'
 import { TICKS_PER_SIM_HOUR } from '../src/render/interpolate'
-import { RESERVED_BEAM } from '../src/design/tokens'
+import { RESERVED_BEAM, relativeLuminance } from '../src/design/tokens'
 
 /** Wall milliseconds that advance the clock by at least `ticks` at rate 1. */
 function wallMsFor(ticks: bigint): number {
@@ -23,6 +23,7 @@ import {
   LEGS,
   LONG_HAIR,
   PROPS,
+  OUTLINE_GLYPHS,
   PROP_PALETTE,
 } from '../src/render/sprites'
 import {
@@ -420,16 +421,39 @@ describe('position divergence', () => {
 // =========================================================================
 
 describe('the ported sprite grids', () => {
-  it('has every prop 16 rows of 16 columns, in the prop palette', () => {
+  it('has every prop 32 rows of 32 columns, in the prop palette', () => {
     for (const [name, rows] of Object.entries(PROPS)) {
-      expect(rows.length, `${name} row count`).toBe(16)
+      expect(rows.length, `${name} row count`).toBe(32)
       for (const [index, row] of rows.entries()) {
-        expect(row.length, `${name} row ${index} width`).toBe(16)
+        expect(row.length, `${name} row ${index} width`).toBe(32)
         for (const glyph of row) {
           expect(PROP_PALETTE.has(glyph), `${name} row ${index} glyph ${glyph}`).toBe(true)
         }
       }
     }
+  })
+
+  it('is a daylight set with dark outlines, rather than an ink set', () => {
+    // Deliberately not "every value clears a luminance floor". Structure is legitimately mid
+    // — a chair post and a window frame are 鲸鱼灰 and should be — so a floor high enough to
+    // mean anything would forbid the furniture from having any weight at all.
+    //
+    // What is actually claimed is the shape of the set: the two outline glyphs are the two
+    // darkest values in it, and most of the rest is light. An ink-room palette fails the
+    // second half immediately, which is what makes this worth asserting.
+    const byLuminance = Object.entries(ART).sort(
+      ([, a], [, b]) => relativeLuminance(a) - relativeLuminance(b),
+    )
+
+    const darkestTwo = new Set(byLuminance.slice(0, 2).map(([glyph]) => glyph))
+    expect(darkestTwo).toEqual(OUTLINE_GLYPHS)
+
+    const light = byLuminance.filter(([, colour]) => relativeLuminance(colour) > 0.15)
+    expect(light.length).toBeGreaterThanOrEqual(Math.ceil(byLuminance.length * 0.6))
+  })
+
+  it('spends the reserved amber on no prop', () => {
+    expect(Object.values(ART)).not.toContain(RESERVED_BEAM)
   })
 
   it('has every body 14 rows of 10 columns, in the character palette', () => {
@@ -474,13 +498,18 @@ describe('the ported sprite grids', () => {
     }
   })
 
-  it('carries the same sprite count the prototype validates', () => {
+  it('carries every grid the office is furnished from', () => {
+    // Sixteen props rather than the prototype's ten: R10 asks for artwork, plants and
+    // collaboration spaces, and none of those existed. The assertion itself is what catches a
+    // grid deleted by accident, which is the only reason to count them.
+    expect(Object.keys(PROPS)).toHaveLength(16)
+
     const total =
       Object.keys(PROPS).length +
       Object.keys(BODY).length +
       LEGS.length +
       Object.keys(LONG_HAIR).length
-    expect(total).toBe(18)
+    expect(total).toBe(24)
   })
 })
 
