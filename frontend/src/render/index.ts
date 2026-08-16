@@ -24,6 +24,8 @@ import {
   type Actor,
   type CharacterSheet,
   type Drawable,
+  SPRITE_HEIGHT,
+  SPRITE_WIDTH,
   StrideTracker,
   characterSheet,
   depthSort,
@@ -31,6 +33,8 @@ import {
   drawWaitingBeam,
   placement,
 } from './actors'
+import { Camera } from './camera'
+import { CEO_ID } from './palettes'
 import { RenderClock } from './clock'
 import {
   type FloorData,
@@ -95,6 +99,8 @@ export class Renderer {
   private listeners: Array<() => void> = []
   private sheets: Map<string, CharacterSheet> | null = null
   private readonly stride = new StrideTracker()
+  private readonly camera = new Camera()
+  private tracking = false
   private staticLayer: HTMLCanvasElement | null = null
   private propAtlas: HTMLCanvasElement | null = null
   private zoom = 1
@@ -169,6 +175,8 @@ export class Renderer {
     this.staticLayer = null
     this.propAtlas = null
     this.stride.clear()
+    this.camera.reset()
+    this.tracking = false
   }
 
   /** Register a listener whose removal `dispose` will handle. */
@@ -194,6 +202,37 @@ export class Renderer {
     return this.sheets?.size ?? 0
   }
 
+  /**
+   * Move the viewport to wherever the player is, and say where it landed.
+   *
+   * The CEO is whoever the actor projection put last — the stage appends them after the
+   * staff so one depth sort covers everyone — and if there is nobody to follow the camera
+   * simply holds, which is what happens for the frames between attaching and genesis.
+   */
+  private trackCamera(): { x: number; y: number } {
+    if (this.floor === undefined) return { x: this.camera.x, y: this.camera.y }
+
+    const view = {
+      width: this.canvas.width / this.zoom,
+      height: this.canvas.height / this.zoom,
+    }
+    const world = { width: this.floor.cols * TILE, height: this.floor.rows * TILE }
+
+    const player = this.actors().find((actor) => actor.id === CEO_ID)
+    if (player === undefined) return { x: this.camera.x, y: this.camera.y }
+
+    const { left, feet } = placement(player)
+    const target = { x: left + SPRITE_WIDTH / 2, y: feet - SPRITE_HEIGHT / 2 }
+
+    // The first frame of a run centres rather than eases. Following in from the origin would
+    // open every session with the camera sliding across the office.
+    if (!this.tracking) {
+      this.tracking = true
+      return this.camera.centreOn(target, view, world)
+    }
+    return this.camera.track(target, view, world)
+  }
+
   private ensureSheets(): void {
     if (this.sheets !== null) return
 
@@ -207,16 +246,32 @@ export class Renderer {
     generatedSheets += 1
   }
 
-  /** Resize to the stage, choosing an integer zoom. Nearest-neighbour, never resampled. */
+  /**
+   * Resize to the stage, choosing an integer zoom. Nearest-neighbour, never resampled.
+   *
+   * The canvas is the *stage*, not the floor. It used to be the floor and `.stage` scrolled,
+   * which worked while the office was 496×288 and stopped working the moment it became
+   * 992×576 — larger than the stage on most laptops, so the CEO would walk off the visible
+   * area. The camera is what shows the right part of it instead.
+   */
   resize(availableWidth: number, availableHeight: number): void {
     this.zoom = chooseZoom(availableWidth, availableHeight)
-    if (this.floor === undefined) return
-    this.canvas.width = this.floor.cols * TILE * this.zoom
-    this.canvas.height = this.floor.rows * TILE * this.zoom
+    this.canvas.width = Math.max(1, Math.floor(availableWidth))
+    this.canvas.height = Math.max(1, Math.floor(availableHeight))
   }
 
   get currentZoom(): number {
     return this.zoom
+  }
+
+  /** What the viewport currently shows, in logical pixels. Exposed so a test can read it. */
+  get view(): { x: number; y: number; width: number; height: number } {
+    return {
+      x: this.camera.x,
+      y: this.camera.y,
+      width: this.canvas.width / this.zoom,
+      height: this.canvas.height / this.zoom,
+    }
   }
 
   /**
@@ -237,6 +292,11 @@ export class Renderer {
     // true pixel art at any size.
     context.save()
     context.scale(this.zoom, this.zoom)
+
+    // Then translated by whole logical pixels. Rounded *before* the zoom multiplies it: a
+    // fractional offset resamples every pixel in the office and it stops being pixel art.
+    const view = this.trackCamera()
+    context.translate(-view.x, -view.y)
 
     if (this.staticLayer !== null) context.drawImage(this.staticLayer, 0, 0)
 

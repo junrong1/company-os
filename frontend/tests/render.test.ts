@@ -496,6 +496,7 @@ function recordingCanvas(): { canvas: HTMLCanvasElement; calls: string[] } {
     save: () => calls.push('save'),
     restore: () => calls.push('restore'),
     scale: (x: number) => calls.push(`scale:${x}`),
+    translate: (x: number, y: number) => calls.push(`translate:${x},${y}`),
   }
   const canvas = {
     width: 0,
@@ -686,7 +687,7 @@ describe('the zoom', () => {
     expect(chooseZoom(700, 400)).toBe(1)
   })
 
-  it('sizes the canvas to the floor times the zoom', () => {
+  it('sizes the canvas to the stage, not to the floor', () => {
     const { canvas } = recordingCanvas()
     const instance = new Renderer({
       canvas,
@@ -696,8 +697,32 @@ describe('the zoom', () => {
 
     instance.resize(1600, 900)
 
-    expect(canvas.width).toBe(FLOOR_FIXTURE.cols * TILE * instance.currentZoom)
-    expect(canvas.height).toBe(FLOOR_FIXTURE.rows * TILE * instance.currentZoom)
+    // It used to be the floor times the zoom, and `.stage` scrolled. That worked while the
+    // office was 496×288 and stopped the moment it became 992×576 — larger than the stage on
+    // most laptops, so the CEO would walk off the visible area. The camera shows the right
+    // part of the floor instead, and the canvas is simply the window onto it.
+    expect(canvas.width).toBe(1600)
+    expect(canvas.height).toBe(900)
+    expect(instance.view.width).toBe(1600 / instance.currentZoom)
+    expect(instance.view.height).toBe(900 / instance.currentZoom)
+  })
+
+  it('resizes without rebuilding the sheets or the baked floor', () => {
+    const { canvas } = recordingCanvas()
+    const instance = new Renderer({
+      canvas,
+      floor: FLOOR_FIXTURE,
+      makeCanvas: () => recordingCanvas().canvas,
+    })
+
+    instance.start()
+    const built = sheetsGenerated()
+
+    instance.resize(1264, 450)
+    instance.resize(1904, 840)
+
+    expect(sheetsGenerated()).toBe(built)
+    expect(instance.staticLayerBuilt).toBe(true)
   })
 })
 

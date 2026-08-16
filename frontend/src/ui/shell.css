@@ -307,13 +307,23 @@
 
 /* ---- the stage -------------------------------------------------------- */
 
+/*
+ * The stage no longer scrolls. Scrolling was the old answer to a canvas sized to the whole
+ * floor; the camera is the new one, and keeping both would let a player scroll away from a
+ * viewport that then fights them back to the CEO.
+ */
 .stage {
   position: relative;
   display: grid;
-  place-items: center;
-  overflow: auto;
+  place-items: stretch;
+  overflow: hidden;
   padding: 0.5rem;
   min-height: 18rem;
+}
+
+.stage > canvas.office {
+  width: 100%;
+  height: 100%;
 }
 
 .office,
