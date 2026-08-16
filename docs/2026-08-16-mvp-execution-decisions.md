@@ -279,6 +279,50 @@ the status composition and should know the string moved.
 
 ---
 
+## What U3 found, that U24 needs
+
+**A command's events are never published to a connected client.** `KernelRuntime._publish` is called
+from one place — the tick loop, with the envelopes that batch produced (`services/kernel/loop.py`).
+`apply_command` appends through the writer and returns the envelopes to its caller, and nobody
+publishes them. Nothing on the client resumes on a gap either: `EventStream.url()` already resumes
+from `appliedSeq`, but only a socket *close* triggers a reconnect, so the banner's promise —
+"reconnecting will resume from the gap" — is kept by nothing.
+
+Measured on a live run through `single_process.py` and the dev server: `POST /runs/{id}/commands`
+answered `produced_seq: [3, 4]`, and the connected client's `appliedSeq` stayed at 2 until the
+director's *arrival* forty seconds later, at which point it jumped straight to 6 and set
+`sequenceGap`. Both dropped events were the assignment and the walk it caused.
+
+This is why U3's verification is only half a live one. The walk **home** — produced by the step when
+the director arrives — travels the real wire and renders: the client interpolates it, the figure
+crosses the floor, and the canvas differs on every frame. The walk **out**, which is the delegation
+itself and the thing M62 is written about, is produced by the command and therefore dropped. The
+event is correct, logged and rendered when injected; the transport does not carry it.
+
+It is deliberately not fixed here, and the reason is not scope alone. `apply_command` runs on a
+Starlette worker thread, so calling `_publish` from it would enqueue onto an `asyncio.Queue` from
+off the loop — the same thread-safety defect already recorded below for `_echo_position`, which is
+not worth a second instance. And the ordering is delicate rather than incidental: `_advance` releases
+its lock before appending, so a command's events can already be sequenced ahead of a tick's, and a
+publish that ignored sequence order could manufacture the gap it was meant to close. The fix wants
+the loop handle and a decision about ordering, which is transport work.
+
+**U24 is the right owner.** It already composes the gateway and the kernel into one process, and it
+already owes the publisher for `MODEL_SPEND` for the same reason: the surface exists on both ends
+and nothing carries the frame between them. Until it lands, every command a player issues leaves a
+permanent sequence gap and its own outcome unrendered — a direct assignment, which produces no
+arrival event at all, stays invisible until the item's first checkpoint.
+
+**The screenshot harness's disagreement with M6 is closed.** `frontend/scripts/screenshots.mjs` now
+injects `dir_hr` stopped at `wi_hiring` with the label the first `CHECKPOINT_RAISED` of a real
+day-zero run carries, and the three PNGs are recaptured — so they also stop predating U2's hints. The
+injection *stays*, and the file now says why: the harness runs against a recorded genesis so that
+looking at the art needs no Python stack, and a genesis event alone puts nobody in front of a
+decision. What it must not do is invent a state the product never reaches, which naming Marcus in
+Sales did.
+
+---
+
 ## The deferred defect register
 
 Pre-existing defects found while executing this plan, none of them in the PRD's M-list, each
@@ -328,10 +372,15 @@ cannot be produced from the shipped scenario, and U5's load tests synthesise the
 defect so much as a gap between the plan's numbers and the authored content; U6 or U21 could close
 it by authoring a wider checkpoint.
 
-**`frontend/scripts/screenshots.mjs` disagrees with M6.** Found by U2. The harness injects
-`WAITING_PERSON = 'dir_sales'` with a synthetic `wi_ap_map` tray entry, but a real day-zero run now
-waits on `dir_hr`/`wi_hiring`. Its three checked-in PNGs predate the hints. Whoever owns that
-harness should either switch it to the real seed or keep the injection with a note saying why.
+**A command's events are never published to a connected client.** Found by U3, and now the most
+serious of these: it makes every command's own outcome invisible to the client that issued it, and
+leaves a permanent sequence gap behind. `_publish` is called only from the tick loop.
+See "What U3 found, that U24 needs" above for the measurement and for why the fix is transport work
+rather than a line.
+
+**`frontend/scripts/screenshots.mjs` disagreed with M6.** Found by U2, **closed by U3**: the harness
+now injects `dir_hr`/`wi_hiring` with the label a real day-zero raise carries, the injection is kept
+with the reason stated, and the three PNGs are recaptured.
 
 ---
 
