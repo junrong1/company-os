@@ -19,10 +19,12 @@ wall-clock latency inside a run whose deadlines are counted in sim-ticks, and it
 would spend against a ceiling U9 enforces per run for an outcome R5 already says is
 a fallback rather than a second attempt.
 
-**The seams left open.** U9's per-run ceiling and U12's content-addressed cache both
-sit *in front of* this call, not inside it — the ceiling because it must refuse
-before the provider is contacted, the cache because a hit must not count as a call.
-Neither is stubbed here; `complete()` is the one entry point either wraps.
+**The seams left open, and the one now filled.** U9's per-run ceiling and U12's
+content-addressed cache both sit *in front of* this call, not inside it — the ceiling
+because it must refuse before the provider is contacted, the cache because a hit must
+not count as a call. `complete()` is the one entry point either wraps, and
+`modelgw.ceiling.BoundedGateway` is that wrap for the ceiling: it answers with the
+same union, so nothing here had to change but one `FailureKind` member.
 """
 
 from __future__ import annotations
@@ -136,6 +138,16 @@ class FailureKind(StrEnum):
     """
 
     NOT_CONFIGURED = "not_configured"
+    #: The run reached its per-run call or token ceiling (M27). An eleventh member rather
+    #: than a type of its own, because `Answer` is what makes U11's fallback path one
+    #: branch: a ceiling refusal that arrived as a third return type would give every
+    #: caller an arm to forget, and `NOT_CONFIGURED` is already the precedent for a
+    #: refusal that never reaches a wire. One member covers both halves of the budget —
+    #: which variable to raise is in `detail`, which reaches an operator's stdout, while
+    #: `kind` reaches an event payload and the exported report, where two members would
+    #: let a diff between two timelines turn on which half of a budget ran out first.
+    #: Enforced in `modelgw.ceiling`, in front of `complete()`.
+    CEILING_REACHED = "ceiling_reached"
     UNREACHABLE = "unreachable"
     TIMEOUT = "timeout"
     AUTH_REJECTED = "auth_rejected"

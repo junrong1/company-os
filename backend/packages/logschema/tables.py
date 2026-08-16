@@ -1,10 +1,16 @@
 """The store's shape, and the DDL version that guards it.
 
-Five tables, and exactly one of them is append-only. That distinction is enforced by
+Six tables, and exactly one of them is append-only. That distinction is enforced by
 per-dialect triggers on the log table alone: snapshots are dropped and re-folded when a
-tuning change invalidates them, the lease is updated on every heartbeat, and the version
-row is written once at creation. Putting an append-only trigger on those would break the
-recovery ladder it is meant to protect.
+tuning change invalidates them, the lease is updated on every heartbeat, the spend
+counter is incremented on every model call, and the version row is written once at
+creation. Putting an append-only trigger on those would break the recovery ladder it is
+meant to protect.
+
+Every table belongs to `APPEND_ONLY_TABLES` or to `MUTABLE_TABLES`, and a test asserts
+the two cover `metadata` exactly. An unregistered table is not caught by the append-only
+suite — it is *skipped* by it, silently, which is the one failure mode a coverage list
+of this kind actually has.
 
 **Portability is handled up front, not when Postgres breaks something.** Four choices
 here exist because SQLite and Postgres disagree, and each disagreement would otherwise
@@ -49,7 +55,17 @@ from sqlalchemy import (
 #:
 #: Distinct from both the rules version (tuning and multiplier order) and the event
 #: schema version (envelope shape). All three appear on the status endpoint.
-DDL_VERSION = 2
+#:
+#: 3 adds `runs.lineage_root_id` and the `model_spend` counter, in one bump rather than
+#: two: the phase needs both and a store carries no more or less across one mismatch than
+#: across two. The bump is a **documented wipe, not a forward migration** — `create_all`
+#: can add a table but cannot add a column to `runs`, so carry-forward would be a real
+#: migration with no corpus of old stores to prove itself against, shipped untested on
+#: the one component whose failure is silent corruption. Runs are local and disposable,
+#: and the plan already accepts that every scenario edit invalidates every run written
+#: against it. What is required instead is that a mismatch refuses, alters nothing and
+#: prints the remedy as a sentence.
+DDL_VERSION = 3
 
 #: Emits BIGINT on Postgres and INTEGER on SQLite. See the module docstring.
 SeqType = BigInteger().with_variant(Integer, "sqlite")
@@ -130,6 +146,18 @@ runs = Table(
     # is keyed on (run, seq) rather than on seq alone.
     Column("parent_run_id", String(64), nullable=True),
     Column("forked_at_seq", SeqType, nullable=True),
+    # The whole lineage, as a column rather than as a chain walked at call time (R21). Set
+    # to the run's own id at creation, which is what makes it NOT NULL and what makes the
+    # HUD's cross-lineage aggregate correct for a run that has never been forked. A
+    # recursive walk of `parent_run_id` was rejected: a deleted mid-lineage row would
+    # silently split one lineage into two, and every reader would have to be correct about
+    # the same recursion.
+    #
+    # **U16 owns copying it from the parent at fork.** `fork_run` sets a child's to the
+    # child's own id today — the creation rule, applied uniformly — so the column is never
+    # null and never wrong about a run that has not been forked *from*; it is only
+    # uninteresting until U16 makes a child point at its parent's root.
+    Column("lineage_root_id", String(64), nullable=False),
     Column("created_at", String(32), nullable=False),
 )
 
@@ -170,6 +198,46 @@ writer_lease = Table(
 )
 
 
+#: Mutable, and the only table in here the kernel does not write.
+#:
+#: One row per run, holding what that run has spent on model calls (M27, M28). It is a
+#: table of its own rather than four columns on `runs` for two reasons that point the same
+#: way. `runs` is written through the single writer under the lease (R22, R35), and the
+#: process that makes model calls is the agents service — putting the counter on `runs`
+#: would make a second writer of the row the lease exists to protect. And spend is not run
+#: state in the sense the rest of `runs` is: it is not inherited by a fork, it is not part
+#: of what a replay reproduces, and it must not be.
+#:
+#: It is emphatically **not** in `event_log`. Spend depends on which provider answered and
+#: what it counted, so an event carrying it would be an output the fold cannot reproduce,
+#: and strict replay would fail on every run that used the bench. The counter is derived
+#: bookkeeping the log knows nothing about; what the log carries is the fallback, with the
+#: closed-enum condition that fired.
+#:
+#: No `lineage_root_id` here. The lineage total joins to `runs` for it, so there is one
+#: place a lineage is recorded and nothing to drift.
+model_spend = Table(
+    "model_spend",
+    metadata,
+    Column("run_id", String(64), ForeignKey("runs.run_id"), primary_key=True),
+    Column("calls", SeqType, nullable=False, server_default=text("0")),
+    Column("input_tokens", SeqType, nullable=False, server_default=text("0")),
+    Column("output_tokens", SeqType, nullable=False, server_default=text("0")),
+    # Calls that did not happen because U12's cache answered. Counted so that "the ceiling
+    # is not moving" has a reading behind it rather than being a thing an operator guesses.
+    Column("cache_hits", SeqType, nullable=False, server_default=text("0")),
+    Column("updated_at", String(32), nullable=False),
+    # Refuses a negative counter at the store rather than trusting every caller's delta. A
+    # negative count would hand a run budget it had already spent, and the ceiling is the
+    # one number here that is a promise rather than a display — so the wrong value is
+    # refused where it would be written, not audited afterwards.
+    CheckConstraint(
+        "calls >= 0 AND input_tokens >= 0 AND output_tokens >= 0 AND cache_hits >= 0",
+        name="ck_model_spend_non_negative",
+    ),
+)
+
+
 #: Written once at creation. Checked at every startup.
 store_version = Table(
     "store_version",
@@ -184,8 +252,10 @@ store_version = Table(
 #: The one table that refuses mutation.
 APPEND_ONLY_TABLES = ("event_log",)
 
-#: The tables that must stay mutable for the recovery ladder to work.
-MUTABLE_TABLES = ("runs", "snapshots", "writer_lease", "store_version")
+#: The tables that must stay mutable for the recovery ladder — and the spend counter — to
+#: work. Registered rather than assumed: the append-only suite parametrizes over this
+#: tuple, so a table left out of it is skipped by that suite instead of failing it.
+MUTABLE_TABLES = ("runs", "snapshots", "writer_lease", "store_version", "model_spend")
 
 
 _REFUSAL = "event_log is append-only"

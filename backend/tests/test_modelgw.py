@@ -29,6 +29,7 @@ import copy
 import io
 import json
 import logging
+import math
 import pickle
 import re
 import socket
@@ -45,6 +46,20 @@ import pytest
 import modelgw
 from modelgw import Completion, Failure, FailureKind, Prompt, Turn, Usage
 from modelgw import anthropic_native, openai_compatible
+from modelgw.ceiling import (
+    DEFAULT_MAX_CALLS,
+    DEFAULT_MAX_TOKENS,
+    ENV_MAX_CALLS,
+    ENV_MAX_TOKENS,
+    UNLIMITED_SPELLING,
+    BoundedGateway,
+    Ceiling,
+    CeilingSource,
+    MemorySpendLedger,
+    Spend,
+    announce,
+    estimated_input_tokens,
+)
 from modelgw.config import (
     DETAIL_LIMIT,
     ENV_API_KEY,
@@ -891,3 +906,619 @@ def test_the_package_imports_nothing_outside_the_stdlib_but_httpx() -> None:
             third_party[path.name] = outside
 
     assert set().union(*third_party.values()) == {"httpx"}, third_party
+
+
+# =========================================================================
+# U9: the ceiling and its counter (M27, M28; R4)
+# =========================================================================
+#
+# The ceiling sits *in front of* `complete()`, so most of these tests assert on
+# `mock.requests` as much as on the answer: "refused before the provider was contacted" is
+# the whole difference between a ceiling and a receipt. The store-backed half is here
+# rather than in `test_store.py` because what is under test is the counter's contract, not
+# the schema's — the schema's half of it (the table is mutable, and it is registered as
+# such) is asserted over there, where the append-only triggers live.
+
+#: Small enough that a test can reach the ceiling in two calls and still be reading about
+#: a ceiling rather than about a loop.
+TINY = Ceiling(max_calls=2, max_tokens=200)
+
+
+def bounded(
+    env: dict[str, str],
+    provider: MockProvider,
+    ceiling: Ceiling = TINY,
+    ledger: MemorySpendLedger | None = None,
+) -> BoundedGateway:
+    return BoundedGateway(
+        modelgw.from_environment(env, transport=provider.transport),
+        ceiling,
+        ledger if ledger is not None else MemorySpendLedger(),
+    )
+
+
+# --- the shipped defaults, and the one way to remove them -----------------
+
+
+def test_the_shipped_ceiling_is_a_finite_number_and_an_absent_setting_means_it() -> None:
+    """The failure mode this guards is `None` meaning unbounded on somebody else's key."""
+    ceiling = Ceiling.from_environment({})
+
+    assert ceiling.max_calls == DEFAULT_MAX_CALLS
+    assert ceiling.max_tokens == DEFAULT_MAX_TOKENS
+    assert math.isfinite(ceiling.max_calls) and math.isfinite(ceiling.max_tokens)
+    assert ceiling.calls_source is CeilingSource.DEFAULT
+    assert ceiling.tokens_source is CeilingSource.DEFAULT
+
+
+def test_a_configured_ceiling_is_read_and_zero_means_zero() -> None:
+    """`0` is the one number that must not be read as "unset" — that is what turning the
+    bench off looks like, and `if not value` would have silently restored the default."""
+    configured = Ceiling.from_environment({ENV_MAX_CALLS: "7", ENV_MAX_TOKENS: "1234"})
+    assert (configured.max_calls, configured.max_tokens) == (7, 1234)
+    assert configured.calls_source is CeilingSource.CONFIGURED
+
+    off = Ceiling.from_environment({ENV_MAX_CALLS: "0"})
+    assert off.max_calls == 0
+    assert off.calls_source is CeilingSource.CONFIGURED
+
+
+@pytest.mark.parametrize("raw", ["nonsense", "-5", "12.5", "unlimited-ish"])
+def test_a_setting_that_cannot_be_read_keeps_the_default_rather_than_removing_it(
+    raw: str,
+) -> None:
+    """The direction of the failure is the point. An unreadable ceiling that resolved to
+    "no ceiling" would be a typo that spends money."""
+    ceiling = Ceiling.from_environment({ENV_MAX_CALLS: raw})
+
+    assert ceiling.max_calls == DEFAULT_MAX_CALLS
+    assert ceiling.calls_source is CeilingSource.UNREADABLE
+
+
+def test_only_the_word_removes_the_bound() -> None:
+    ceiling = Ceiling.from_environment(
+        {ENV_MAX_CALLS: UNLIMITED_SPELLING, ENV_MAX_TOKENS: "UNLIMITED"}
+    )
+
+    assert math.isinf(ceiling.max_calls)
+    assert math.isinf(ceiling.max_tokens), "case-insensitive; an operator types what they type"
+    assert ceiling.calls_source is CeilingSource.UNLIMITED
+    assert ceiling.describe()["max_calls"] is None, "null on the wire, never in configuration"
+
+
+def test_an_unlimited_ceiling_announces_itself_at_warning_and_names_the_variable(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """"Logged loudly" as something assertable: the level, the variable and the consequence.
+
+    An operator who typed the word out on their own key should meet it in the same scan as
+    a failed dependency, not filed under normal operation.
+    """
+    with caplog.at_level(logging.INFO, logger="modelgw.ceiling"):
+        announce(Ceiling.from_environment({ENV_MAX_CALLS: UNLIMITED_SPELLING}))
+
+    warnings = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert len(warnings) == 1, [record.getMessage() for record in caplog.records]
+    said = warnings[0].getMessage()
+    assert ENV_MAX_CALLS in said
+    assert "UNLIMITED" in said
+    assert "without bound" in said
+
+    # The finite half is still stated, just not shouted.
+    quiet = [record for record in caplog.records if record.levelno == logging.INFO]
+    assert any(str(DEFAULT_MAX_TOKENS) in record.getMessage() for record in quiet)
+
+
+def test_an_unreadable_setting_also_says_so_rather_than_passing_in_silence(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.INFO, logger="modelgw.ceiling"):
+        announce(Ceiling.from_environment({ENV_MAX_TOKENS: "lots"}))
+
+    warnings = [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert len(warnings) == 1
+    assert ENV_MAX_TOKENS in warnings[0].getMessage()
+    assert UNLIMITED_SPELLING in warnings[0].getMessage(), "it must say what to type instead"
+
+
+# --- M27: the ceiling stops the calls and never the run -------------------
+
+
+async def test_a_run_at_its_call_ceiling_gets_a_typed_refusal_and_the_provider_is_untouched() -> (
+    None
+):
+    """Covers M27. The bench goes quiet; nothing raises, and nothing stops.
+
+    Asserted as a value on the same union a 429 arrives on, which is what keeps U11's
+    fallback path at one branch. A third return type for "refused locally" would be an arm
+    every caller could forget, and forgetting it is an exception escaping into a tick.
+    """
+    mock = answering(ok_payload(WIRE_OPENAI))
+    gateway = bounded(env_for("ollama"), mock, Ceiling(max_calls=2, max_tokens=10_000))
+
+    first = await gateway.complete("run-1", PROMPT)
+    second = await gateway.complete("run-1", PROMPT)
+    assert isinstance(first, Completion) and isinstance(second, Completion)
+    assert len(mock.requests) == 2
+
+    # Ten more attempts past the ceiling. Each one is a value, none of them is an
+    # exception, and the provider is never contacted again.
+    for _ in range(10):
+        refused = await gateway.complete("run-1", PROMPT)
+        assert isinstance(refused, Failure)
+        assert refused.kind is FailureKind.CEILING_REACHED
+
+    assert len(mock.requests) == 2, "refused before the provider was contacted, every time"
+
+    reading = gateway.reading("run-1")
+    assert reading.calls_exhausted
+    assert reading.quiet, "the bench is quiet"
+    assert reading.bench_present, "...and still present. Quiet is not absent, and not failed."
+    assert reading.spend.calls == 2, "a refusal spends nothing, so it cannot run the count up"
+
+
+async def test_the_ceiling_reached_condition_is_logged_as_an_enum_and_names_no_provider(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R5's half of M27: the logged condition is a closed enum, never a sentence.
+
+    `kind` is the only field of a `Failure` that may enter an event payload, and this is
+    the one condition U9 adds to that closed set. `detail` carries the variable to raise
+    for an operator reading stdout, and that is the only place it goes.
+    """
+    from servicekit.logging import JsonFormatter
+
+    mock = answering(ok_payload(WIRE_OPENAI))
+    gateway = bounded(env_for("ollama"), mock, Ceiling(max_calls=0, max_tokens=10_000))
+
+    with caplog.at_level(logging.WARNING, logger="modelgw.ceiling"):
+        refused = await gateway.complete("run-1", PROMPT)
+
+    assert isinstance(refused, Failure)
+    assert refused.kind is FailureKind.CEILING_REACHED
+    assert refused.provider == "", "a local refusal names no provider; there was not one"
+    assert refused.model == ""
+    assert refused.status_code is None
+    assert ENV_MAX_CALLS in refused.detail, "the operator's remedy rides detail, not kind"
+
+    formatter = JsonFormatter("agents")
+    written = [formatter.format(record) for record in caplog.records]
+    assert any('"kind":"ceiling_reached"' in line for line in written), written
+    for line in written:
+        assert RAW_KEY not in line
+
+
+def test_the_ceiling_condition_is_a_member_of_the_one_closed_set() -> None:
+    """Where the condition lives, asserted rather than assumed.
+
+    A separate exception type or a third return value would each have given U11 something
+    to forget. `NOT_CONFIGURED` is the precedent this follows: a refusal that never reaches
+    a wire is still a typed failure, and it is still a `Failure`.
+    """
+    assert FailureKind.CEILING_REACHED in set(FailureKind)
+    assert FailureKind("ceiling_reached") is FailureKind.CEILING_REACHED
+    # And it carries no provider wording, which is the whole reason it is an enum.
+    assert str(FailureKind.CEILING_REACHED) == "ceiling_reached"
+
+
+async def test_the_token_ceiling_refuses_a_call_whose_input_alone_will_not_fit() -> None:
+    """The case a check inside `complete()` could not make.
+
+    Refused before the provider is contacted rather than sent and then counted, which is
+    the whole reason the ceiling is a wrapper and not a field on the gateway.
+    """
+    long_prompt = Prompt(
+        system="You are the engineering director.",
+        turns=(Turn(role="user", text="x" * 4_000),),
+    )
+    assert estimated_input_tokens(long_prompt) > 500
+
+    mock = answering(ok_payload(WIRE_OPENAI))
+    gateway = bounded(env_for("ollama"), mock, Ceiling(max_calls=100, max_tokens=500))
+
+    refused = await gateway.complete("run-1", long_prompt)
+
+    assert isinstance(refused, Failure)
+    assert refused.kind is FailureKind.CEILING_REACHED
+    assert mock.requests == [], "the provider was never contacted"
+    assert ENV_MAX_TOKENS in refused.detail
+    assert gateway.reading("run-1").spend == Spend(), "a refusal spends nothing"
+
+    # A prompt that fits still goes through, so this is a bound and not an outage.
+    assert isinstance(await gateway.complete("run-1", PROMPT), Completion)
+
+
+async def test_the_token_ceiling_closes_once_the_tokens_are_spent() -> None:
+    mock = answering(ok_payload(WIRE_OPENAI, text="A briefing."))
+    gateway = bounded(env_for("ollama"), mock, Ceiling(max_calls=100, max_tokens=60))
+
+    # 48 tokens on the first call, so the second finds twelve left and refuses.
+    assert isinstance(await gateway.complete("run-1", PROMPT), Completion)
+    refused = await gateway.complete("run-1", PROMPT)
+
+    assert isinstance(refused, Failure)
+    assert refused.kind is FailureKind.CEILING_REACHED
+    assert gateway.reading("run-1").tokens_exhausted is False, (
+        "48 of 60 is not exhausted; this call was refused because it would not fit, and the "
+        "two conditions are worth telling apart"
+    )
+    assert len(mock.requests) == 1
+
+
+async def test_a_failed_call_counts_and_an_absent_bench_does_not() -> None:
+    """A 500 cost an attempt; a missing key cost nothing.
+
+    Without the first half, a run pointed at a dead port would retry forever against a
+    counter that never moved. Without the second, a keyless run's counter would climb —
+    and M20 says a keyless run is the Phase 2 conversation exactly.
+    """
+    broken = answering({"error": "boom"}, status=500)
+    gateway = bounded(env_for("ollama"), broken, Ceiling(max_calls=3, max_tokens=10_000))
+
+    for _ in range(3):
+        answer = await gateway.complete("run-1", PROMPT)
+        assert isinstance(answer, Failure)
+        assert answer.kind is FailureKind.PROVIDER_ERROR
+
+    assert gateway.reading("run-1").spend.calls == 3
+    fourth = await gateway.complete("run-1", PROMPT)
+    assert isinstance(fourth, Failure)
+    assert fourth.kind is FailureKind.CEILING_REACHED
+    assert len(broken.requests) == 3, "the ceiling stopped the retrying, not the provider"
+
+
+async def test_with_no_key_the_counter_reads_zero_and_the_bench_is_absent_not_failed() -> None:
+    """M20 through the counter. "No provider" is a state, and it is a supported one."""
+    gateway = BoundedGateway(modelgw.from_environment({}), Ceiling(), MemorySpendLedger())
+
+    for _ in range(5):
+        answer = await gateway.complete("run-1", PROMPT)
+        assert isinstance(answer, Failure)
+        assert answer.kind is FailureKind.NOT_CONFIGURED, "absent, not ceiling-limited"
+
+    reading = gateway.reading("run-1")
+    assert reading.spend == Spend(), "nothing was contacted, so nothing was spent"
+    assert reading.bench_present is False
+    assert reading.quiet is False, "a run with no bench has not reached a ceiling"
+
+    payload = reading.to_payload()
+    assert payload["calls"] == 0
+    assert payload["tokens"] == 0
+    assert payload["bench_present"] is False
+    assert payload["max_calls"] == DEFAULT_MAX_CALLS
+    assert json.dumps(payload), "the whole reading is JSON, and carries no key to leak"
+
+
+# --- a cache hit is not a call, and a fallback is not a hit ---------------
+
+
+async def test_a_cache_hit_does_not_count_against_the_call_ceiling_and_the_counter_says_so() -> (
+    None
+):
+    """Both halves. The count does not move, and "not a call" is something the counter can
+    *say* — a hit that left no trace would be indistinguishable from a turn that never
+    happened, and an operator asking why the ceiling is not moving would have nothing to
+    read."""
+    mock = answering(ok_payload(WIRE_OPENAI))
+    gateway = bounded(env_for("ollama"), mock, Ceiling(max_calls=1, max_tokens=10_000))
+
+    served = await gateway.complete("run-1", PROMPT)
+    assert isinstance(served, Completion)
+    assert gateway.reading("run-1").spend.calls == 1
+
+    for _ in range(20):
+        gateway.note_cache_hit("run-1", served)
+
+    reading = gateway.reading("run-1")
+    assert reading.spend.calls == 1, "twenty hits, still one call"
+    assert reading.spend.cache_hits == 20, "and the counter says so"
+    assert reading.spend.tokens == served.usage.total_tokens, (
+        "no provider was contacted, so no tokens were spent again"
+    )
+    assert len(mock.requests) == 1
+
+
+async def test_a_scripted_fallback_cannot_be_recorded_as_a_cache_hit() -> None:
+    """The execution decision "a fallback is never a cache entry", as a signature.
+
+    A cached wrong answer has a long life, and the operator's remedy — raise the ceiling,
+    configure a key — would silently not work. So the method takes the `Completion` it
+    served, and a `Failure` has nowhere to go.
+    """
+    mock = answering({"error": "boom"}, status=500)
+    gateway = bounded(env_for("ollama"), mock)
+
+    fallback = await gateway.complete("run-1", PROMPT)
+    assert isinstance(fallback, Failure)
+
+    with pytest.raises(TypeError, match="never a cache entry"):
+        gateway.note_cache_hit("run-1", fallback)  # type: ignore[arg-type]
+
+    assert gateway.reading("run-1").spend.cache_hits == 0
+
+
+# --- R4: the ceiling is per run; only the display crosses the lineage -----
+
+
+async def test_the_lineage_total_sits_beside_this_runs_count_without_being_it() -> None:
+    """M28's two figures, and the reason they are two.
+
+    The ceiling is checked against the run (M27) because a lineage-wide budget would leave
+    a child at its parent's exhaustion point — the bench going quiet at a different moment
+    in each timeline, with the diff presenting *budget* as consequence. The player still
+    wants one number for what the session cost, so the aggregate is a display.
+    """
+    ledger = MemorySpendLedger({"child": "parent", "parent": "parent"})
+    mock = answering(ok_payload(WIRE_OPENAI))
+    gateway = bounded(env_for("ollama"), mock, Ceiling(max_calls=2, max_tokens=10_000), ledger)
+
+    await gateway.complete("parent", PROMPT)
+    await gateway.complete("parent", PROMPT)
+    await gateway.complete("child", PROMPT)
+
+    parent = gateway.reading("parent")
+    child = gateway.reading("child")
+
+    assert parent.spend.calls == 2 and parent.calls_exhausted
+    assert child.spend.calls == 1 and not child.calls_exhausted, "its own budget"
+    assert parent.lineage_spend.calls == 3 == child.lineage_spend.calls, "one session total"
+
+
+# --- the counter in the store: it survives a restart, and it is per run ---
+
+
+PARENT = "run-parent"
+CHILD = "run-child"
+
+
+@pytest.fixture
+def spend_store(tmp_path):
+    """A provisioned store, a parent run with one event in it, and a ledger on the same file.
+
+    SQLite only, deliberately. The dialect question for this table is whether it stays
+    mutable on both, and `test_store.py` answers that on both, where the append-only
+    triggers are. What is under test here is the counter's arithmetic and its lifetime.
+    """
+    from contracts.envelope import EventKind
+    from kernel import lease as lease_module
+    from kernel.store import LogStore, make_engine
+    from simcore.rates import RULES_VERSION
+    from simcore.step import Emitted
+
+    from agents.main import StoreSpendLedger
+
+    url = f"sqlite:///{tmp_path}/spend.sqlite3"
+    store = LogStore(make_engine(url))
+    store.create_all()
+    store.create_run(
+        run_id=PARENT,
+        run_seed=0xC0FFEE,
+        rules_ver=RULES_VERSION,
+        quantum_sim_seconds=60,
+        grid=(31, 18),
+    )
+    with store.engine.begin() as connection:
+        handle = lease_module.acquire(connection, owner="u9-test")
+    store.append_tick(
+        run_id=PARENT,
+        emitted=[Emitted(kind=EventKind.WORK_ASSIGNED, payload={"item": "wi_1"})],
+        lease_handle=handle,
+        rules_ver=RULES_VERSION,
+        tick=1,
+    )
+
+    ledger = StoreSpendLedger(url)
+    try:
+        yield store, handle, url, ledger
+    finally:
+        ledger.dispose()
+        store.engine.dispose()
+
+
+def test_a_run_is_its_own_lineage_root_at_creation(spend_store) -> None:
+    """R21's first half, which is what makes the HUD's aggregate correct today.
+
+    A recursive walk of `parent_run_id` was the alternative, and a deleted mid-lineage row
+    would have split one lineage into two with every reader agreeing about the wrong answer.
+    """
+    store, _handle, _url, _ledger = spend_store
+
+    row = store.run_row(PARENT)
+    assert row is not None
+    assert row["lineage_root_id"] == PARENT
+    assert row["parent_run_id"] is None
+
+
+def test_the_counter_survives_a_restart(spend_store) -> None:
+    """M28 is a figure the player watches during a run; a counter that reset on restart
+    would let a run spend its ceiling twice."""
+    from agents.main import StoreSpendLedger
+
+    _store, _handle, url, ledger = spend_store
+
+    ledger.add(PARENT, Spend(calls=3, input_tokens=120, output_tokens=30, cache_hits=1))
+    assert ledger.read(PARENT) == Spend(calls=3, input_tokens=120, output_tokens=30, cache_hits=1)
+
+    # The restart: this ledger's engine goes away entirely, and a fresh one opens the file.
+    ledger.dispose()
+    after = StoreSpendLedger(url)
+    try:
+        assert after.read(PARENT) == Spend(
+            calls=3, input_tokens=120, output_tokens=30, cache_hits=1
+        )
+        # And it keeps counting from there rather than from zero.
+        assert after.add(PARENT, Spend(calls=1)).calls == 4
+    finally:
+        after.dispose()
+
+
+def test_an_increment_does_not_depend_on_a_read_that_happened_first(spend_store) -> None:
+    """The read-modify-write this avoids would lose an increment whenever two directors
+    were briefed at once — and the number it would lose is the one the ceiling is checked
+    against. So the arithmetic is in the statement."""
+    from agents.main import StoreSpendLedger
+
+    _store, _handle, url, first = spend_store
+    second = StoreSpendLedger(url)
+    try:
+        first.read(PARENT)  # a stale zero, if anything cached it
+        second.add(PARENT, Spend(calls=1))
+        total = first.add(PARENT, Spend(calls=1))
+
+        assert total.calls == 2, "neither increment was lost"
+    finally:
+        second.dispose()
+
+
+def test_a_run_with_no_row_reads_zero_rather_than_being_created_by_a_read(spend_store) -> None:
+    _store, _handle, _url, ledger = spend_store
+
+    assert ledger.read("run-never-called") == Spend()
+    assert ledger.read(PARENT) == Spend(), "reading did not write a row"
+
+
+def test_a_fork_of_a_ceiling_exhausted_parent_has_its_own_budget(spend_store) -> None:
+    """Covers R4. The parent's exhaustion is invisible to the child, in both directions.
+
+    A lineage-wide budget would leave the child at its parent's exhaustion point, so the
+    bench would go quiet at a different moment in each timeline and the diff would present
+    *budget* as consequence — which is exactly what M34 forbids.
+
+    And the parent's exhaustion does not appear in the child's timeline in the literal sense
+    either: the counter is not in the log, so the fork's prefix copy carries no ceiling
+    state, and there is nothing about a budget in the child's events.
+    """
+    from sqlalchemy import select
+
+    from logschema import event_log
+
+    store, handle, _url, ledger = spend_store
+
+    exhausted = Ceiling(max_calls=2, max_tokens=10_000)
+    ledger.add(PARENT, Spend(calls=2, input_tokens=90, output_tokens=10))
+    assert ledger.read(PARENT).calls == 2
+
+    forked = store.fork_run(
+        parent_run_id=PARENT, at_seq=1, child_run_id=CHILD, lease_handle=handle
+    )
+    assert forked.forked, forked.refusal
+
+    # The child's own budget is untouched...
+    assert ledger.read(CHILD) == Spend()
+    assert ledger.read(CHILD).calls < exhausted.max_calls
+    # ...and the parent's is unmoved by the fork.
+    assert ledger.read(PARENT).calls == 2
+
+    # Nothing about a ceiling is in the child's copied prefix. The counter is bookkeeping
+    # beside the log, not in it — an event carrying what a provider counted would be an
+    # output the fold cannot reproduce, and strict replay would fail on every run that
+    # used the bench.
+    with store.engine.connect() as connection:
+        kinds = connection.execute(
+            select(event_log.c.kind).where(event_log.c.run_id == CHILD)
+        ).all()
+    assert len(kinds) == 1, "the prefix copy, and nothing added by the ceiling"
+
+
+def test_the_lineage_total_reads_through_the_column_rather_than_walking_parents(
+    spend_store,
+) -> None:
+    """The aggregate M28 renders beside the run's own count.
+
+    A fork's `lineage_root_id` is its own id until U16 copies the parent's, so today this
+    equals the run's own figure — which is the correct answer for an unforked run and the
+    reason the tile is testable now. Pointing the child's column at the parent's root is
+    what makes it interesting, and that is asserted here by doing it directly.
+    """
+    from sqlalchemy import update
+
+    from logschema import runs as runs_table
+
+    store, handle, _url, ledger = spend_store
+
+    ledger.add(PARENT, Spend(calls=2, input_tokens=80, output_tokens=20))
+    assert ledger.lineage(PARENT) == ledger.read(PARENT), "no forks: the root is the run"
+
+    store.fork_run(parent_run_id=PARENT, at_seq=1, child_run_id=CHILD, lease_handle=handle)
+    ledger.add(CHILD, Spend(calls=1, input_tokens=40, output_tokens=10))
+
+    # What U16 will do at fork, done here so the aggregate's behaviour is pinned before the
+    # unit that produces it lands.
+    with store.engine.begin() as connection:
+        connection.execute(
+            update(runs_table).where(runs_table.c.run_id == CHILD).values(lineage_root_id=PARENT)
+        )
+
+    lineage = ledger.lineage(CHILD)
+    assert lineage.calls == 3
+    assert lineage.tokens == 150
+    assert ledger.lineage(PARENT) == lineage, "one session total, read from either end"
+    assert ledger.read(CHILD).calls == 1, "and the per-run figure the ceiling uses is untouched"
+
+
+def test_the_lineage_of_an_unknown_run_is_zero_rather_than_an_error(spend_store) -> None:
+    _store, _handle, _url, ledger = spend_store
+    assert ledger.lineage("run-that-never-existed") == Spend()
+
+
+def test_the_spend_endpoint_answers_zeros_for_a_run_that_never_called(
+    spend_store, monkeypatch
+) -> None:
+    """The endpoint an operator and the surface both read.
+
+    Zeros with the bench marked absent, not a 404 and not a 503: "no key configured" is a
+    supported mode, and a counter that errored would read as a broken bench rather than as
+    an absent one.
+    """
+    import importlib
+
+    from fastapi.testclient import TestClient
+
+    _store, _handle, url, _ledger = spend_store
+    monkeypatch.setenv("COMPANY_OS_STORE_URL", url)
+    for variable in (ENV_PROVIDER, ENV_MODEL, ENV_API_KEY):
+        monkeypatch.delenv(variable, raising=False)
+
+    import agents.main as agents_main
+
+    agents_main = importlib.reload(agents_main)
+    try:
+        with TestClient(agents_main.app) as client:
+            body = client.get(f"/runs/{PARENT}/spend").json()
+
+            assert body["calls"] == 0
+            assert body["tokens"] == 0
+            assert body["bench_present"] is False
+            assert body["quiet"] is False
+            assert body["max_calls"] == DEFAULT_MAX_CALLS
+            assert body["lineage_calls"] == 0
+            assert RAW_KEY not in json.dumps(body)
+
+            # And it moves during a run, which is the half of M28 a static reading cannot show.
+            agents_main.ledger().add(PARENT, Spend(calls=2, input_tokens=100, output_tokens=25))
+            moved = client.get(f"/runs/{PARENT}/spend").json()
+            assert moved["calls"] == 2
+            assert moved["tokens"] == 125
+            assert moved["lineage_calls"] == 2
+    finally:
+        agents_main.ledger().dispose()
+
+
+def test_the_agents_service_reaches_the_store_without_importing_the_kernels(
+) -> None:
+    """R4, at the one place this unit could have broken it.
+
+    `kernel.store` owns the write path and `kernel.lease` has the timestamp helper this
+    module needed; reaching for either would have been the exact import the boundary test
+    caught when the report service tried it.
+    """
+    source = (BACKEND / "services" / "agents" / "main.py").read_text()
+    roots: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            roots.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            roots.add(node.module.split(".")[0])
+
+    assert "kernel" not in roots, "R4: services meet at a contract, not by importing each other"
+    assert "logschema" in roots, "the shared table definitions are how it reads the store"

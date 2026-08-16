@@ -23,14 +23,15 @@ import {
   loadFillPermille,
   overCeiling,
 } from '../design/tokens'
-import { type TrajectoryPoint, useRunStore } from '../net/store'
-import { Mark } from './Marking'
+import { type SpendView, type TrajectoryPoint, useRunStore } from '../net/store'
+import { Mark, Measured } from './Marking'
 import {
   CAPACITY_TILE,
   DEFAULT_COMPOSITION,
   NON_REMOVABLE,
   PRESSURE_TILE,
   RUNWAY_TILE,
+  SPEND_TILE,
   type Pressure,
   addTile,
   decisionPressure,
@@ -40,6 +41,7 @@ import {
   runwayDays,
   saveComposition,
   sparklinePoints,
+  spendLines,
   trajectoryDirection,
 } from './hud-model'
 
@@ -206,6 +208,49 @@ function CapacityTile({
   )
 }
 
+/**
+ * What the run has spent on the bench, against what it may (M28).
+ *
+ * The one tile in the HUD whose figures are *measured*, so it carries `Measured` rather than
+ * `Mark` — the opposite label, built the same glyph-and-label way so it reads with every hue
+ * removed. Marking it as authored tuning would be a lie in the one place the product has a
+ * real number; leaving it unmarked would be worse, because a reader who has learned that an
+ * unmarked figure is an oversight would read the silence as a missing marking.
+ *
+ * It renders at zero with the bench absent, and that is a state rather than a failure: every
+ * shipped scenario is playable with no provider (M20), and a tile that hid itself would leave
+ * the player unable to tell "no bench" from "a broken bench".
+ *
+ * The ceiling shown is *this run's*, never the lineage's, because that is where it is enforced —
+ * a lineage-wide budget would leave a child at its parent's exhaustion point, and the timeline
+ * diff would then present budget as consequence. The lineage total sits beside it as a figure,
+ * not as a bound.
+ */
+function SpendTile({ spend }: { spend: SpendView }) {
+  const lines = spendLines(spend)
+
+  return (
+    <article className="tile tile--wide" data-tile={SPEND_TILE} data-quiet={spend.quiet}>
+      <p className="tile__label">
+        Model spend
+        <Measured of="Model spend" withLabel />
+      </p>
+      <div className="tile__row">
+        <span className="tile__value">{lines.calls}</span>
+        <span className="tile__unit">calls</span>
+      </div>
+      <div className="tile__row">
+        <span className="tile__unit">{lines.tokens} tokens</span>
+      </div>
+      <p className="tile__foot">
+        {lines.lineage}
+        {' · '}
+        {lines.note}
+      </p>
+    </article>
+  )
+}
+
 export interface HudProps {
   /** Injectable so the suite can drive persistence without touching a real browser store. */
   storage?: Pick<Storage, 'getItem' | 'setItem'> | null
@@ -237,6 +282,7 @@ export function Hud({ storage }: HudProps = {}) {
   const tray = useRunStore(useShallow((state) => state.tray.map((entry) => entry.atTick)))
   const supply = useRunStore((state) => state.genesis?.decisionSupply ?? 0)
   const ceiling = useRunStore((state) => state.genesis?.load.ceiling ?? 1000)
+  const spend = useRunStore(useShallow((state) => state.spend))
   const roster = useRunStore(useShallow((state) => state.genesis?.roster ?? {}))
 
   const pressure = useMemo(
@@ -273,6 +319,9 @@ export function Hud({ storage }: HudProps = {}) {
           return (
             <CapacityTile key={tile} load={load} ceiling={ceiling} labels={departmentLabels} />
           )
+        }
+        if (tile === SPEND_TILE) {
+          return <SpendTile key={tile} spend={spend} />
         }
 
         const metric = defsByKey[tile]

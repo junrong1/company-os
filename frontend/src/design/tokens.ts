@@ -217,6 +217,36 @@ export function authoredTuningLabel(what: string): string {
 }
 
 /**
+ * The opposite claim, for the one figure in the product that is not invented.
+ *
+ * Model calls and tokens are counted, not authored: they are what a run actually spent
+ * against a ceiling somebody configured. Marking them `≈ authored tuning` would be a lie in
+ * the one place the product has a real measurement, and leaving them unmarked would be
+ * worse — the reader has learned that an unmarked number is an oversight, so silence reads
+ * as a missing marking rather than as a different kind of figure.
+ *
+ * Built exactly like `AUTHORED_TUNING`, for the same reason: a glyph and a short label,
+ * never a hue. Amber is reserved for a person waiting on the CEO, and "this one is real"
+ * expressed as colour would spend that reserve on a tile in the chrome.
+ *
+ * `=` against `≈` is the pairing, and it is what makes the distinction legible before the
+ * label is read: the same shape family, one approximate and one exact. `#` was considered
+ * and dropped — it says "a count", which is orthogonal to the truth-claim being made — and
+ * a check mark was dropped because it reads as *approval* of a figure rather than as a
+ * statement about where it came from.
+ */
+export const MEASURED = {
+  glyph: '=',
+  label: 'measured',
+  description: 'This figure is measured: what this run actually spent.',
+} as const
+
+/** The measured marking's accessible label for one named figure. */
+export function measuredLabel(what: string): string {
+  return `${what} — ${MEASURED.label}`
+}
+
+/**
  * Interactive, selected. Already means "live", which is why it carries in-progress.
  *
  * 天蓝 rather than 石绿, and the split is the point. The Product Contract gives 天蓝 to

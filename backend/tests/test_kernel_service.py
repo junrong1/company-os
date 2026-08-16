@@ -76,13 +76,19 @@ async def test_a_kernel_provisions_an_empty_store(tmp_path) -> None:
     """
     from kernel.loop import KernelRuntime
     from kernel.store import LogStore, make_engine
+    from logschema import DDL_VERSION
 
     store = LogStore(make_engine(f"sqlite:///{tmp_path}/empty.sqlite3"))
     runtime = KernelRuntime(store)
     try:
         runtime.start()
         assert runtime.lease is not None
-        assert store.check_ddl_version() == 2
+        # Against the declared version, not a literal. What this test is about is that a
+        # kernel provisions an empty store and can then read its own schema back; a
+        # hardcoded number turns it into an assertion that somebody edited two places
+        # consistently, and it fails on every DDL bump for a reason that is never the
+        # reason it was written.
+        assert store.check_ddl_version() == DDL_VERSION
     finally:
         runtime.writer.stop()
 

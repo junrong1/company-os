@@ -14,9 +14,21 @@
  * `data-authored-tuning` is the attribute the completeness sweep reads. It is on the element
  * rather than inferred from the glyph's text, so a tile can be checked without the test knowing
  * which character was chosen.
+ *
+ * `Measured` is the one exception the completeness claim admits, and it lives here rather than
+ * beside the tile that uses it so that the exception is as visible as the rule. Model calls and
+ * tokens are counted rather than invented, so they carry the opposite label — under
+ * `data-measured`, a *different* attribute, so the sweep can require exactly one of the two on
+ * every figure instead of accepting either.
  */
 
-import { AUTHORED_TUNING, PAL, authoredTuningLabel } from '../design/tokens'
+import {
+  AUTHORED_TUNING,
+  MEASURED,
+  PAL,
+  authoredTuningLabel,
+  measuredLabel,
+} from '../design/tokens'
 
 export interface MarkProps {
   /** What is being marked, for the accessible label. */
@@ -45,6 +57,31 @@ export function Mark({ of, withLabel = false }: MarkProps) {
         {AUTHORED_TUNING.glyph}
       </span>
       {withLabel && <span className="mark__label">{AUTHORED_TUNING.label}</span>}
+    </span>
+  )
+}
+
+/**
+ * The marking for a figure that was counted rather than authored.
+ *
+ * Same construction, same chrome, same absence of hue — the only differences are the glyph,
+ * the label and the attribute. Sharing the `.mark` class is deliberate: the two markings have
+ * to sit at the same weight in the same place, or the measured one would read as a stronger
+ * claim than a statement about provenance.
+ */
+export function Measured({ of, withLabel = false }: MarkProps) {
+  return (
+    <span
+      className="mark"
+      data-measured={MEASURED.glyph}
+      style={{ color: PAL.textFaint }}
+      title={MEASURED.description}
+      aria-label={measuredLabel(of)}
+    >
+      <span className="mark__glyph" aria-hidden="true">
+        {MEASURED.glyph}
+      </span>
+      {withLabel && <span className="mark__label">{MEASURED.label}</span>}
     </span>
   )
 }

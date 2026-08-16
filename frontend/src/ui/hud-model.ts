@@ -8,7 +8,7 @@
  * tile and reading its text, which would prove the JSX is wired rather than that falling manual
  * hours read as a win.
  *
- * Four decisions here are load-bearing, and each one is asserted rather than left to care.
+ * Five decisions here are load-bearing, and each one is asserted rather than left to care.
  *
  * **Trajectories, not bare values.** A cash figure tells you where you are; the shape of the
  * last twenty sim-days tells you whether the thing you did worked. The bare value is the one
@@ -30,6 +30,12 @@
  * these two are the ones whose absence changes what a run means. Runway is how long you have,
  * and decision pressure is what is waiting — a HUD without them can show a company sliding
  * into insolvency with nine unread decisions and look calm.
+ *
+ * **Exactly one tile is exempt from the authored-tuning marking, and it is named here.** Model
+ * calls and tokens are the one figure in the product that is measured rather than invented, so
+ * they carry the opposite label. `MEASURED_TILES` is what the sweep reads: an exemption written
+ * down is an exemption somebody argued for, where a tile that quietly failed the sweep and got
+ * a skip is how a completeness claim stops being one.
  */
 
 import { type Direction, type MetricDef, PAL, direction } from '../design/tokens'
@@ -43,6 +49,23 @@ import type { TrajectoryPoint } from '../net/store'
 export const RUNWAY_TILE = 'runway'
 export const PRESSURE_TILE = 'decisionPressure'
 export const CAPACITY_TILE = 'capacity'
+export const SPEND_TILE = 'modelSpend'
+
+/**
+ * The tiles whose figures were counted rather than invented.
+ *
+ * The authored-tuning sweep is a completeness claim about every figure the client renders, so
+ * an exception to it has to be *named* rather than discovered by a tile quietly failing and
+ * somebody adding a skip. This is that name, and the sweep reads it: a tile listed here must
+ * carry the measured marking and must **not** carry the authored one, and a tile not listed
+ * here must carry the authored one and must not carry the measured one. Exactly one of the two,
+ * on every tile — which is why the exemption cannot become a hole.
+ *
+ * Model calls and tokens are the only entry, and are likely to stay the only one. Every other
+ * figure in the product is a shape somebody chose; these two are what a run actually spent
+ * against a ceiling somebody configured.
+ */
+export const MEASURED_TILES: readonly string[] = [SPEND_TILE] as const
 
 /**
  * The default arrangement.
@@ -60,6 +83,10 @@ export const DEFAULT_COMPOSITION: readonly string[] = [
   'morale',
   'visibility',
   CAPACITY_TILE,
+  // Last, and removable. Model spend is not company state — it is what the tool cost to run,
+  // and putting it anywhere earlier would spend a position in the one-movement scan on a
+  // figure that says nothing about the company.
+  SPEND_TILE,
 ] as const
 
 /** The two whose absence changes what a run means. See the module note. */
@@ -256,4 +283,78 @@ export function pressureColour(pressure: Pressure): string {
   if (pressure.waiting === 0) return PAL.jingyuhui
   // Neutral chrome at every level. The escalation is in weight and in the count, not in hue.
   return PAL.yueyingbai
+}
+
+// =========================================================================
+// Model spend (M28)
+// =========================================================================
+
+/** How a count reads on a tile. Grouped, because a token total runs to six figures. */
+export function formatCount(value: number): string {
+  return value.toLocaleString('en-US')
+}
+
+/**
+ * A bound, as the tile says it.
+ *
+ * Three states, and they are genuinely three. A number is a ceiling. `null` before any frame
+ * has arrived is *not yet known*, and saying "no ceiling" there would claim something about
+ * the backend's configuration on no evidence. `null` after a frame has arrived means an
+ * operator removed the bound, which is the one case worth spelling out.
+ */
+export function formatBound(bound: number | null, told: boolean): string {
+  if (bound !== null) return formatCount(bound)
+  return told ? 'no ceiling' : '—'
+}
+
+export interface SpendLines {
+  /** "12 of 200", or "12 of no ceiling" — this run against this run's ceiling. */
+  calls: string
+  tokens: string
+  /** The lineage total, which is the session's cost across every fork of this run. */
+  lineage: string
+  /** One line under the figures, saying the thing that most needs saying right now. */
+  note: string
+}
+
+/**
+ * The four strings the spend tile renders.
+ *
+ * Here rather than in the component because each one is a rule: which of three states a bound
+ * is in, and which single note wins when more than one is true. Rendering them in JSX would
+ * make the suite read text out of a DOM to state a rule that is decidable from four numbers.
+ *
+ * The note's precedence is the interesting part, and it runs absent → quiet → cache → plain.
+ * An absent bench outranks everything because with no provider the other figures are all zero
+ * and a "ceiling reached" note would be nonsense; a reached ceiling outranks the cache note
+ * because it is the thing that changed what the player is about to read.
+ */
+export function spendLines(spend: {
+  calls: number
+  tokens: number
+  cacheHits: number
+  maxCalls: number | null
+  maxTokens: number | null
+  lineageCalls: number
+  lineageTokens: number
+  benchPresent: boolean
+  quiet: boolean
+}): SpendLines {
+  const told = spend.benchPresent || spend.calls > 0 || spend.maxCalls !== null
+
+  let note = 'this run, and every fork of it'
+  if (!spend.benchPresent) {
+    note = 'no bench configured'
+  } else if (spend.quiet) {
+    note = 'ceiling reached — scripted replies'
+  } else if (spend.cacheHits > 0) {
+    note = `${formatCount(spend.cacheHits)} served from cache, not called`
+  }
+
+  return {
+    calls: `${formatCount(spend.calls)} of ${formatBound(spend.maxCalls, told)}`,
+    tokens: `${formatCount(spend.tokens)} of ${formatBound(spend.maxTokens, told)}`,
+    lineage: `${formatCount(spend.lineageCalls)} calls, ${formatCount(spend.lineageTokens)} tokens`,
+    note,
+  }
 }

@@ -103,6 +103,7 @@ def test_kernel_is_healthy_once_the_store_is_provisioned(tmp_path, monkeypatch) 
     monkeypatch.setenv("COMPANY_OS_STORE_URL", url)
 
     from kernel.store import LogStore, make_engine
+    from logschema import DDL_VERSION
 
     LogStore(make_engine(url)).create_all()
 
@@ -112,7 +113,10 @@ def test_kernel_is_healthy_once_the_store_is_provisioned(tmp_path, monkeypatch) 
         assert response.status_code == 200, response.json()
         body = response.json()
         assert body["healthy"] is True
-        assert body["versions"]["store_ddl"] == "2"
+        # The declared version rather than a literal: the claim is that the kernel reports
+        # the schema it provisioned, not that the number is any particular one. A literal
+        # here fails on every DDL bump for a reason unrelated to what it tests.
+        assert body["versions"]["store_ddl"] == str(DDL_VERSION)
 
 
 def test_kernel_reports_unhealthy_but_keeps_running_when_the_store_is_down(

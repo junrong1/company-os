@@ -355,6 +355,19 @@
 .mark__glyph { font-weight: 400; }
 .mark__label { font-size: 0.9em; }
 
+/*
+ * The measured marking shares `.mark` entirely, and only the glyph and the label differ. Giving
+ * it its own weight or size would make "this figure was counted" read as a stronger claim than
+ * "this figure was authored", when the two are the same kind of statement about provenance.
+ */
+
+/*
+ * The spend tile's second figure line: a token total under the call count, in the same muted
+ * chrome the unit uses. Two rows rather than one because "12 of 200 calls, 34,500 of 600,000
+ * tokens" on one line is a sentence, and a tile is scanned rather than read.
+ */
+[data-tile='modelSpend'] .tile__row + .tile__row { margin-top: 2px; }
+
 /* ---- the office ------------------------------------------------------- */
 
 .stage {
