@@ -230,6 +230,22 @@ variables and no code:
 | `COMPANY_OS_MODEL_BASE_URL` | overrides the provider's endpoint | the provider's own, below |
 | `COMPANY_OS_MODEL_API_KEY` | the key; wins over the provider's own variable | the provider's own, below |
 | `COMPANY_OS_MODEL_TIMEOUT_SECONDS` | one call's whole budget | `30` (connect gets 5) |
+| `COMPANY_OS_MODEL_MAX_CALLS` | provider calls **one run** may make | `200` |
+| `COMPANY_OS_MODEL_MAX_TOKENS` | tokens **one run** may spend | `600000` |
+
+Both ceilings are per run, not per lineage — a fork of an exhausted parent gets its
+own budget, so the bench does not go quiet at a different moment in each timeline and
+turn a decision's consequences into an artefact of when you ran out. The HUD shows the
+run's own spend against its own ceiling, with the lineage total beside it.
+
+Reaching a ceiling stops model calls; it never stops the run. The directors fall back
+to their scripted replies and the report records where the bench went quiet.
+
+The only spelling that removes a bound is the literal word `unlimited`, and it is
+announced at startup as a warning naming the variable — `0` means zero calls, and a
+negative or unparseable value keeps the shipped ceiling and tells you what to type.
+On a bring-your-own-key tool, a number left to be decided later becomes `None` meaning
+unbounded, which is the one failure mode worth an ugly log line.
 
 Eight providers, and two code paths between them:
 

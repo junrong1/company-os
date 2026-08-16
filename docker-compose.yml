@@ -93,6 +93,27 @@ services:
       COMPANY_OS_LOG_LEVEL: INFO
       # Tick-level records are off by default: 36/s at x1, 108/s at x3.
       COMPANY_OS_LOG_TICKS: '0'
+      # The bench, forwarded from the host and defaulting to empty. Written as
+      # `${VAR:-}` rather than omitted, because an unset variable inside the
+      # container is what "the bench is absent" already means — and M25 says
+      # changing provider, model or base URL takes no code change, which would
+      # stop being true here if reaching a provider from the one command required
+      # editing this file. Empty is the shipped state: no key, no bench, every
+      # other feature unchanged.
+      #
+      # The key is deliberately the only one with no default written anywhere. Do
+      # not put a literal here; this file is committed. Export it in the shell
+      # that runs `docker compose up`, or put it in a git-ignored `.env`.
+      COMPANY_OS_MODEL_PROVIDER: ${COMPANY_OS_MODEL_PROVIDER:-}
+      COMPANY_OS_MODEL: ${COMPANY_OS_MODEL:-}
+      COMPANY_OS_MODEL_BASE_URL: ${COMPANY_OS_MODEL_BASE_URL:-}
+      COMPANY_OS_MODEL_API_KEY: ${COMPANY_OS_MODEL_API_KEY:-}
+      COMPANY_OS_MODEL_TIMEOUT_SECONDS: ${COMPANY_OS_MODEL_TIMEOUT_SECONDS:-}
+      # Left to the shipped ceilings unless the host overrides them. Forwarding
+      # rather than pinning matters: a number written here would be the one a
+      # reader trusts, and it would silently diverge from modelgw.ceiling's.
+      COMPANY_OS_MODEL_MAX_CALLS: ${COMPANY_OS_MODEL_MAX_CALLS:-}
+      COMPANY_OS_MODEL_MAX_TOKENS: ${COMPANY_OS_MODEL_MAX_TOKENS:-}
     depends_on:
       postgres:
         condition: service_healthy
