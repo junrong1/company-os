@@ -154,3 +154,50 @@ encoder to do that a checked-in asset does not already do. Owning unit: **U22**.
   the request in `state.pending` (`backend/packages/simcore/step.py:554-603`). The plan already
   catches this in U15 ("raising a request does not stall an item today"), and U15 owns building the
   stall. The docstring should be corrected in whichever unit touches it first.
+
+---
+
+## What U4 found, that U5 and U19 need
+
+U4 (`788e0ec`) took the before-change measurements and turned up three things that change how the
+next units should be written.
+
+**The plan's U5 verification criterion measures a near-insensitive metric, and the reason is a
+defect.** `achieved_multiplier_permille` computes `wanted = int(elapsed * 36 * rate)`, which
+truncates a fraction of a tick at every wake and never accumulates the remainder. At rate 1 the
+clock runs at roughly 55% of nominal while the field reports `1000`; it only moves once the catch-up
+clamp binds. So U5's stated verification — "a six-option comparison against a live ticker leaves the
+achieved clock multiplier above the permille floor U4 records" — can pass while the clock is in
+fact half speed. **U5 must assert on observed-ticks-against-nominal as well**, which is what U4's own
+test does and why it carries both numbers. The truncation itself is pre-existing and out of scope for
+Phase A; it wants its own unit, and it is not in the PRD.
+
+**The standing torn-read mitigation never sees the failure mode that actually flakes.**
+`snapshot.capture` hashes the state and then encodes it. A tick landing between those two reads
+produces a `Snapshot` that raises nothing at capture time — it fails later, inside
+`snapshot.restore`, called from `compare._branch_from`, which no `except` covers. `_capture_of`
+retries only `capture`, so its three attempts catch the dictionary-changed-size variant and never
+this one. That is why `test_every_branch_of_a_comparison_forks_from_one_instant` flakes under suite
+load and passes in isolation. U4 demonstrated the split directly: `capture()` raised no; `restore()`
+raised `SnapshotInvalid`.
+
+U5 therefore has two ways to close it, and should pick deliberately: split `run_comparison` into
+"take a capture" and "run from a capture", so the capture can be taken under the caller's lock — the
+shape `loop.py` now uses — or move `_capture_of`'s retry so that it wraps the restore rather than
+the capture.
+
+**Branch execution must not go back under the per-run lock.** Measured: 779 permille with the
+comparison handler under the lock, against 944 with it outside. The capacity limiter U5 adds would
+buy nothing while the tick loop is blocked on the lock.
+
+### Two pre-existing defects recorded and deliberately not fixed
+
+Neither is in the PRD, and both want their own unit rather than a ride-along in a Phase A unit.
+
+- **`export` hashes a live run's whole state without the lock** — the same class of torn read.
+  Locking it is not enough: it reads events from the store *before* hashing, so making the two agree
+  needs a store read and a state read under one lock, which R13 forbids. It wants a
+  snapshot-then-read-through-that-sequence design.
+- **`_echo_position` enqueues onto an `asyncio.Queue` from a worker thread**, which is not
+  thread-safe. Unchanged; it now at least sits inside the locked region, so the echoed tick and the
+  echoed position come from one quantum.
