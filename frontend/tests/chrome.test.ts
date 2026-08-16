@@ -102,10 +102,14 @@ describe('the chrome palette', () => {
     for (const { index } of beamRules) {
       const preceding = SHELL_CSS.split('\n').slice(0, index).join('\n')
       const selector = preceding.slice(preceding.lastIndexOf('\n', preceding.lastIndexOf('{')))
-      expect(
-        selector.includes('beam') || selector.includes("data-state='blocked'"),
-        `var(--beam) used under selector: ${selector.trim()}`,
-      ).toBe(true)
+      // The three shapes "somebody is waiting on you" takes in the chrome: the dot beside a
+      // person, the conversation with one of them open, and the tray that holds the queue.
+      // Anything else spending the amber is the reserved signal leaking.
+      const aboutWaiting =
+        selector.includes('beam') ||
+        selector.includes("data-state='blocked'") ||
+        selector.includes('data-waiting')
+      expect(aboutWaiting, `var(--beam) used under selector: ${selector.trim()}`).toBe(true)
     }
   })
 
@@ -156,5 +160,57 @@ describe('every stylesheet', () => {
     expect(INDEX_CSS).toContain('color-scheme: light')
     expect(INDEX_CSS).toContain(PRODUCT_GROUND)
     expect(INDEX_CSS).toContain(PAL.text)
+  })
+})
+
+// =========================================================================
+// People first (U15)
+// =========================================================================
+
+describe('the composition', () => {
+  it('gives the office a room of its own above the wide breakpoint', () => {
+    // Stacked, the shell puts metrics above the office and panels below it, and the office
+    // becomes a letterbox between two dashboards — which inverts R1 before a single value is
+    // read. The wide layout moves the panels to the side so the stage claims the height.
+    expect(SHELL_CSS).toMatch(/@media \(min-width: \d+px\)/)
+
+    const wide = /@media \(min-width: \d+px\) \{([\s\S]*?)\n\}/.exec(SHELL_CSS)?.[1] ?? ''
+    expect(wide).toContain('grid-template-columns')
+    expect(wide).toContain("'stage  panels'")
+  })
+
+  it('lets the stage take the free row in both layouts', () => {
+    // `1fr` on the stage's row is what makes the office the thing that grows when there is
+    // room, rather than the thing that gets squeezed when there is not.
+    const rows = [...SHELL_CSS.matchAll(/grid-template-rows:\s*([^;]+);/g)].map((m) => m[1])
+    expect(rows.length).toBeGreaterThanOrEqual(2)
+    for (const row of rows) expect(row).toContain('1fr')
+  })
+
+  it('stops the stage scrolling now that the camera follows', () => {
+    // Keeping both would let a player scroll away from a viewport that then fights them back.
+    // Asserted over every `.stage` rule rather than the first, because the grid areas add a
+    // one-line `.stage { grid-area: stage; }` that a first-match regex finds instead.
+    const rules = [...SHELL_CSS.matchAll(/\.stage \{([^}]*)\}/g)].map((match) => match[1])
+    expect(rules.length).toBeGreaterThan(0)
+    expect(rules.some((rule) => rule.includes('overflow: hidden'))).toBe(true)
+    expect(rules.some((rule) => rule.includes('overflow: auto'))).toBe(false)
+  })
+
+  it('makes the waiting person the only warm thing in the chrome', () => {
+    // R12: one warm accent, and it belongs to the person who needs you. Every rule that
+    // spends it is checked above; this checks that it is spent at all, in the two places the
+    // eye actually lands — the row and the panel holding it.
+    expect(SHELL_CSS).toContain("[data-panel='tray']")
+    expect(SHELL_CSS).toContain(".person[data-waiting='1']")
+  })
+
+  it('keeps the chrome compact enough to leave the office room', () => {
+    // Not a pixel budget — a type-scale one. Every label and value in the HUD sits at or
+    // below the body size, so the band that describes the office cannot be taller than the
+    // office deserves.
+    const sizes = [...SHELL_CSS.matchAll(/font-size:\s*([\d.]+)rem/g)].map((m) => Number(m[1]))
+    expect(sizes.length).toBeGreaterThan(20)
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(1.2)
   })
 })

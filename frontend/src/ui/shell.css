@@ -52,10 +52,56 @@
   min-height: 100vh;
   display: grid;
   grid-template-rows: auto auto auto 1fr auto auto;
+  grid-template-areas:
+    'topbar'
+    'banner'
+    'hud'
+    'stage'
+    'strip'
+    'panels';
   /* Flat, not a gradient. A gradient on ink reads as depth; the same gradient on ivory reads
      as a smudge, and the office is where the light is supposed to come from. */
   background: var(--ganglan);
   color: var(--text);
+}
+
+.topbar { grid-area: topbar; }
+.banner { grid-area: banner; }
+.hud { grid-area: hud; }
+.stage { grid-area: stage; }
+.strip { grid-area: strip; }
+.panels { grid-area: panels; }
+
+/*
+ * Wide enough for the office to have a room of its own.
+ *
+ * Stacked, the shell puts a band of metrics above the office and a band of panels below it,
+ * and the office becomes a letterbox between two dashboards — which inverts R1 before a
+ * single value is read. Above this width the panels move to the side and the stage claims the
+ * height, so the room and the people in it are the largest thing on screen.
+ *
+ * The breakpoint is where the office at zoom 1 plus a usable rail fits: 992 pixels of floor,
+ * a 22rem rail, and the shell's own padding.
+ */
+@media (min-width: 1400px) {
+  .shell {
+    grid-template-columns: 1fr 22rem;
+    grid-template-rows: auto auto auto 1fr auto;
+    grid-template-areas:
+      'topbar topbar'
+      'banner banner'
+      'hud    panels'
+      'stage  panels'
+      'strip  panels';
+  }
+
+  .panels {
+    grid-template-columns: 1fr;
+    align-content: start;
+    border-left: 1px solid var(--rule);
+    overflow-y: auto;
+    max-height: 100vh;
+  }
 }
 
 /* ---- top bar ---------------------------------------------------------- */
@@ -446,6 +492,30 @@
   border-radius: 50%;
   box-shadow: 0 0 0 1px var(--beam-edge);
   animation: beam-breath 1600ms ease-in-out infinite;
+}
+
+/*
+ * The person waiting on you is the strongest thing in the chrome, and the only warm thing.
+ *
+ * R12 asks for one warm accent and it belongs to this. The panel it sits in is otherwise the
+ * quietest surface in the product, which is what makes a single amber-edged row read from
+ * across the screen — and it matches the beam over that person's head in the office, so the
+ * two are one signal seen twice rather than two signals.
+ */
+.panel[data-panel='tray'][data-waiting]:not([data-waiting='0']) {
+  border-color: var(--beam);
+  box-shadow: inset 2px 0 0 var(--beam-edge);
+}
+
+/* A marker rather than a wash. The amber is a token everywhere it appears, and a tint of it
+   spelled in decimal would be the reserved value escaping the palette by the back door. */
+.person[data-waiting='1'] {
+  box-shadow: inset 3px 0 0 var(--beam), inset 4px 0 0 var(--beam-edge);
+  border-radius: 2px;
+}
+
+.person[data-waiting='1'] .person__task {
+  color: var(--text-muted);
 }
 
 @keyframes beam-breath {
