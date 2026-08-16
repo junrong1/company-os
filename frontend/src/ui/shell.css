@@ -1,31 +1,48 @@
-/* The console around the office.
+/* The interface around the office.
  *
- * The office glows in traditional pigment colour; the console stays ink. A night-shift control
- * room reads as consequence — which is the framing the product chose, over a sunny village
- * that reads as play.
+ * The office is a lit workplace and the interface around it is a quiet, disciplined surface
+ * that gets out of its way. A warm world inside restrained chrome reads as a company you
+ * work in — which is the framing the redesign chose, over the night-shift control room that
+ * read as consequence but made the product look like a dungeon.
  *
- * Every value here comes from docs/design/art-direction.html. The tokens that any canvas also
- * needs live in src/design/tokens.ts; these are the ones only CSS uses. */
+ * Every value here mirrors a slot in src/design/tokens.ts, and `tests/chrome.test.ts` reads
+ * both files and asserts they agree. Two copies of a palette is two chances to drift, and
+ * the drift would be invisible in review: a panel one value off looks fine alone and wrong
+ * beside the office.
+ *
+ * One slot is deliberately absent. `--shilv` does not appear in this file at all — 石绿 is
+ * the CEO's signal inside the office and nothing else, and it measures 2.1:1 against ivory,
+ * so a control wearing it would be a control nobody can read. The chrome's action colour is
+ * `--tianlan`. */
 
 :root {
-  --ganglan: #0f1423;
-  --yanhanlan: #131824;
-  --gangqing: #142334;
-  --qinghui: #2b333e;
+  /* Ground. */
+  --ganglan: #fffef8;
+  --gangqing: #f7fbf9;
+  --yanhanlan: #fbf2e3;
+  --yuebai: #eef7f2;
+  --qinghui: #dfeaef;
+  --rule: #c3d5de;
+
+  /* Structure and text. */
   --jingyuhui: #475164;
-  --yueyingbai: #c0c4c3;
-  --xinghui: #b2bbbe;
-  --shilv: #57c3c2;
-  --cuilv: #20a162;
-  --zhuhong: #ed5126;
+  --yueyingbai: #2d3d52;
+  --xinghui: #4a6b85;
+  --text: #1c2938;
+  --text-muted: #475164;
+  --text-faint: #5c677a;
+
+  /* Semantic slots. */
+  --tianlan: #1677b3;
+  --fenlv: #83cbac;
+  --cuilv: #12775e;
+  --zhuhong: #c8402a;
   /* Reserved: a person is waiting on your decision. The art direction spends it on nothing
-     else, so nothing else in this file may reference it. */
+     else, so nothing else in this file may reference it. It always travels with its edge —
+     on ivory the amber carries the meaning and the edge carries the contrast. */
   --beam: #f2c46b;
-  --tacit: #c4b1ff;
-  --text: #e9edf4;
-  --text-muted: #a2abbb;
-  --text-faint: #737d8e;
-  --rule: #262b36;
+  --beam-edge: #1c2938;
+  --tacit: #6b5bb5;
 }
 
 .shell {
@@ -35,7 +52,9 @@
   min-height: 100vh;
   display: grid;
   grid-template-rows: auto auto auto 1fr auto auto;
-  background: radial-gradient(120% 80% at 50% 0%, var(--yanhanlan), var(--ganglan) 70%);
+  /* Flat, not a gradient. A gradient on ink reads as depth; the same gradient on ivory reads
+     as a smudge, and the office is where the light is supposed to come from. */
+  background: var(--ganglan);
   color: var(--text);
 }
 
@@ -44,14 +63,14 @@
 .topbar {
   display: flex;
   align-items: center;
-  gap: 1.5rem;
-  padding: 0.75rem 1.25rem;
+  gap: 1.25rem;
+  padding: 0.5rem 1.25rem;
   border-bottom: 1px solid var(--rule);
 }
 
 .topbar h1 {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 0.8rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--text-muted);
@@ -75,47 +94,49 @@
   border-radius: 2px;
   color: var(--text-muted);
   font: inherit;
-  font-size: 0.75rem;
-  padding: 0.2rem 0.6rem;
+  font-size: 0.72rem;
+  padding: 0.15rem 0.55rem;
   cursor: pointer;
 }
 
 .stage-toggle button[data-active='true'],
 .rates button[data-active='true'] {
-  border-color: var(--shilv);
-  color: var(--shilv);
+  border-color: var(--tianlan);
+  color: var(--tianlan);
 }
 
 .topbar .hint {
   color: var(--text-faint);
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   letter-spacing: 0.08em;
 }
 
 .banner {
   margin: 0;
-  padding: 0.5rem 1.25rem;
-  background: var(--gangqing);
+  padding: 0.4rem 1.25rem;
+  background: var(--yanhanlan);
   border-bottom: 1px solid var(--rule);
   color: var(--zhuhong);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
 }
 
 /* ---- HUD -------------------------------------------------------------- */
 
+/* One quiet row. The office is the surface this product is about, and a HUD that claims a
+   band as tall as the room it describes inverts that before a single value is read. */
 .hud {
   display: flex;
   flex-wrap: wrap;
   align-items: stretch;
-  gap: 0.5rem;
-  padding: 0.75rem 1.25rem;
+  gap: 0.4rem;
+  padding: 0.5rem 1.25rem;
   border-bottom: 1px solid var(--rule);
 }
 
 .tile {
   flex: 1 1 8rem;
   min-width: 8rem;
-  padding: 0.5rem 0.7rem;
+  padding: 0.4rem 0.6rem;
   background: var(--gangqing);
   border: 1px solid var(--rule);
   border-radius: 2px;
@@ -133,8 +154,8 @@
   display: flex;
   align-items: baseline;
   gap: 0.3rem;
-  margin: 0 0 0.2rem;
-  font-size: 0.65rem;
+  margin: 0 0 0.15rem;
+  font-size: 0.62rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -179,30 +200,30 @@
 }
 
 .tile__value {
-  font-size: 1.35rem;
+  font-size: 1.15rem;
   line-height: 1.1;
 }
 
 .tile__unit,
 .tile__foot {
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   color: var(--text-faint);
 }
 
 .tile__foot {
-  margin: 0.3rem 0 0;
+  margin: 0.25rem 0 0;
 }
 
 .tile__delta {
   margin-left: auto;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
 }
 
 .spark {
   display: block;
   width: 100%;
-  height: 1.4rem;
-  margin: 0.3rem 0 0.2rem;
+  height: 1.2rem;
+  margin: 0.25rem 0 0.15rem;
 }
 
 .bar {
@@ -223,8 +244,8 @@
   display: flex;
   align-items: center;
   gap: 0.4rem;
-  font-size: 0.7rem;
-  margin-top: 0.25rem;
+  font-size: 0.68rem;
+  margin-top: 0.2rem;
 }
 
 .heat__name {
@@ -259,7 +280,7 @@
 .composer {
   flex: 0 0 auto;
   align-self: center;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   color: var(--text-faint);
 }
 
@@ -291,7 +312,7 @@
   display: grid;
   place-items: center;
   overflow: auto;
-  padding: 0.75rem;
+  padding: 0.5rem;
   min-height: 18rem;
 }
 
@@ -316,7 +337,7 @@
 /* ---- the chain strip -------------------------------------------------- */
 
 .strip {
-  padding: 0.4rem 1.25rem;
+  padding: 0.35rem 1.25rem;
   border-top: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
   background: var(--yanhanlan);
@@ -333,8 +354,8 @@
 .panels {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: 0.75rem;
-  padding: 0.75rem 1.25rem 1.5rem;
+  gap: 0.6rem;
+  padding: 0.6rem 1.25rem 1.25rem;
   align-items: start;
 }
 
@@ -342,12 +363,12 @@
   background: var(--gangqing);
   border: 1px solid var(--rule);
   border-radius: 2px;
-  padding: 0.6rem 0.8rem;
+  padding: 0.5rem 0.7rem;
 }
 
 .panel h2 {
-  margin: 0 0 0.5rem;
-  font-size: 0.65rem;
+  margin: 0 0 0.4rem;
+  font-size: 0.62rem;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -355,12 +376,12 @@
 
 .panel .hint {
   color: var(--text-faint);
-  font-size: 0.75rem;
+  font-size: 0.73rem;
   margin: 0;
 }
 
 .line {
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.4rem;
 }
 
 .person {
@@ -368,13 +389,13 @@
   align-items: center;
   gap: 0.5rem;
   width: 100%;
-  padding: 0.25rem 0.3rem;
+  padding: 0.22rem 0.3rem;
   background: transparent;
   border: 0;
   border-radius: 2px;
   color: var(--text);
   font: inherit;
-  font-size: 0.75rem;
+  font-size: 0.73rem;
   text-align: left;
   cursor: pointer;
 }
@@ -401,16 +422,19 @@
 
 .person__task {
   color: var(--text-faint);
-  font-size: 0.7rem;
+  font-size: 0.68rem;
 }
 
-/* The one reserved signal: a person is waiting on your decision. Nothing else may use it. */
+/* The one reserved signal: a person is waiting on your decision. Nothing else may use it.
+   The ring is not decoration — 决策琥珀 is 1.6:1 against this panel and would be a pale dot
+   nobody notices without an edge to hold it. */
 .person__beam {
   flex: 0 0 auto;
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   margin-left: auto;
   border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--beam-edge);
   animation: beam-breath 1600ms ease-in-out infinite;
 }
 
@@ -420,7 +444,7 @@
     opacity: 1;
   }
   50% {
-    opacity: 0.35;
+    opacity: 0.45;
   }
 }
 
@@ -441,9 +465,9 @@
 .output {
   display: flex;
   gap: 0.5rem;
-  padding: 0.35rem 0;
+  padding: 0.3rem 0;
   border-top: 1px solid var(--rule);
-  font-size: 0.75rem;
+  font-size: 0.73rem;
 }
 
 .item:first-of-type,
@@ -477,7 +501,7 @@
 .output__meta {
   margin: 0.15rem 0 0;
   color: var(--text-faint);
-  font-size: 0.7rem;
+  font-size: 0.68rem;
 }
 
 .item[data-available='false'] .item__title {
@@ -497,10 +521,10 @@
   background: transparent;
   border: 1px solid var(--rule);
   border-radius: 2px;
-  color: var(--shilv);
+  color: var(--tianlan);
   font: inherit;
-  font-size: 0.7rem;
-  padding: 0.15rem 0.45rem;
+  font-size: 0.68rem;
+  padding: 0.12rem 0.45rem;
   cursor: pointer;
 }
 
@@ -511,7 +535,7 @@
 }
 
 .decision__prompt {
-  margin: 0.2rem 0 0.4rem;
+  margin: 0.2rem 0 0.35rem;
   color: var(--text-muted);
 }
 
@@ -530,7 +554,7 @@
 .option__detail {
   grid-column: 2;
   color: var(--text-faint);
-  font-size: 0.7rem;
+  font-size: 0.68rem;
 }
 
 /* ---------------------------------------------------------------------------
@@ -544,7 +568,7 @@
   align-items: baseline;
   gap: 0.1rem 0.5rem;
   margin-top: 0.15rem;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
 }
 
 .consequence__figure {
@@ -563,7 +587,7 @@
 
 .consequence__note {
   flex-basis: 100%;
-  font-size: 0.68rem;
+  font-size: 0.66rem;
 }
 
 /* ---------------------------------------------------------------------------
@@ -581,7 +605,7 @@
 
 .compare__ask {
   width: 100%;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
 }
 
 .compare__pending {
@@ -590,7 +614,7 @@
   justify-content: space-between;
   gap: 0.4rem;
   margin: 0;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
 }
 
 .comparison {
@@ -604,14 +628,14 @@
   align-items: baseline;
   gap: 0.3rem;
   margin: 0;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
 .comparison__basis {
   margin: 0.15rem 0 0.4rem;
-  font-size: 0.68rem;
+  font-size: 0.66rem;
 }
 
 /*
@@ -628,20 +652,20 @@
 .branch {
   flex: 1 0 11rem;
   min-width: 11rem;
-  background: var(--gangqing);
+  background: var(--yuebai);
   border: 1px solid var(--rule);
   padding: 0.35rem;
 }
 
 .branch__label {
   margin: 0;
-  font-size: 0.75rem;
+  font-size: 0.73rem;
   color: var(--text);
 }
 
 .branch__stop {
   margin: 0.15rem 0 0.35rem;
-  font-size: 0.65rem;
+  font-size: 0.64rem;
   color: var(--text-muted);
 }
 
@@ -655,7 +679,7 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 0.3rem;
-  font-size: 0.68rem;
+  font-size: 0.66rem;
 }
 
 .branch__name {
@@ -683,13 +707,13 @@
   align-items: baseline;
   gap: 0.2rem;
   margin: 0.35rem 0 0;
-  font-size: 0.62rem;
+  font-size: 0.6rem;
 }
 
 .branch__gates {
   margin: 0.35rem 0 0;
   padding-left: 0.9rem;
-  font-size: 0.65rem;
+  font-size: 0.64rem;
   color: var(--text-muted);
 }
 
@@ -699,25 +723,25 @@
 
 .branch__note {
   margin: 0.3rem 0 0;
-  font-size: 0.65rem;
+  font-size: 0.64rem;
 }
 
 .comparison__close {
   margin-top: 0.4rem;
   width: 100%;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
 }
 
 .decision__cost {
   margin: 0.3rem 0 0;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
 }
 
 .output__provenance,
 .output__tacit {
   margin: 0.25rem 0 0;
   padding-left: 1rem;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   color: var(--text-faint);
 }
 
@@ -726,6 +750,9 @@
 /*
  * An overlay on the stage rather than a rail entry, so walking over to someone never costs
  * sight of the HUD or the tray. Anchored to `.stage`, which is already positioned.
+ *
+ * The shadow is a soft neutral rather than the 45% black it carried on ink. Band 4 of the
+ * art direction may sit over the office; it may not darken it.
  */
 .conversation {
   position: absolute;
@@ -737,17 +764,19 @@
   background: var(--gangqing);
   border: 1px solid var(--rule);
   border-radius: 3px;
-  box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
-  padding: 0.75rem;
+  box-shadow: 0 6px 18px rgb(28 41 56 / 12%);
+  padding: 0.7rem;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
+  gap: 0.55rem;
   z-index: 2;
 }
 
-/* Someone stopped at a decision is the one thing that earns the reserved beam colour. */
+/* Someone stopped at a decision is the one thing that earns the reserved beam colour. The
+   edge carries the contrast the amber cannot; the amber carries the meaning. */
 .conversation[data-state='blocked'] {
   border-color: var(--beam);
+  box-shadow: 0 0 0 1px var(--beam-edge), 0 6px 18px rgb(28 41 56 / 12%);
 }
 
 .conversation__who {
@@ -771,45 +800,45 @@
 
 .conversation__name {
   font-weight: 600;
-  font-size: 0.9rem;
+  font-size: 0.88rem;
 }
 
 .conversation__title {
   color: var(--text-muted);
-  font-size: 0.75rem;
+  font-size: 0.73rem;
 }
 
 .conversation__meta {
-  font-size: 0.7rem;
+  font-size: 0.68rem;
 }
 
 .conversation__decision {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
-  padding-top: 0.6rem;
+  padding-top: 0.55rem;
   border-top: 1px solid var(--rule);
 }
 
 .conversation__item {
   margin: 0;
-  font-size: 0.75rem;
+  font-size: 0.73rem;
   color: var(--text-muted);
 }
 
 .conversation__prompt {
   margin: 0;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
 }
 
 /* The line only a visit surfaces. Violet is the tacit slot, spent on nothing else. */
 .conversation__tacit {
   margin: 0;
   padding: 0.4rem 0.5rem;
-  background: rgb(196 177 255 / 8%);
+  background: rgb(107 91 181 / 7%);
   border-left: 2px solid var(--tacit);
   border-radius: 2px;
-  font-size: 0.75rem;
+  font-size: 0.73rem;
   line-height: 1.4;
 }
 
@@ -824,12 +853,12 @@
 
 .conversation__decision button {
   background: transparent;
-  border: 1px solid var(--shilv);
+  border: 1px solid var(--tianlan);
   border-radius: 2px;
-  color: var(--shilv);
+  color: var(--tianlan);
   font: inherit;
-  font-size: 0.75rem;
-  padding: 0.3rem 0.6rem;
+  font-size: 0.73rem;
+  padding: 0.28rem 0.6rem;
   cursor: pointer;
 }
 
@@ -841,7 +870,7 @@
 
 .conversation__cost {
   margin: 0;
-  font-size: 0.68rem;
+  font-size: 0.66rem;
   line-height: 1.4;
 }
 
@@ -849,7 +878,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  padding-top: 0.6rem;
+  padding-top: 0.55rem;
   border-top: 1px solid var(--rule);
 }
 
@@ -870,12 +899,12 @@
 
 .offer__title {
   margin: 0;
-  font-size: 0.78rem;
+  font-size: 0.76rem;
 }
 
 .offer__brief {
   margin: 0;
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   color: var(--text-muted);
   line-height: 1.4;
 }
@@ -886,8 +915,8 @@
   border-radius: 2px;
   color: var(--text-muted);
   font: inherit;
-  font-size: 0.72rem;
-  padding: 0.2rem 0.5rem;
+  font-size: 0.7rem;
+  padding: 0.18rem 0.5rem;
   cursor: pointer;
 }
 
@@ -899,7 +928,7 @@
 
 .offer__cost {
   margin: 0;
-  font-size: 0.66rem;
+  font-size: 0.64rem;
   line-height: 1.4;
 }
 
@@ -907,7 +936,7 @@
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
-  padding-top: 0.6rem;
+  padding-top: 0.55rem;
   border-top: 1px solid var(--rule);
 }
 
@@ -924,13 +953,13 @@
   border-radius: 2px;
   color: var(--text);
   font: inherit;
-  font-size: 0.75rem;
-  padding: 0.25rem 0.4rem;
+  font-size: 0.73rem;
+  padding: 0.22rem 0.4rem;
 }
 
 .conversation__ask input:focus {
   outline: none;
-  border-color: var(--shilv);
+  border-color: var(--tianlan);
 }
 
 .conversation__ask button {
@@ -939,8 +968,8 @@
   border-radius: 2px;
   color: var(--text-muted);
   font: inherit;
-  font-size: 0.72rem;
-  padding: 0.25rem 0.6rem;
+  font-size: 0.7rem;
+  padding: 0.22rem 0.6rem;
   cursor: pointer;
 }
 
@@ -969,7 +998,7 @@
 
 .said__q {
   margin: 0;
-  font-size: 0.65rem;
+  font-size: 0.62rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-faint);
@@ -977,7 +1006,7 @@
 
 .said__a {
   margin: 0;
-  font-size: 0.73rem;
+  font-size: 0.71rem;
   line-height: 1.45;
   color: var(--text-muted);
 }
@@ -989,7 +1018,7 @@
   border-radius: 2px;
   color: inherit;
   font: inherit;
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   padding: 0.1rem 0.5rem;
   cursor: pointer;
 }
