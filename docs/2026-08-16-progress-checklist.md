@@ -134,55 +134,91 @@ pushed the office off the screen.
 
 ---
 
-## MVP PRD — M1–M67 against what exists today
+## Phase 5 — the MVP (`docs/plans/2026-08-16-001-feat-company-os-mvp-plan.md`)
+
+Twenty-five units in six phases, in progress. **Phase A is complete.** The plan's open questions
+and everything execution has resolved or found are in
+[`docs/2026-08-16-mvp-execution-decisions.md`](2026-08-16-mvp-execution-decisions.md), which also
+carries the deferred defect register.
+
+| Unit | Status | Evidence |
+|---|---|---|
+| U1. Collapse the backend to one container | `[x]` | `9956471` — three services, no profile, Apache-2.0. Verified by a real `docker compose up`: 11.6s cold, a run created and drawn through nginx with no console error |
+| U2. Open on a person who is waiting | `[x]` | `3eee239` — `wi_hiring` seeded to `dir_hr`, two earned hints in local storage |
+| U4. One lock across the command path and the tick | `[x]` | `788e0ec` — per-run `threading.Lock`, per quantum, with a measured floor proven able to fail |
+| U5. Comparison off the tick worker pool | `[x]` | `79dd779` — `BRANCH_SLOTS=2` sized by sweep; the capture/restore torn read closed for every caller |
+| U8. The model gateway | `[x]` | `fbecec1` — two wires, eight providers, a key type that cannot be printed |
+| U9. The ceiling and its counter | `[x]` | `084b529` — 200 calls / 600k tokens per run, DDL 3, the one measured HUD figure |
+| U24. Compose the remaining surfaces in one process | `[x]` | `2aba425` — five surfaces, the redacting filter, origin validation, `MODEL_SPEND` published |
+| U6. The scenario format and the loader | in progress | |
+| U3, U7, U10–U23, U25 | `[ ]` | |
+
+Phase A shipped four fixes to defects no test was failing on, each found by the unit whose path
+crossed it: the launcher's lifespan handlers were never called (`on_event` under an explicit
+`lifespan=`), and then the four mounted sub-apps' lifespans were dead for the same reason one level
+down; `modelgw`'s key scrubber passed only because the test key was `sk-`-shaped; and an exception
+inside a `logging.Filter` killed the container at startup while every test passed.
+
+---
+
+## MVP PRD — M1–M67 as of Phase A
+
+Requirements Phase A moved are marked with the unit that moved them.
 
 **Deploy and first run (M1–M8)**
-- [ ] M1 `docker compose up` brings up a playable client — currently 503
-- [~] M2 one backend container running the single-process launcher — the launcher exists (`1029078`); the one-container image does not
-- [~] M3 store provisions itself on first boot — SQLite path created on first run (`1bbab5f`), Postgres provisioned in compose (`1d2d357`); unproven under the new shape
-- [x] M4 a run needs no model key — trivially true today, must survive the bench
-- [x] M5 client creates its own run, id in the address bar — `c45af79`, `net/runid.ts`
-- [ ] M6 a new run opens with a director already holding an unsettled checkpoint — no genesis path assigns work, so nothing is waiting at tick 0
-- [ ] M7 two first-run hints
-- [ ] M8 Apache-2.0 — no LICENSE file in the repository
+- [x] M1 `docker compose up` brings up a playable client — **U1**, verified end to end
+- [x] M2 one backend container running the launcher, all five surfaces in it — **U1**, **U24**
+- [x] M3 store provisions itself on first boot; second boot reuses it — **U1**
+- [x] M4 a run needs no model key — still true with the gateway present (**U8** reports absence rather than raising)
+- [x] M5 client creates its own run, id in the address bar — `c45af79`
+- [x] M6 a new run opens with a director already holding an unsettled checkpoint — **U2**
+- [x] M7 two first-run hints — **U2**
+- [x] M8 Apache-2.0 — **U1**
 
-**Scenarios (M9–M13)** — [ ] none. People and items are compiled into `simcore/people.py` and `simcore/items.py`.
+**Scenarios (M9–M13)** — in progress in **U6**; `backend/scenarios/default.toml` exists.
 
-**The bench (M14–M22)** — [ ] none. `services/agents/stub.py` declines every request; no model call exists anywhere.
+**The bench (M14–M22)** — [ ] none yet. `services/agents/stub.py` still declines every request.
 
-**The model gateway (M23–M30)** — [ ] none.
+**The model gateway (M23–M30)**
+- [x] M23, M24, M25, M26, M29 — **U8**
+- [x] M27, M28 — **U9**
+- [ ] M30 the keyless path proven in CI — U13; there is still no `.github/workflows`
 
 **Determinism (M31–M35)**
-- [x] M35 a comparison branch is never written to the store — the branch runner is in memory and discarded
-- [~] M31, M32 the substrate exists — agent statements already enter the log as input events through the pending-input contract — but there is no model statement to log
-- [ ] M33, M34 response caching on (tick, person, request) and variance isolation
+- [x] M35 a comparison branch is never written to the store — and **U5** now proves the clock cannot be starved by one
+- [~] M31, M32 the substrate exists; there is still no model statement to log — U10
+- [ ] M33, M34 — U12, U19
 
-**Memory and Authorization (M36–M43)** — [ ] none.
+**Memory and Authorization (M36–M43)** — [ ] none. U14, U15.
 
 **Forks, Timelines, Universe (M44–M52)**
-- [x] M51 comparison stays an in-place preview, discarded when the checkpoint closes
-- [~] M44–M48 `store.fork_run` exists and is replay-tested, but the child id collides at a shared tick and arrives paused
-- [ ] M49 the Universe tree, M50 the two-timeline diff, M52 marking inside a diff
-- [x] the marking itself exists everywhere else it is required — Phase 3 U2
+- [x] M51 comparison stays an in-place preview
+- [~] M44–M48 `store.fork_run` is replay-tested and `runs.lineage_root_id` now exists (**U9**), but the child id still collides at a shared tick and arrives paused — U16
+- [ ] M49, M50, M52 — U17, U18
 
 **The Report (M53–M61)**
-- [~] M55 every claim resolves to its event — built in `services/report/fold.py`
-- [ ] M53 Universe coverage, M54 standalone HTML export, M56 overload diagnosis, M57 automation proposals, M58 prose over cited figures, M59 the invented-company statement, M60 QR and link, M61 reachable from the client
+- [~] M55 every claim resolves to its event — `services/report/fold.py`, and the report is now mounted and answering in the one process (**U24**)
+- [ ] M53, M54, M56–M61 — U20 through U22
 
-**Closing the known holes (M62–M65)** — [ ] all four. M64 is mitigated but not closed.
+**Closing the known holes (M62–M65)**
+- [ ] M62 staff movement on the wire — U3
+- [x] M63 command/tick synchronisation — **U4**
+- [x] M64 comparison off the clock's pool — **U5**, closing `docs/residual-review-findings/` §2 and the remaining half of §1
+- [ ] M65 determinism over a lineage — U19
 
-**Launch (M66–M67)** — [ ] neither. The README still leads with `company-os.html` as the demo
-artifact, and there is no `.github/workflows` at all, so nothing verifies the first command.
+**Launch (M66–M67)**
+- [x] M67's first-command half — **U1**; the README leads with `docker compose up` and `company-os.html` is demoted to prototype
+- [ ] M67's CI proof and M66's hero — U13, U23
 
 ---
 
 ## The shape of it
 
-Of the 28 planned units across three plans, 23 are `[x]`, 5 are `[~]` with a named gap, and
-none was abandoned. The simulation half of the product is built and covered by four suites
-plus golden vectors across two languages.
+Across four completed plans, 28 units: 23 `[x]`, 5 `[~]` with a named gap, none abandoned. The
+simulation half of the product is built and covered by four suites plus golden vectors across two
+languages, and the daylight visual system is complete on top of it.
 
-Of the PRD's 67 requirements, roughly 8 are met today and the remainder is new construction —
-concentrated in the agent half (M14–M43), which does not exist at all, and in the deploy path
-(M1–M8), which is the one a stranger hits first. The PRD's own sequencing note says deploy and
-the known holes come first, the bench second, forking third.
+The MVP plan is 7 of 25 units in, with Phase A closed. Of the PRD's 67 requirements, roughly 8 were
+met when that plan was written; Phase A took that to about 22. What remains is still concentrated
+where the plan said it would be — the agent half (M14–M43), which is new construction against a
+service that today only declines, and the forking and report half behind it.
