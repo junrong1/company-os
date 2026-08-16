@@ -1,6 +1,6 @@
 """The tick loop: the kernel's clock, and the only thing that appends.
 
-Seven decisions here are load-bearing, and each prevents a failure that is hard to diagnose
+Eight decisions here are load-bearing, and each prevents a failure that is hard to diagnose
 from its symptom.
 
 **One task per active run, and its lifecycle follows the run's persisted rate — not the
@@ -41,6 +41,32 @@ built to explain rather than to cause. The rule has one consequence worth statin
 command that reads the *whole* state runs against a copy taken under the lock rather than under
 the lock itself. `test_no_store_round_trip_or_wait_happens_inside_the_lock` reads this file to
 keep the rule true.
+
+**The clock's worker slots and a comparison's are different pools, and readiness asks whether
+the clock is *moving*** (R14). Both halves close one failure. `anyio.to_thread.run_sync` draws
+from a process-wide 40-slot limiter, and until this the tick loop, the lease heartbeat and every
+synchronous FastAPI route drew from that one limiter — including the comparison route, whose
+handler is about a quarter of a second of pure Python per option and up to six options per
+command. Measured before the change, at rate 3 with the horizon a branch actually runs to: one
+comparison at a time costs the clock nothing (947-960 permille of nominal), eight at once costs
+it real time (894-926, and sim-time lag appears), and sixteen at once halves the clock
+(683-744 permille, 558-689 ticks of lag). Nothing raises while that happens; the clock just runs
+slow.
+
+So there are two limiters and they are deliberately different primitives, because they are
+acquired from different worlds. The clock's is an `anyio.CapacityLimiter` sized at one slot per
+run plus one for the heartbeat, taken by `to_thread.run_sync` from the event loop — a dedicated
+limiter is not merely a bigger allowance, it is a *disjoint* one: with the default limiter fully
+borrowed, a hop on its own limiter still starts immediately. Branch execution's is a
+`threading.BoundedSemaphore`, because it is acquired on a request thread that may have no event
+loop at all — an `anyio.CapacityLimiter` has no blocking synchronous `acquire`, and releasing one
+from a worker thread would touch event-loop objects from the wrong thread. Saturating it makes a
+comparison *queue*, holding no GIL while it waits, rather than compete.
+
+Readiness is the other half, and without it the first half would be invisible. `healthy()` asked
+whether the tick task was `done()`, which a starved clock is not — it is alive, waiting for a
+worker slot or for the GIL, and reporting ready. It now asks when sim-time last moved, so a
+kernel whose clock has stopped says so and names the tick it stopped at.
 
 **Catch-up is clamped, and read from a monotonic clock.** Elapsed real time decides how many
 quanta to run, which taken naively fast-forwards a sim-week after a laptop sleeps. When the
@@ -105,6 +131,75 @@ IDLE_RATE_ZERO_AFTER_SECONDS = 300.0
 #: authority rather than by hoping a vector covered it.
 POSITION_ECHO_INTERVAL_TICKS = simtime.TICKS_PER_SIM_HOUR
 
+#: How many comparisons may be stepping branches at the same instant (R14).
+#:
+#: **The number is small because the constraint is the GIL, not the CPU.** A branch is pure
+#: Python, so extra concurrency does not make the work finish sooner; it divides one interpreter
+#: further and takes the share out of the tick loop, which wants the GIL for well under a
+#: millisecond in every fifty and can only wait its turn for it.
+#:
+#: Sized by measurement rather than by argument. Sixteen six-option comparisons in flight at rate
+#: 3, three samples each, on the machine and the harness U4's floors were taken on — the clock's
+#: observed ticks against nominal, and the sim-time lag over the window:
+#:
+#:     slots  40 (the shipped default limiter)  683, 699, 770 permille   502-603 ticks of lag
+#:     slots  16                                686, 686, 703 permille   561-596 ticks of lag
+#:     slots   8                                898, 908, 927 permille    82-198 ticks of lag
+#:     slots   4                                978, 982, 982 permille         0 ticks of lag
+#:     slots   2                                967, 971, 972 permille         0 ticks of lag
+#:     slots   1                                959, 962, 965 permille         0 ticks of lag
+#:
+#: The cliff is between four and eight, so two sits a factor of four inside it. One, two and four
+#: are indistinguishable in what matters — no lag at all, and every figure above U4's floors — so
+#: the choice among them is settled on the other two counts rather than on the clock:
+#:
+#: *Throughput says fewer.* Comparisons completed in the same window fell as slots rose: 19 at one
+#: slot, 18 at two, 16 at four. Pure-Python parallelism has negative returns, so a bigger pool
+#: makes every caller wait longer for the same total work.
+#:
+#: *Independence says more than one.* A single slot is a process-wide mutex by another name, and it
+#: would make a comparison on one run wait for a comparison on another with nothing measured to
+#: say that is necessary. Two is the smallest number that keeps two runs from serialising.
+#:
+#: This bounds concurrency, not cost. One comparison is still about 1.3 seconds of branch stepping
+#: at six options; shortening *that* is `MAX_BRANCH_DAYS`' job and not this one.
+BRANCH_SLOTS = 2
+
+#: The limiter branch execution draws from, and nothing else does.
+#:
+#: Process-wide rather than per-runtime, because the resource it rations is process-wide: there is
+#: one GIL, and two `KernelRuntime`s in one process would otherwise grant themselves a pool each.
+#: A `BoundedSemaphore` rather than a `Semaphore` so an unbalanced release raises here instead of
+#: quietly widening the pool.
+#:
+#: **Acquiring it blocks the calling thread, so it must never be acquired on the event loop.** The
+#: command route is a synchronous FastAPI route and therefore runs on a worker thread, which is
+#: what makes that safe; a future `async` caller has to hop to a thread first, or it will block
+#: every request and every WebSocket send on the queue this limiter is here to create.
+BRANCH_LIMITER = threading.BoundedSemaphore(BRANCH_SLOTS)
+
+#: Clock slots beyond one per run: the lease heartbeat's.
+#:
+#: One is exactly enough and the arithmetic is worth stating. A run's loop awaits its own
+#: `_advance`, so a run can never want two slots at once; `_maybe_zero_idle_rate`'s hop is on the
+#: same awaited path, so it wants the run's slot rather than another. The heartbeat is the only
+#: other holder, and it is one task for the whole process.
+CLOCK_SLOTS_BESIDES_RUNS = 1
+
+#: How long sim-time may stand still on a run whose rate is non-zero before readiness calls it
+#: stalled.
+#:
+#: Sized against the readiness probe rather than against the loop. A healthy loop progresses every
+#: `WAKE_INTERVAL_SECONDS`, so anything above a second would do on that side; what sets the number
+#: is that `docker-compose.yml` probes `/status` every 5s with 6 retries. A threshold below the
+#: probe interval reports stalls the prober cannot see twice in a row, which is flapping rather
+#: than detection — and a 120-quantum batch against a slow Postgres is 120 append round-trips,
+#: which is the legitimate pause this must not call a stall.
+#:
+#: At 6 retries the container is left alone for 30 seconds before it is restarted, so a transient
+#: costs a warning rather than a restart loop.
+CLOCK_STALL_SECONDS = 5.0
+
 
 @dataclass(slots=True)
 class Diagnosis:
@@ -117,6 +212,10 @@ class Diagnosis:
     tick_task_state: str
     tick_task_exception: str
     last_wake_at: str
+    #: How long sim-time has stood still. The direct answer to "did the clock stop", and the
+    #: figure readiness decides on — `achieved_multiplier_permille` reads 1000 through a stall of
+    #: several wall seconds, so it cannot be that figure.
+    seconds_since_last_tick: int
     sim_time_lag_ticks: int
     achieved_multiplier_permille: int
     unresolved_checkpoints: list[str]
@@ -134,6 +233,7 @@ class Diagnosis:
             "tick_task_state": self.tick_task_state,
             "tick_task_exception": self.tick_task_exception,
             "last_wake_at": self.last_wake_at,
+            "seconds_since_last_tick": self.seconds_since_last_tick,
             "sim_time_lag_ticks": self.sim_time_lag_ticks,
             "achieved_multiplier_permille": self.achieved_multiplier_permille,
             "unresolved_checkpoints": list(self.unresolved_checkpoints),
@@ -160,6 +260,17 @@ class RunLoop:
     #: Wall-clock instant of the last wake, from a monotonic clock.
     last_wake: float = field(default_factory=time.monotonic)
     last_wake_wall: str = ""
+    #: The last tick the clock actually reached, and when it reached it, from a monotonic clock.
+    #:
+    #: Readiness reads these rather than the task's state (R14). "The tick task is alive" and "the
+    #: clock is moving" are different facts, and a starved loop satisfies the first: it is sitting
+    #: in an `await`, waiting for a worker slot or for its turn at the GIL, with nothing raised
+    #: and nothing done. Sim-time is the only witness that cannot be faked by a live task.
+    #:
+    #: Stamped at loop start and on a resume as well as on progress, so a run that has just been
+    #: unpaused gets a full stall interval before anyone calls its clock stopped.
+    progress_tick: int = 0
+    progress_at: float = field(default_factory=time.monotonic)
     #: Quanta the clamp prevented from running. The user-visible failure is that x3 does not
     #: deliver 3x, so this is the headline number rather than tick duration.
     lag_ticks: int = 0
@@ -199,6 +310,14 @@ class KernelRuntime:
         self._outcomes: dict[str, dict[str, dict[str, Any]]] = {}
         self._heartbeat: asyncio.Task | None = None
         self._store_reachable = True
+        #: Worker-thread slots the clock and the lease heartbeat draw from, and nothing else
+        #: (R14). Grown by `ensure_loop`; never shrunk, because shrinking is where a limiter can
+        #: be resized below what is already borrowed.
+        #:
+        #: Constructible here, outside any event loop, because anyio's limiter binds to a backend
+        #: lazily on first *use* — which is the tick loop's own hop. The runtime is already
+        #: loop-bound by `task` and by every subscriber queue, so this adds no new constraint.
+        self.clock_slots = anyio.CapacityLimiter(1 + CLOCK_SLOTS_BESIDES_RUNS)
 
     # --- startup and shutdown --------------------------------------------
 
@@ -312,7 +431,12 @@ class KernelRuntime:
             if self.lease is None:
                 continue
             try:
-                held = await anyio.to_thread.run_sync(self._heartbeat_once)
+                # On the clock's own limiter (R14): a heartbeat that cannot get a worker thread
+                # because commands hold every default slot lets the lease lapse, and a lapsed
+                # lease is another kernel appending alongside this one.
+                held = await anyio.to_thread.run_sync(
+                    self._heartbeat_once, limiter=self.clock_slots
+                )
             except Exception as exc:  # noqa: BLE001 - the store may be down; keep trying
                 self._store_reachable = False
                 log.warning("lease heartbeat failed", extra={"error": str(exc)})
@@ -377,12 +501,26 @@ class KernelRuntime:
 
         Idempotent, and that is the point: fifty concurrent subscribes produce one task,
         because the task's existence follows the rate rather than the subscription.
+
+        This is also where the clock's limiter is sized, because it is the one place that knows a
+        run is about to want a slot and it is guaranteed to be on the event loop — it calls
+        `create_task`, which has nowhere else to run. Sizing it from `len(self.runs)` rather than
+        from a fixed constant matters: a constant would silently cap how many runs can tick at
+        once, and the symptom would be a run whose clock is simply slower than the others'.
         """
         run = self.runs[run_id]
+        self.clock_slots.total_tokens = max(
+            self.clock_slots.total_tokens, len(self.runs) + CLOCK_SLOTS_BESIDES_RUNS
+        )
         if run.task is not None and not run.task.done():
             return run
 
         run.stopped = False
+        # Before the task exists, not inside it: a `RunLoop` built minutes ago carries a
+        # construction-time stamp, and readiness asked between here and the loop's first wake
+        # would read that as a clock that has been stopped for minutes.
+        run.progress_tick = run.state.tick
+        run.progress_at = time.monotonic()
         task = asyncio.create_task(self._run_loop(run), name=f"tick-loop-{run_id}")
         run.task = task  # strong reference, held for the task's lifetime
 
@@ -432,6 +570,12 @@ class KernelRuntime:
             previous = run.rate
             run.rate = rate
             effective_tick = run.rate_effective_tick = run.state.tick
+            if previous == 0 and rate > 0:
+                # A resumed clock starts its stall interval here. Without this, a run paused for
+                # ten minutes reports its clock stalled the instant it is unpaused — which is
+                # true of the ten minutes and false of the run.
+                run.progress_tick = run.state.tick
+                run.progress_at = time.monotonic()
 
         with self.store.engine.begin() as connection:
             from sqlalchemy import update
@@ -543,14 +687,29 @@ class KernelRuntime:
 
             # Off the event loop: a synchronous step invoked inline would stall every request
             # and every WebSocket send for the duration of the batch.
+            #
+            # On the clock's own limiter, never the shared default one (R14). The default limiter
+            # is what every synchronous FastAPI route draws from, so a burst of comparisons can
+            # borrow all forty of its slots and leave the clock waiting for a thread — which does
+            # not raise and does not appear as lag until the catch-up clamp binds. A disjoint
+            # limiter is not a larger allowance, it is one commands cannot reach into.
             try:
-                envelopes = await anyio.to_thread.run_sync(self._advance, run, batch)
+                envelopes = await anyio.to_thread.run_sync(
+                    self._advance, run, batch, limiter=self.clock_slots
+                )
             except Exception:
                 # Re-raised so the task's done callback records it and readiness reports
                 # unhealthy naming the failure, rather than the loop dying quietly.
                 raise
 
             run.achieved_ticks += batch
+            if run.state.tick > run.progress_tick:
+                # Sim-time moved, so the clock is alive in the only sense readiness cares about.
+                # Recorded from the tick rather than from the batch size, because a batch cut
+                # short by `run.stopped` or a terminal reason advanced fewer quanta than it asked
+                # for and the tick is what actually happened.
+                run.progress_tick = run.state.tick
+                run.progress_at = time.monotonic()
             self._publish(run, envelopes)
 
     def _advance(self, run: RunLoop, ticks: int) -> list[Envelope]:
@@ -655,7 +814,9 @@ class KernelRuntime:
             "no subscribers for the idle interval; setting rate to zero",
             extra={"run": run.run_id, "tick": run.state.tick},
         )
-        await anyio.to_thread.run_sync(self.set_rate, run.run_id, 0)
+        # The clock's limiter, for the same reason `_advance` uses it: this is on the tick loop's
+        # own awaited path, so a slot it cannot get is the clock not running.
+        await anyio.to_thread.run_sync(self.set_rate, run.run_id, 0, limiter=self.clock_slots)
         run.idle_since = None
 
     # --- commands ---------------------------------------------------------
@@ -690,10 +851,13 @@ class KernelRuntime:
         That is strictly more correct than reading the live state, not merely cheaper: the
         branches, the staleness guard and the recorded tick then all describe one instant, which
         is the property `run_comparison` documents as load-bearing and could previously only
-        intend. It is also why `compare._capture_of`'s retry no longer has anything to catch on
-        this path — the copy it takes is of a state nothing else can touch. **U5** owns that
-        retry and the branch limiter; the copy here is what leaves it room to move branch
-        execution off the tick loop's worker pool and actually gain something by it.
+        intend. It is also why `compare._capture_of`'s retry has nothing to catch on this path —
+        the copy it takes is of a state nothing else can touch.
+
+        **And the branches themselves run inside `BRANCH_LIMITER`, outside the lock** (R14). The
+        copy is what makes that possible: with the handler under the lock there would be nothing
+        for a limiter to protect, because the clock would already be waiting on the lock rather
+        than on a thread. Measured 779 permille under the lock against 944 beside it.
         """
         from contracts import canonical
         from contracts.grpc import kernel_pb2
@@ -798,7 +962,13 @@ class KernelRuntime:
                 # to retry past: it would mean the snapshot round-trip has genuinely lost a
                 # field, which is a bug to see rather than to paper over.
                 instant = snapshotting.capture(run_id, run.state, through_seq=0)
-            emitted = handler(snapshotting.restore(instant))
+            # Outside the lock and inside the branch limiter (R14). Outside the lock because U4
+            # measured the alternative — the handler under the lock rather than beside it — at 779
+            # permille against 944, and a limiter buys nothing while the tick loop is blocked on a
+            # lock. Inside the limiter because this is the only handler whose cost is seconds
+            # rather than microseconds, and a waiting comparison holds no GIL while it waits.
+            with BRANCH_LIMITER:
+                emitted = handler(snapshotting.restore(instant))
             applied_tick = instant.tick
         else:
             with run.lock:
@@ -917,6 +1087,7 @@ class KernelRuntime:
                 f"{type(run.exception).__name__}: {run.exception}" if run.exception else ""
             ),
             last_wake_at=run.last_wake_wall,
+            seconds_since_last_tick=int(time.monotonic() - run.progress_at),
             sim_time_lag_ticks=run.lag_ticks,
             achieved_multiplier_permille=run.achieved_multiplier_permille,
             unresolved_checkpoints=unresolved,
@@ -927,12 +1098,25 @@ class KernelRuntime:
         )
 
     def healthy(self) -> tuple[bool, str]:
-        """Readiness reflects tick-task liveness (R29).
+        """Readiness reflects tick *progress*, not tick-task liveness (R14, amending R29).
 
         A dead task for a run with a non-zero rate is unhealthy, and the exception is named —
         a kernel that reports healthy while its clock is stopped is worse than one that is
         down, because nothing prompts anyone to look.
+
+        **A live task is not enough, and that was the hole.** A starved loop is neither done nor
+        crashed: it is sitting in an `await`, waiting for a worker slot or for its turn at the
+        GIL, with nothing raised and nothing advanced. R29 as written reported that as ready. So
+        liveness is now the first question and not the only one — the second is when sim-time last
+        moved, which no amount of waiting can fake.
+
+        Sim-time rather than `achieved_multiplier_permille`, deliberately. That field computes its
+        wanted ticks with `int(elapsed * ...)` and drops the remainder at every wake, so it reads
+        1000 through a stall of several wall seconds; a readiness probe resting on it would report
+        ready through exactly the failure this is here to catch.
         """
+        now = time.monotonic()
+
         for run in self.runs.values():
             if run.rate == 0 or run.state.terminal_reason:
                 continue
@@ -943,4 +1127,14 @@ class KernelRuntime:
                     else "the tick task is not running"
                 )
                 return False, f"run {run.run_id} has rate {run.rate} but {detail}"
-        return True, "every run with a non-zero rate has a live tick task"
+
+            stalled_for = now - run.progress_at
+            if stalled_for > CLOCK_STALL_SECONDS:
+                return False, (
+                    f"run {run.run_id} has rate {run.rate} and a live tick task, but sim-time "
+                    f"has not moved past tick {run.progress_tick} for {stalled_for:.1f}s — the "
+                    f"clock is starved rather than stopped, and a clock is called stalled after "
+                    f"{CLOCK_STALL_SECONDS:.0f}s"
+                )
+
+        return True, "every run with a non-zero rate has a clock that is still moving"

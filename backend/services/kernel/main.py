@@ -119,10 +119,11 @@ def _store_ddl_version() -> dict[str, Any]:
 
 
 def _clock_probe() -> tuple[bool, str]:
-    """Readiness reflects tick-task liveness (R29).
+    """Readiness reflects tick *progress*, not tick-task liveness (R14, amending R29).
 
     A kernel reporting healthy with a stopped clock is worse than one that is down, because
-    nothing prompts anyone to look.
+    nothing prompts anyone to look — and a starved clock is stopped without its task being dead,
+    so liveness alone reported ready. `KernelRuntime.healthy` carries the reasoning.
     """
     if _fatal:
         return False, _fatal

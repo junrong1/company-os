@@ -25,6 +25,7 @@ from simcore import items as work
 from simcore import lifecycle
 from simcore import log as folder
 from simcore import rates
+from simcore import snapshot as snapshotting
 from simcore import step as sim
 from simcore import time as simtime
 from simcore.rates import RULES_VERSION, TUNING
@@ -204,6 +205,96 @@ def test_the_same_branch_computed_twice_is_identical(run: Recorder) -> None:
     second = compare.run_branch(run.state, "wi_ap_map", 0, 1, in_person=False)
 
     assert first.to_state() == second.to_state()
+
+
+# =========================================================================
+# The capture, taken while the parent may be moving
+# =========================================================================
+#
+# `snapshot.capture` reads the state twice — once to hash it, once to encode it — so a tick
+# landing between those two reads produces a snapshot whose recorded hash describes a state the
+# encoded bytes no longer contain. The tests below force that window open on one thread rather
+# than waiting for two threads to hit it by luck, because a torn read is silent by construction
+# and the version of this that waited for luck was
+# `test_every_branch_of_a_comparison_forks_from_one_instant` — which passed five times out of
+# five in isolation and failed under suite-level thread contention.
+#
+# Stepping the parent from inside `to_wire` is the whole trick: the hash has already been taken
+# by the time `to_wire` is called, which is exactly the instant the tear needs.
+
+
+def _tears_the_next_captures(monkeypatch, count: int) -> list[int]:
+    """Advance the parent between the hash and the encode, `count` times. Returns the counter."""
+    remaining = [count]
+    original = snapshotting.to_wire
+
+    def hashed_but_not_yet_encoded(state: sim.State) -> Any:
+        if remaining[0]:
+            remaining[0] -= 1
+            sim.step(state)
+        return original(state)
+
+    monkeypatch.setattr(snapshotting, "to_wire", hashed_but_not_yet_encoded)
+    return remaining
+
+
+def test_a_tick_between_the_hash_and_the_encode_is_retried(run: Recorder, monkeypatch) -> None:
+    """The retry has to wrap the restore, because that is where a torn capture surfaces.
+
+    `capture` raises nothing on a tear — it returns a `Snapshot` whose hash and whose bytes
+    disagree, and the disagreement is only detected by `restore`, which re-hashes what it
+    rebuilt. So a retry around `capture` alone catches the dict-changed-size variant and never
+    this one, and `SnapshotInvalid` escapes from `_branch_from` where no `except` covers it.
+
+    That is the intermittent failure this file used to carry.
+    """
+    remaining = _tears_the_next_captures(monkeypatch, 1)
+
+    summaries = compare.run_comparison(run.state, "wi_ap_map", 0, in_person=True)
+
+    assert remaining[0] == 0, "the tear never fired, so nothing was retried"
+    assert len({summary.fork_tick for summary in summaries}) == 1
+
+
+def test_a_parent_that_tears_every_capture_is_refused_with_a_reason(
+    run: Recorder, monkeypatch
+) -> None:
+    """Exhausting the attempts is a refusal naming the reason, not an opaque `SnapshotInvalid`.
+
+    The refusal already existed and was unreachable for this failure mode: the attempts were
+    spent on a call that does not raise, so the loop returned a torn snapshot on its first pass
+    and the sentence below was only ever produced for the other variant.
+    """
+    _tears_the_next_captures(monkeypatch, compare.CAPTURE_ATTEMPTS)
+
+    with pytest.raises(sim.CommandRejected) as refusal:
+        compare.run_comparison(run.state, "wi_ap_map", 0, in_person=True)
+
+    assert str(compare.CAPTURE_ATTEMPTS) in str(refusal.value)
+    assert "single instant" in str(refusal.value)
+
+
+def test_a_retried_capture_projects_from_the_instant_it_finally_photographed(
+    run: Recorder, monkeypatch
+) -> None:
+    """A retried comparison is the comparison of the instant it succeeded at, figure for figure.
+
+    The tear advances the parent, so a retry legitimately forks a tick later than the first
+    attempt would have — what must not happen is a projection assembled from *both* instants.
+    Every branch is compared against the single-branch runner computed from the parent as it
+    stands afterwards, which is an independent route to the same numbers.
+    """
+    remaining = _tears_the_next_captures(monkeypatch, 1)
+
+    summaries = compare.run_comparison(run.state, "wi_ap_map", 0, in_person=True)
+
+    assert remaining[0] == 0
+    assert run.state.tick == summaries[0].fork_tick, "the retry forked from somewhere else"
+    for summary in summaries:
+        alone = compare.run_branch(
+            run.state, "wi_ap_map", 0, summary.option_index, in_person=True
+        )
+        assert summary.to_state() == alone.to_state(), f"option {summary.option_index} differs"
 
 
 # =========================================================================

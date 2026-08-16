@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import threading
 import time
 
@@ -20,6 +21,7 @@ from contracts import canonical
 from contracts.envelope import EventKind
 from contracts.grpc import kernel_pb2
 from kernel import lease as lease_module
+from kernel import loop as loop_module
 from kernel.loop import KernelRuntime, RunLoop
 from kernel.store import LogStore, make_engine
 from simcore import compare as branching
@@ -498,6 +500,9 @@ async def test_diagnose_carries_every_field_an_operator_needs(runtime) -> None:
         "tick_task_state",
         "tick_task_exception",
         "last_wake_at",
+        # The figure readiness now decides on (R14): "did the clock stop" answered directly,
+        # rather than inferred from a multiplier that reads 1000 through a stall.
+        "seconds_since_last_tick",
         "sim_time_lag_ticks",
         "achieved_multiplier_permille",
         "unresolved_checkpoints",
@@ -743,18 +748,26 @@ async def test_a_capture_concurrent_with_a_tick_is_self_consistent_with_no_retry
         assert record.decoded_payload()["tick"] == record.tick, f"attempt {attempt}"
 
 
-async def _clock_under(runtime, run, issue_one, *, paced: bool) -> tuple[int, int, int, int]:
+async def _clock_under(
+    runtime,
+    run,
+    issue_one,
+    *,
+    paced: bool,
+    issuers: int = 1,
+    window: float = LOAD_WINDOW_SECONDS,
+) -> tuple[int, int, int, int]:
     """Run one measurement window and return (observed, achieved, lag, commands).
 
     `issue_one` goes through a worker thread, because that is where Starlette runs the command
     route: the whole point of the measurement is that two threads contend for one run.
+
+    `issuers` puts that many commands in flight at once, which **U5** needs and U4 did not: one
+    comparison at a time barely dents the clock, and the failure the branch limiter exists to
+    prevent only appears when several are holding the GIL together. The count is deliberately
+    the *only* thing that changes between U4's measurement and U5's, so the two are comparable.
     """
     delivered = 0
-
-    def one() -> None:
-        nonlocal delivered
-        issue_one()
-        delivered += 1
 
     tick_before = run.state.tick
     requested_before, achieved_before = run.requested_ticks, run.achieved_ticks
@@ -762,14 +775,22 @@ async def _clock_under(runtime, run, issue_one, *, paced: bool) -> tuple[int, in
 
     started = time.monotonic()
     interval = 1.0 / COMMANDS_PER_SECOND
-    due = started
-    while time.monotonic() - started < LOAD_WINDOW_SECONDS:
-        await anyio.to_thread.run_sync(one)
-        if paced:
-            due += interval
-            remaining = due - time.monotonic()
-            if remaining > 0:
-                await asyncio.sleep(remaining)
+
+    async def issuer() -> None:
+        # Counted here rather than in the worker: `delivered` is then only ever touched from the
+        # event loop, so several issuers cannot lose an increment to each other.
+        nonlocal delivered
+        due = started
+        while time.monotonic() - started < window:
+            await anyio.to_thread.run_sync(issue_one)
+            delivered += 1
+            if paced:
+                due += interval
+                remaining = due - time.monotonic()
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+
+    await asyncio.gather(*(issuer() for _ in range(issuers)))
 
     elapsed = time.monotonic() - started
     requested = run.requested_ticks - requested_before
@@ -993,3 +1014,390 @@ async def test_the_per_run_lock_is_reachable_and_orderable_by_run_id(runtime) ->
         assert all(run.lock.locked() for run in in_run_id_order)
 
     assert not any(run.lock.locked() for run in in_run_id_order)
+
+
+# =========================================================================
+# Branch execution off the clock's worker pool, and a clock that reports
+# progress rather than liveness (R14)
+# =========================================================================
+#
+# U4 closed the *correctness* half: a comparison now runs against a copy taken under the run's
+# lock. What it left open is the *cost* half. Branch execution is about a quarter of a second of
+# pure Python per option, holding the GIL, on a thread the tick loop and the lease heartbeat draw
+# from too — so enough simultaneous comparisons slow every clock in the process, and `healthy()`
+# asked whether the tick task was `done()` rather than whether it was moving, so a starved clock
+# reported ready.
+#
+# The measurements below reuse U4's harness and U4's floors deliberately. A second harness with
+# its own baseline would make "unchanged against the same baseline" unfalsifiable.
+
+
+#: How many comparisons are put in flight at once for the starvation measurement.
+#:
+#: **Sixteen, because that is where the failure is reliable.** Measured on the build before the
+#: branch limiter, three samples each, at rate 3 against the six-option width:
+#:
+#:     1 issuer     947, 957, 960 permille   0 ticks of lag
+#:     4 issuers    967, 974, 978 permille   0 ticks of lag
+#:     8 issuers    894, 904, 926 permille   32-67 ticks of lag
+#:     16 issuers   683, 693, 744 permille   558-689 ticks of lag
+#:     32 issuers   372, 377, 390 permille   2739-2804 ticks of lag
+#:
+#: Eight breaches the floors in two samples out of three, which is a flake rather than a floor.
+#: Sixteen breaches all three figures in every sample and by a wide margin, so the test fails
+#: before the change for the reason it is written for rather than by luck.
+#:
+#: Pathological rather than realistic on purpose. This is a single-operator local product and the
+#: honest ceiling is one person clicking one button; a floor that is only defended at the load
+#: someone expects is not a floor. Sixteen is also short of forty, which is anyio's default limiter
+#: in full — that is the *token* exhaustion story, and it is measured separately below by occupying
+#: the default limiter directly rather than by trying to fill it with real work.
+CONCURRENT_COMPARISONS = 16
+
+#: The window the six-option loads are measured over.
+#:
+#: Longer than U4's two seconds, because the load is slower to deliver: a six-option comparison at
+#: `MAX_BRANCH_DAYS` costs about 1.3s, so a two-second window would time barely one of them and
+#: the figure would be an artefact of where the window's edges fell.
+SIX_OPTION_WINDOW_SECONDS = 5.0
+
+
+def _six_options_at_the_first_checkpoint(monkeypatch) -> None:
+    """Widen `wi_ap_map`'s first checkpoint to six options.
+
+    **No authored checkpoint offers six.** Every one of the nine offers three, so the plan's
+    stated load — "six-option comparisons", and the 1.6s figure derived from it — cannot be
+    produced from the shipped scenario at all. `MAX_BRANCHES_PER_COMPARISON` is six, so six is
+    what one command may cost, and that is the number worth defending a floor at. It is
+    synthesised here by duplicating the authored options rather than by inventing content: what is
+    under measurement is the cost of stepping six branches, and two branches that price the same
+    option still cost two branches.
+
+    Patching `ITEMS_BY_ID` rather than `state.dynamic_items` is not a style choice. A dynamic
+    item's `checkpoints` do not survive `snapshot.to_wire`, which writes eight fields and no
+    checkpoint tuple — so a six-option spec injected there would come back from `restore` with no
+    checkpoints and every branch would fail on an index. The authored table is read by the parent
+    and by every restored copy alike.
+    """
+    from simcore import items as work
+
+    base = work.spec("wi_ap_map")
+    first = base.checkpoints[0]
+    widened = dataclasses.replace(first, options=first.options + first.options)
+    monkeypatch.setitem(
+        work.ITEMS_BY_ID,
+        "wi_ap_map",
+        dataclasses.replace(base, checkpoints=(widened,) + base.checkpoints[1:]),
+    )
+    assert len(work.spec("wi_ap_map").checkpoints[0].options) == 6
+
+
+def _ticking_at_a_decision(runtime, monkeypatch=None):
+    """A run at `LOAD_RATE` with its clock running and `wi_ap_map` stopped at a decision.
+
+    The horizon is U4's: 200 sim-days, so a branch stops at `MAX_BRANCH_DAYS` and costs what a
+    branch costs rather than what a short fixture makes it cost.
+    """
+    if monkeypatch is not None:
+        _six_options_at_the_first_checkpoint(monkeypatch)
+
+    runtime.create_run(RUN, SEED, horizon_tick=simtime.TICKS_PER_SIM_DAY * 200)
+    run = runtime.runs[RUN]
+    runtime.apply_command(
+        RUN,
+        kernel_pb2.ASSIGN_WORK,
+        canonical.encode({"item": "wi_ap_map", "person": "stf_ap", "via_manager": False}),
+    )
+    # Twenty quanta at a time rather than one. It takes about six hundred ticks to reach the
+    # decision and each `_advance` call is one append round-trip per quantum, so single-stepping
+    # spends most of a second of every load test on the *fixture*. Overshooting the block by up to
+    # nineteen ticks changes nothing: a blocked item stays blocked.
+    while run.state.items["wi_ap_map"].status != sim.STATUS_BLOCKED:
+        runtime._advance(run, 20)
+
+    runtime.set_rate(RUN, LOAD_RATE)
+    runtime.ensure_loop(RUN)
+    return run
+
+
+def _assert_the_clock_held(description, observed, achieved, lag, delivered, *, at_least=1):
+    """U4's three figures, asserted against U4's three floors.
+
+    All three, and observed-against-nominal is the load-bearing one. The run's own reported
+    multiplier only records a shortfall once the catch-up clamp binds, so a test resting on it
+    alone passes through a clock running at roughly half speed — which is why it is asserted here
+    beside the other two rather than instead of them.
+    """
+    assert delivered >= at_least, (
+        f"only {delivered} commands were delivered for {description}; the measurement is empty"
+    )
+    assert observed >= OBSERVED_PERMILLE_FLOOR, (
+        f"under {description} the clock achieved {observed} permille of nominal; the floor is "
+        f"{OBSERVED_PERMILLE_FLOOR}, U4's baseline is 944-950 for one comparison at a time, and "
+        "the idle reference is 908-910"
+    )
+    assert achieved >= ACHIEVED_PERMILLE_FLOOR, (
+        f"under {description} the run reports {achieved} permille achieved; U4 measured 1000. "
+        "This figure is the insensitive one — it only moves once the catch-up clamp binds — so "
+        "it is asserted beside observed-against-nominal, never instead of it"
+    )
+    assert lag <= LAG_TICKS_BOUND, (
+        f"under {description} sim-time lag grew by {lag} ticks; the bound is {LAG_TICKS_BOUND} "
+        "and U4 measured 0"
+    )
+
+
+async def test_six_option_comparisons_back_to_back_leave_the_clock_and_its_lag(
+    runtime, monkeypatch
+) -> None:
+    """Covers M64, at the width the plan states and one comparison at a time.
+
+    This is the regression half: U4 measured 944-950 permille with three-option comparisons
+    running back to back, and doubling the branch count must not spend the difference. It is
+    asserted against U4's own floors and U4's own harness, which is what makes "under the same
+    tick count U4 states" mean anything.
+
+    All three figures, never just the multiplier, and the plan's stated verification is the
+    multiplier alone. `achieved_multiplier_permille` computes its wanted ticks with
+    `int(elapsed * 36 * rate)` and throws away the remainder at every wake — at rate 1 the clock
+    runs at roughly 55% of nominal while the field still reports 1000, and it only moves once the
+    catch-up clamp binds. So a test resting on it alone passes through a stall of about three wall
+    seconds. Observed-ticks-against-nominal is what moves. The truncation itself is a pre-existing
+    defect, out of scope here, and recorded in the execution-decisions note rather than fixed.
+    """
+    run = _ticking_at_a_decision(runtime, monkeypatch)
+    await asyncio.sleep(0.4)  # let the loop reach its steady cadence before measuring
+
+    observed, achieved, lag, delivered = await _clock_under(
+        runtime,
+        run,
+        lambda: runtime.apply_command(
+            RUN, kernel_pb2.COMPARE_OPTIONS, _comparison_payload(run)
+        ),
+        paced=False,
+        window=SIX_OPTION_WINDOW_SECONDS,
+    )
+
+    _assert_the_clock_held(
+        "six-option comparisons back to back", observed, achieved, lag, delivered, at_least=2
+    )
+
+
+async def test_concurrent_six_option_comparisons_cannot_starve_the_clock(
+    runtime, monkeypatch
+) -> None:
+    """The measurement the branch limiter exists for, and the one that fails without it.
+
+    Sixteen comparisons in flight is sixteen threads of pure Python against a tick loop that wants
+    the GIL for well under a millisecond in every fifty — so the clock does not lose to *work*, it
+    loses to waiting its turn behind fifteen other GIL holders. Bounding how many branch threads
+    may run at once is what gives it its turn back.
+
+    Measured on this load: 683-744 permille observed with 558-689 ticks of lag before the limiter,
+    967-972 permille with no lag at all after it. The full sizing sweep is recorded beside
+    `loop.BRANCH_SLOTS`, including the count at which the protection stops working.
+
+    **It costs about twenty-four seconds and that is the load, not the harness.** Sixteen
+    six-option comparisons is sixteen times 1.3 seconds of branch stepping, and one interpreter
+    executes it end to end however the window is sized — the window bounds when issuing *starts*,
+    not when the work finishes. Shortening it means measuring a smaller load, which is the one
+    thing this test must not do.
+    """
+    run = _ticking_at_a_decision(runtime, monkeypatch)
+    await asyncio.sleep(0.4)
+
+    observed, achieved, lag, delivered = await _clock_under(
+        runtime,
+        run,
+        lambda: runtime.apply_command(
+            RUN, kernel_pb2.COMPARE_OPTIONS, _comparison_payload(run)
+        ),
+        paced=False,
+        issuers=CONCURRENT_COMPARISONS,
+        window=SIX_OPTION_WINDOW_SECONDS,
+    )
+
+    _assert_the_clock_held(
+        f"{CONCURRENT_COMPARISONS} concurrent six-option comparisons",
+        observed,
+        achieved,
+        lag,
+        delivered,
+        at_least=CONCURRENT_COMPARISONS,
+    )
+
+
+async def test_a_saturated_branch_limiter_queues_a_comparison_and_the_clock_keeps_time(
+    runtime,
+) -> None:
+    """R14's "rather than": a comparison with no slot *waits*, and waiting costs the clock nothing.
+
+    The distinction is the whole point of a separate limiter. A comparison that cannot get a
+    branch slot is blocked on a semaphore, holding no GIL and occupying no thread the clock could
+    have used — so the clock runs at its ordinary rate while the comparison is queued, and the
+    comparison completes the moment a slot frees rather than being refused.
+
+    Every slot is held here, which is a load the product cannot generate; the point is what
+    happens at the boundary, and the boundary is only observable when it is reached.
+    """
+    run = _ticking_at_a_decision(runtime)
+    await asyncio.sleep(0.4)
+
+    finished = threading.Event()
+
+    def issue_one_comparison() -> None:
+        runtime.apply_command(RUN, kernel_pb2.COMPARE_OPTIONS, _comparison_payload(run))
+        finished.set()
+
+    with contextlib.ExitStack() as stack:
+        for _ in range(loop_module.BRANCH_SLOTS):
+            stack.enter_context(loop_module.BRANCH_LIMITER)
+
+        queued = asyncio.create_task(anyio.to_thread.run_sync(issue_one_comparison))
+        tick_before = run.state.tick
+        blocked_for = 0.6
+        await asyncio.sleep(blocked_for)
+
+        assert not finished.is_set(), "the comparison ran with every branch slot held"
+        # And the clock did not pay for the queueing: two thirds of nominal is a generous floor
+        # for a machine under test load, and a stall would show as single digits.
+        advanced = run.state.tick - tick_before
+        nominal = blocked_for * simtime.TICKS_PER_WALL_SECOND_AT_BASE_RATE * LOAD_RATE
+        assert advanced > nominal * 0.66, (
+            f"the clock advanced {advanced} ticks while a comparison was queued behind the "
+            f"branch limiter; nominal is {nominal:.0f}"
+        )
+
+    # The slots are back, so the comparison is queued rather than refused: it completes.
+    await asyncio.wait_for(queued, timeout=30)
+    assert finished.is_set()
+
+
+async def test_the_clock_keeps_its_own_thread_slots_when_the_default_pool_is_full(
+    runtime,
+) -> None:
+    """The tick loop and the heartbeat draw from a limiter commands cannot reach into (R14).
+
+    The other half of the starvation story, and the half a real load cannot demonstrate on this
+    machine: `anyio.to_thread.run_sync` rations threads through a process-wide 40-slot limiter, and
+    every synchronous FastAPI route — the command route included — borrows from it for as long as
+    it runs. Forty comparisons at a second each would leave the tick loop's own hop with no slot
+    to take, and nothing about that raises: the clock simply stops until a route returns.
+
+    Occupying the default limiter directly rather than with real comparisons is deliberate. What
+    is under test is the *disjointness* of the two limiters, and forty concurrent comparisons would
+    prove that with a minute of branch stepping and a measurement dominated by the GIL rather than
+    by the thing being asserted.
+    """
+    run = _ticking_at_a_decision(runtime)
+    await asyncio.sleep(0.4)
+
+    default = anyio.to_thread.current_default_thread_limiter()
+    release = threading.Event()
+    hogs = [
+        asyncio.create_task(anyio.to_thread.run_sync(lambda: release.wait(10)))
+        for _ in range(default.total_tokens)
+    ]
+    try:
+        await asyncio.sleep(0.3)
+        assert default.borrowed_tokens == default.total_tokens, (
+            f"only {default.borrowed_tokens} of {default.total_tokens} default slots were taken; "
+            "the premise of this test is that none is left"
+        )
+
+        tick_before = run.state.tick
+        starved_for = 0.6
+        await asyncio.sleep(starved_for)
+        advanced = run.state.tick - tick_before
+    finally:
+        release.set()
+        await asyncio.gather(*hogs)
+
+    nominal = starved_for * simtime.TICKS_PER_WALL_SECOND_AT_BASE_RATE * LOAD_RATE
+    assert advanced > nominal * 0.66, (
+        f"the clock advanced {advanced} ticks while every default worker slot was held; nominal "
+        f"is {nominal:.0f}. Its own limiter is what should have made this a non-event"
+    )
+
+
+async def test_a_clock_that_is_alive_but_not_progressing_reports_unhealthy(
+    runtime, monkeypatch
+) -> None:
+    """A starved clock is neither done nor crashed, and R29 as written called that ready.
+
+    The stall is manufactured the way a real one happens: the tick task is awaiting `_advance` on
+    a worker thread, and `_advance` cannot get past the run's lock. Nothing raises, the task is
+    alive, and sim-time stands still — which is precisely the state the old predicate reported as
+    healthy, asserted below so the change is visible rather than assumed.
+
+    `CLOCK_STALL_SECONDS` is shortened for the test. The shipped value is sized against the
+    compose readiness probe's five-second interval, and waiting that out here would buy nothing but
+    five seconds.
+    """
+    monkeypatch.setattr(loop_module, "CLOCK_STALL_SECONDS", 0.4)
+
+    run = _ticking_at_a_decision(runtime)
+    await asyncio.sleep(0.4)
+
+    healthy, detail = runtime.healthy()
+    assert healthy, detail
+
+    with run.lock:
+        # Let the loop reach its next `_advance` and block there.
+        await asyncio.sleep(
+            loop_module.CLOCK_STALL_SECONDS + 4 * loop_module.WAKE_INTERVAL_SECONDS
+        )
+
+        assert run.task is not None and not run.task.done(), (
+            "the tick task died, so this is testing the old predicate rather than the new one"
+        )
+
+        healthy, detail = runtime.healthy()
+        assert not healthy, "a clock that has not moved reported ready"
+        assert RUN in detail
+        assert "sim-time has not moved" in detail
+        assert f"tick {run.progress_tick}" in detail, detail
+        # `diagnose` is not called in here: it takes the same lock, and this is a plain
+        # `threading.Lock` rather than an `RLock`, so asking would deadlock the test.
+
+    # And it recovers on its own once the clock moves again, rather than latching.
+    for _ in range(100):
+        await asyncio.sleep(0.05)
+        healthy, detail = runtime.healthy()
+        if healthy:
+            break
+    assert healthy, detail
+
+
+async def test_a_comparison_is_the_same_comparison_after_the_move(runtime, monkeypatch) -> None:
+    """Six branches, the same figures, the same bound — byte for byte against the library.
+
+    The move put branch execution behind a limiter and on the far side of a snapshot round-trip
+    taken under the run's lock. Neither is allowed to change the answer, and "the tests still pass"
+    is a weaker claim than it sounds: almost every assertion in `test_compare.py` calls the library
+    directly and would not notice if the kernel's path diverged from it.
+
+    So the recorded event is compared against `compare.run_comparison` run on the live state, on a
+    **paused** run so that both see one instant. Canonical bytes rather than dict equality: the
+    payload is what goes into an append-only log, and a difference in key order or integer width is
+    a difference in what was recorded.
+    """
+    run = _ticking_at_a_decision(runtime, monkeypatch)
+    runtime.set_rate(RUN, 0)
+    await runtime.stop_run(RUN)
+
+    [record] = runtime.apply_command(
+        RUN, kernel_pb2.COMPARE_OPTIONS, _comparison_payload(run)
+    )
+    through_the_kernel = record.decoded_payload()["branches"]
+    directly = [
+        summary.to_state()
+        for summary in branching.run_comparison(run.state, "wi_ap_map", 0, in_person=True)
+    ]
+
+    assert len(through_the_kernel) == 6, "the six-option width did not reach the kernel"
+    assert canonical.encode(through_the_kernel) == canonical.encode(directly)
+    assert {branch["stop_reason"] for branch in through_the_kernel} == {"bound"}, (
+        "the branches stopped somewhere other than the comparison bound, so 'same bound' is "
+        "asserted against the wrong thing"
+    )
