@@ -206,11 +206,12 @@ describe('the composition', () => {
   })
 
   it('keeps the chrome compact enough to leave the office room', () => {
-    // Not a pixel budget — a type-scale one. Every label and value in the HUD sits at or
-    // below the body size, so the band that describes the office cannot be taller than the
-    // office deserves.
-    const sizes = [...SHELL_CSS.matchAll(/font-size:\s*([\d.]+)rem/g)].map((m) => Number(m[1]))
+    // Not a pixel budget — a type-scale one. Nothing in the chrome is bigger than a metric's
+    // own figure, so the band that describes the office cannot be taller than the office
+    // deserves. In px because the approved direction sets the interface in px and reserves
+    // relative units for the office, which scales by an integer zoom instead.
+    const sizes = [...SHELL_CSS.matchAll(/font-size:\s*(\d+)px/g)].map((m) => Number(m[1]))
     expect(sizes.length).toBeGreaterThan(20)
-    expect(Math.max(...sizes)).toBeLessThanOrEqual(1.2)
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(23)
   })
 })

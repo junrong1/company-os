@@ -26,10 +26,12 @@ import {
   STRIDE_MILLI,
   StrideTracker,
   WALK_CYCLE,
-  characterSheet,
   depthSort,
+  drawActor,
   drawWaitingBeam,
 } from '../src/render/actors'
+import { ATLAS } from '../src/render/cast/atlas-index'
+import { IDENTITIES, candidateFor, resetAtlas } from '../src/render/cast/atlas'
 import {
   type FloorData,
   CORRIDOR as CORRIDOR_TILE,
@@ -570,48 +572,42 @@ const ACTOR = {
   animTicks: 0,
 }
 
-describe('character sheets', () => {
-  it('builds one sheet per person and caches it', () => {
-    const cache = new Map()
-    const make = () => recordingCanvas().canvas
-
-    const first = characterSheet('stf_cs', 1, cache, make)
-    const second = characterSheet('stf_cs', 1, cache, make)
-
-    expect(second).toBe(first)
-    expect(cache.size).toBe(1)
+describe('the cast', () => {
+  it('draws every person from the approved casting board', () => {
+    // Not a rig, and not a composition. The board's 33 candidates *are* the art — four
+    // facings by four frames each, all of it derived from their own pixels.
+    expect(Object.keys(ATLAS)).toHaveLength(33)
+    expect(SPRITE_WIDTH).toBe(48)
+    expect(SPRITE_HEIGHT).toBe(64)
+    expect(FRAMES).toBe(4)
+    expect(DIRS).toEqual(['down', 'up', 'left', 'right'])
   })
 
-  it('sizes a sheet as four facings by four frames', () => {
-    const cache = new Map()
-    const sheet = characterSheet('dir_sales', 1, cache, () => recordingCanvas().canvas)
-
-    expect(sheet.canvas.width).toBe(SPRITE_WIDTH * FRAMES)
-    expect(sheet.canvas.height).toBe(SPRITE_HEIGHT * DIRS.length)
+  it('has art for every identity the office can show, including the player', () => {
+    for (const id of IDENTITIES) {
+      for (const letter of ['a', 'b', 'c']) {
+        expect(ATLAS[`${id}-${letter}`], `${id}-${letter}`).toBeDefined()
+      }
+    }
+    expect(IDENTITIES).toContain('you')
   })
 
-  it('keys the cache on the appearance, not only on the person', () => {
-    // A resync into a different run picks a different letter for the same id. An id-only key
-    // would serve the previous run's face out of the cache and there would be no symptom
-    // beyond a person quietly not changing.
-    const cache = new Map()
-    const make = () => recordingCanvas().canvas
-
-    characterSheet('dir_sales', 1, cache, make)
-    characterSheet('dir_sales', 2, cache, make)
-    characterSheet('dir_sales', 3, cache, make)
-
-    expect(cache.size).toBeGreaterThan(1)
+  it('casts anyone the board never met as somebody who is on it', () => {
+    // R9, and the simplest possible reading of it: a background coworker is not *compatible*
+    // with the leads, they are literally the same casting board.
+    for (const id of ['temp_001', 'contractor', 'visitor_9']) {
+      expect(ATLAS[candidateFor(id, 3)], id).toBeDefined()
+    }
   })
 
-  it('writes a sheet in one call rather than one per pixel', () => {
-    // 192×256 is 49,152 pixels. The prototype's paint-per-pixel was affordable at 1,920 and
-    // is not here, and the only way this regresses is quietly.
+  it('draws nothing rather than waiting when the atlas has not arrived', () => {
+    // An image decode is one round trip against a renderer that owes a frame every sixteen
+    // milliseconds. A blank office for the length of a decode is the one thing this redesign
+    // cannot afford to look like, so the loop asks and never waits.
+    resetAtlas()
     const recording = recordingCanvas()
-    characterSheet('stf_cs', 1, new Map(), () => recording.canvas)
-
-    expect(recording.calls.filter((call) => call === 'putImageData')).toHaveLength(1)
-    expect(recording.calls.filter((call) => call === 'fillRect')).toHaveLength(0)
+    drawActor(recording.canvas.getContext('2d')!, ACTOR, 1, 0)
+    expect(recording.calls.filter((call) => call.startsWith('drawImage'))).toHaveLength(0)
   })
 })
 
@@ -798,10 +794,17 @@ describe('a frame', () => {
     expect(order).toEqual(['desk-above', 'person', 'desk-below'])
   })
 
-  it('caches one character sheet per actor drawn, not one per frame', () => {
+  it('keeps drawing the room while the cast is still loading', () => {
+    // There is no per-person sheet to cache any more — everybody comes out of one atlas
+    // image, which arrives asynchronously. What used to be "one sheet per actor, not one per
+    // frame" is now the stronger claim: the office does not wait for the cast at all. A blank
+    // room for the length of an image decode is the one thing this redesign cannot look like.
+    resetAtlas()
+
     const frames = fakeFrames()
+    const canvas = recordingCanvas()
     const instance = new Renderer({
-      canvas: recordingCanvas().canvas,
+      canvas: canvas.canvas,
       floor: FLOOR_FIXTURE,
       actors: () => [ACTOR, { ...ACTOR, id: 'dir_sales' }],
       makeCanvas: () => recordingCanvas().canvas,
@@ -816,7 +819,9 @@ describe('a frame', () => {
       frames.runOne()
     }
 
-    expect(instance.cachedSheets).toBe(2)
+    expect(instance.frameCount).toBe(5)
+    // The floor and its furniture went down on every one of those frames.
+    expect(canvas.calls.filter((call) => call.startsWith('drawImage')).length).toBeGreaterThan(0)
   })
 
   it('draws the reserved amber only for someone waiting on a decision', () => {

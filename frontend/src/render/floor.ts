@@ -19,6 +19,7 @@
  */
 
 import { PAL, withAlpha } from '../design/tokens'
+import { ADVANCE, type PixelContext, paintText } from '../design/text'
 import { ART, PROPS } from './sprites'
 import {
   DAYLIGHT,
@@ -192,6 +193,54 @@ function paintFloorTile(
   context.fillStyle = palette.seam
   context.fillRect(ox, oy, TILE, 1)
   context.fillRect(ox, oy, 1, TILE)
+}
+
+/** What a room is called, in the words the approved direction uses on the floor. */
+export const ROOM_NAMES: Record<string, string> = {
+  exec: 'EXECUTIVE',
+  executive: 'EXECUTIVE',
+  lounge: 'COMMONS',
+  sales: 'SALES',
+  accounting: 'ACCOUNTING',
+  meeting: 'MEETING ROOM',
+  admin: 'ADMINISTRATION',
+  hr: 'PEOPLE',
+  people: 'PEOPLE',
+  support: 'CUSTOMER TEAM',
+  cs: 'CUSTOMER TEAM',
+}
+
+/**
+ * The room's name, set into its top-left corner.
+ *
+ * The approved direction labels every room on the floor, and it is doing more work than it
+ * looks: a department is carried by a border course and a rug, and both of those say *which*
+ * team without saying *what they do*. A player who has not memorised the palette reads the
+ * word.
+ *
+ * Baked into the static layer rather than drawn per frame, because a room's name is as fixed
+ * as the room. Drawn in the department's own trim so the label and the course agree.
+ */
+function paintRoomLabel(context: CanvasRenderingContext2D, room: FloorData['rooms'][number]): void {
+  const name = ROOM_NAMES[room.id]
+  if (name === undefined) return
+
+  const [x1, y1, x2] = room.box
+  const palette = FLOORS[ROOM_FLOORS[room.id] ?? 'slate']
+  const width = (x2 - x1 + 1) * TILE
+  const text = name.length * ADVANCE
+
+  // Skipped rather than clipped in a room too narrow to hold it — a half-written word is
+  // worse than none.
+  if (text + 8 > width) return
+
+  // Centred, not tucked into the corner the approved screen puts it in. The corner is where
+  // the kernel puts a bookshelf, and the first version of this rendered EXECUTIVE as UTIVE
+  // and CUSTOMER TEAM as OMER TEAM.
+  const left = x1 * TILE + Math.round((width - text) / 2)
+  const top = y1 * TILE + 8
+
+  paintText(context as unknown as PixelContext, name, left, top, 1, palette.trim)
 }
 
 /**
@@ -414,6 +463,7 @@ export function buildStatic(floor: FloorData, make: () => HTMLCanvasElement): HT
   }
 
   for (const room of floor.rooms) paintDoorFrame(context, grid, room.door[0], room.door[1])
+  for (const room of floor.rooms) paintRoomLabel(context, room)
 
   paintDressing(context, floor, grid)
   paintDaylight(context, floor)

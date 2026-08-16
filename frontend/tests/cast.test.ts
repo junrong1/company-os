@@ -4,154 +4,112 @@ import { fileURLToPath } from 'node:url'
 
 import { describe, expect, it } from 'vitest'
 
-// @ts-expect-error — dev-only script, plain JS, not part of the bundle's type graph.
+// @ts-expect-error — dev-only scripts, plain JS, not part of the bundle's type graph.
 import { hexAt, readPng, writePng } from '../scripts/png.mjs'
 // @ts-expect-error — same.
-import { ConversionError, cellsFrom, gridFromPixels } from '../scripts/grid-from-png.mjs'
-// @ts-expect-error — same.
 import { extract } from '../scripts/palette-from-candidate.mjs'
+// @ts-expect-error — same.
+import { CELL_H, CELL_W, FACINGS, FRAMES, sheetFor } from '../scripts/make-cast-atlas.mjs'
 
-import { CAST } from '../src/render/cast/manifests'
 import {
-  appearanceFor,
-  derivedManifest,
-  manifestFor,
-  sheetKey,
-} from '../src/render/cast/appearance'
-import {
-  LIBRARY_SIZES,
-  SHEET_HEIGHT,
-  SHEET_ROWS,
-  SHEET_WIDTH,
-  composeCell,
-  composeSheet,
-  resolve as resolvePalette,
-} from '../src/render/cast/compose'
-import {
-  CAST_PALETTE,
+  ATLAS,
   CELL_HEIGHT,
   CELL_WIDTH,
-  EMPTY,
-  GLYPH_SLOTS,
-  SENTINELS,
-  SENTINEL_GLYPHS,
-  VIEWS,
+  SHEET_FACINGS,
+  SHEET_FRAMES,
+} from '../src/render/cast/atlas-index'
+import {
+  APPEARANCES,
+  IDENTITIES,
   WALK_CYCLE,
-} from '../src/render/cast/slots'
-import { PAL, RESERVED_BEAM } from '../src/design/tokens'
+  appearanceFor,
+  candidateFor,
+  cellRect,
+  skinFor,
+} from '../src/render/cast/atlas'
+import { RESERVED_BEAM } from '../src/design/tokens'
 
 /**
- * The seam between how the cast is authored and how it is committed.
+ * The cast, and the pipeline that gives the casting board its directions.
  *
- * Art is drawn as PNG, because that is what a pixel artist works in and what the 33 approved
- * candidates already are. It is committed as ASCII, because a one-pixel change should show up
- * in review as one changed character. Everything below is about that conversion being exact:
- * a converter that snapped a near-miss to the nearest slot would produce art that is subtly
- * and unfixably wrong, and would do it without saying so.
+ * The board's 33 candidates *are* the shipped art. Nothing here composes a person out of
+ * parts, because an earlier version did and produced people visibly cruder than the art that
+ * already existed — at 22 pixels wide a face is four pixels, and a generator does not reach
+ * what a person drew.
+ *
+ * So what is asserted is that the derivations preserve the art: the silhouette does not move,
+ * the feet stay planted, no colour is invented, and every frame of every direction is made of
+ * pixels the board approved.
  */
 
-/**
- * The approved casting board, which lives outside the client and is read rather than shipped.
- *
- * Resolved from the test file's own location rather than from the working directory, so the
- * suite does not depend on being run from `frontend/`.
- */
 const CANDIDATES = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '../../docs/assets/company-os-visual-redesign/roster-characters',
 )
 
 function candidate(name: string): Buffer {
-  return readFileSync(join(CANDIDATES, name))
+  return readFileSync(join(CANDIDATES, `${name}.png`))
 }
 
-/** Build an RGBA buffer from a grid of glyphs, painting each slot its sentinel. */
-function pixelsFrom(rows: string[]): Buffer {
-  const height = rows.length
-  const width = rows[0].length
-  const pixels = Buffer.alloc(width * height * 4)
+const ROSTER = [
+  'you',
+  'dir_sales',
+  'stf_order',
+  'stf_field',
+  'dir_admin',
+  'stf_ap',
+  'stf_buyer',
+  'dir_cs',
+  'stf_cs',
+  'dir_hr',
+  'stf_rec',
+]
+const ALL = ROSTER.flatMap((id) => ['a', 'b', 'c'].map((letter) => `${id}-${letter}`))
 
-  rows.forEach((row, y) => {
-    ;[...row].forEach((glyph, x) => {
-      const at = (y * width + x) * 4
-      if (glyph === EMPTY) return
-      const hex = SENTINELS[GLYPH_SLOTS[glyph]]
-      const value = Number.parseInt(hex.slice(1), 16)
-      pixels[at] = (value >> 16) & 0xff
-      pixels[at + 1] = (value >> 8) & 0xff
-      pixels[at + 2] = value & 0xff
-      pixels[at + 3] = 255
-    })
-  })
-
-  return pixels
+/** Every opaque colour in a buffer, as `#rrggbb`. */
+function coloursOf(pixels: Uint8ClampedArray | Buffer, count: number): Set<string> {
+  const found = new Set<string>()
+  for (let i = 0; i < count; i += 1) {
+    if (pixels[i * 4 + 3] === 0) continue
+    found.add(hexAt(pixels, i))
+  }
+  return found
 }
 
-describe('the slot contract', () => {
-  it('gives every slot a sentinel no other slot shares', () => {
-    const used = Object.values(SENTINELS)
-    expect(new Set(used).size).toBe(used.length)
-  })
-
-  it('maps every glyph to a slot and every sentinel back to its glyph', () => {
-    for (const [glyph, slot] of Object.entries(GLYPH_SLOTS)) {
-      expect(SENTINELS[slot], `${glyph} → ${slot}`).toMatch(/^#[0-9a-f]{6}$/)
-      expect(SENTINEL_GLYPHS[SENTINELS[slot]]).toBe(glyph)
+/** The opaque bounding box of one cell inside a sheet. */
+function boundsOf(
+  sheet: Uint8ClampedArray,
+  stride: number,
+  ox: number,
+  oy: number,
+): { minX: number; maxX: number; minY: number; maxY: number } {
+  let minX = CELL_W
+  let maxX = -1
+  let minY = CELL_H
+  let maxY = -1
+  for (let y = 0; y < CELL_H; y += 1) {
+    for (let x = 0; x < CELL_W; x += 1) {
+      if (sheet[((oy + y) * stride + ox + x) * 4 + 3] === 0) continue
+      minX = Math.min(minX, x)
+      maxX = Math.max(maxX, x)
+      minY = Math.min(minY, y)
+      maxY = Math.max(maxY, y)
     }
-  })
-
-  it('spends the reserved amber on no slot', () => {
-    // A sentinel is never seen, but a sentinel that *was* the beam would mean a slot whose
-    // authored colour and the product's one reserved signal are indistinguishable in the
-    // source art.
-    expect(Object.values(SENTINELS)).not.toContain(RESERVED_BEAM)
-  })
-
-  it('keeps the sentinels far enough apart to be unmistakable by eye', () => {
-    // They are picked with an eyedropper by a person. Two a few values apart would let a
-    // wrong pick produce art that is subtly and permanently miscast.
-    const values = Object.values(SENTINELS).map((hex) => Number.parseInt(hex.slice(1), 16))
-    for (let i = 0; i < values.length; i += 1) {
-      for (let j = i + 1; j < values.length; j += 1) {
-        const a = values[i]
-        const b = values[j]
-        const distance =
-          Math.abs(((a >> 16) & 0xff) - ((b >> 16) & 0xff)) +
-          Math.abs(((a >> 8) & 0xff) - ((b >> 8) & 0xff)) +
-          Math.abs((a & 0xff) - (b & 0xff))
-        expect(distance).toBeGreaterThanOrEqual(51)
-      }
-    }
-  })
-
-  it('authors three views and mirrors the fourth', () => {
-    expect(VIEWS).toEqual(['down', 'up', 'side'])
-    // `left` is absent on purpose: two profiles somebody has to keep pixel-identical by hand
-    // are two profiles that drift.
-    expect(VIEWS).not.toContain('left')
-  })
-
-  it('walks through four frames without standing still mid-stride', () => {
-    expect(WALK_CYCLE).toHaveLength(4)
-    expect(WALK_CYCLE).not.toContain(0)
-    expect(new Set(WALK_CYCLE).size).toBeGreaterThan(1)
-  })
-})
+  }
+  return { minX, maxX, minY, maxY }
+}
 
 describe('the PNG codec', () => {
-  it('reads an indexed candidate as RGBA', () => {
-    const image = readPng(candidate('dir_sales-a.png'))
+  it('reads an indexed candidate as RGBA at the production canvas size', () => {
+    const image = readPng(candidate('dir_sales-a'))
     expect(image.width).toBe(CELL_WIDTH)
     expect(image.height).toBe(CELL_HEIGHT)
     expect(image.pixels).toHaveLength(CELL_WIDTH * CELL_HEIGHT * 4)
   })
 
   it('round-trips its own output', () => {
-    const image = readPng(candidate('dir_sales-a.png'))
+    const image = readPng(candidate('dir_sales-a'))
     const again = readPng(writePng(image.width, image.height, image.pixels))
-
-    expect(again.width).toBe(image.width)
-    expect(again.height).toBe(image.height)
     expect(Buffer.compare(again.pixels, image.pixels)).toBe(0)
   })
 
@@ -160,323 +118,197 @@ describe('the PNG codec', () => {
   })
 })
 
-describe('converting art to grids', () => {
-  const sample = [
-    '.kkk.',
-    'kshsk',
-    '.tTt.',
-    '.pPp.',
-    '.b.b.',
-  ]
-
-  it('turns sentinels into glyphs, pixel for pixel', () => {
-    const pixels = pixelsFrom(sample)
-    expect(gridFromPixels(5, 5, pixels)).toEqual(sample)
-  })
-
-  it('round-trips a grid through a real PNG', () => {
-    // The property the whole seam rests on: what an artist saves is what gets committed.
-    const pixels = pixelsFrom(sample)
-    const encoded = writePng(5, 5, pixels)
-    const decoded = readPng(encoded)
-    expect(gridFromPixels(decoded.width, decoded.height, decoded.pixels)).toEqual(sample)
-  })
-
-  it('names the pixel when a colour is not a sentinel', () => {
-    const pixels = pixelsFrom(sample)
-    // One channel off by one — the shape a lossy save or a colour-profile conversion takes.
-    pixels[(1 * 5 + 2) * 4] += 1
-
-    expect(() => gridFromPixels(5, 5, pixels, 'sheet')).toThrow(ConversionError)
-    expect(() => gridFromPixels(5, 5, pixels, 'sheet')).toThrow(/pixel 2,1/)
-  })
-
-  it('refuses partial alpha rather than rounding it', () => {
-    // No smoothing, anywhere in the pipeline — R13 starts at the source art.
-    const pixels = pixelsFrom(sample)
-    pixels[(1 * 5 + 1) * 4 + 3] = 128
-
-    expect(() => gridFromPixels(5, 5, pixels, 'sheet')).toThrow(/opaque/)
-  })
-
-  it('refuses a sheet that does not divide into whole cells', () => {
-    const image = { width: 5, height: 5, pixels: pixelsFrom(sample) }
-    expect(() => cellsFrom(image, 2, 1, 'sheet')).toThrow(ConversionError)
-  })
-
-  it('splits a sheet left to right, top to bottom', () => {
-    const rows = ['ss..', 'ss..', '..hh', '..hh']
-    const image = { width: 4, height: 4, pixels: pixelsFrom(rows) }
-    const cells = cellsFrom(image, 2, 2, 'sheet')
-
-    expect(cells).toHaveLength(4)
-    expect(cells[0]).toEqual(['ss', 'ss'])
-    expect(cells[1]).toEqual(['..', '..'])
-    expect(cells[2]).toEqual(['..', '..'])
-    expect(cells[3]).toEqual(['hh', 'hh'])
-  })
-
-  it('emits only glyphs the cast palette knows', () => {
-    for (const row of gridFromPixels(5, 5, pixelsFrom(sample))) {
-      for (const glyph of row) expect(CAST_PALETTE.has(glyph)).toBe(true)
-    }
-  })
-})
-
-describe('extracting a palette from a candidate', () => {
-  const ROSTER = [
-    'you',
-    'dir_sales',
-    'stf_order',
-    'stf_field',
-    'dir_admin',
-    'stf_ap',
-    'stf_buyer',
-    'dir_cs',
-    'stf_cs',
-    'dir_hr',
-    'stf_rec',
-  ]
-  const ALL = ROSTER.flatMap((id) => ['a', 'b', 'c'].map((letter) => `${id}-${letter}`))
-
-  it('extracts six slots from every one of the thirty-three', () => {
-    expect(ALL).toHaveLength(33)
-
+describe('every candidate on the board', () => {
+  it('is exactly the production canvas, with transparent corners', () => {
     for (const name of ALL) {
-      const skin = extract(readPng(candidate(`${name}.png`)), name)
-      for (const slot of ['skin', 'hair', 'top', 'legs', 'shoes', 'accent']) {
-        expect(skin[slot], `${name}.${slot}`).toMatch(/^#[0-9a-f]{6}$/)
+      const image = readPng(candidate(name))
+      expect(image.width, name).toBe(48)
+      expect(image.height, name).toBe(64)
+      for (const [x, y] of [
+        [0, 0],
+        [47, 0],
+        [0, 63],
+        [47, 63],
+      ]) {
+        expect(image.pixels[(y * 48 + x) * 4 + 3], `${name} corner ${x},${y}`).toBe(0)
       }
     }
   })
 
-  it('only ever names a colour the candidate itself contains', () => {
-    // The reason this is a script rather than thirty-three hand-typed palettes: a transcribed
-    // hex digit is a colour nobody notices is wrong.
+  it('has no partial alpha anywhere', () => {
+    // R13's crispness rule starts at the source art. A resize that resampled rather than
+    // scaled would show up here and nowhere else until it was on screen.
+    for (const name of ALL) {
+      const { pixels } = readPng(candidate(name))
+      for (let i = 3; i < pixels.length; i += 4) {
+        expect(pixels[i] === 0 || pixels[i] === 255, `${name} alpha ${pixels[i]}`).toBe(true)
+      }
+    }
+  })
+
+  it('never uses the reserved amber', () => {
+    for (const name of ALL) {
+      const image = readPng(candidate(name))
+      expect([...coloursOf(image.pixels, 48 * 64)], name).not.toContain(RESERVED_BEAM)
+    }
+  })
+})
+
+describe('deriving the directions', () => {
+  const image = readPng(candidate('dir_hr-a'))
+  const front = new Uint8ClampedArray(image.pixels)
+  const skin = extract(image, 'dir_hr-a')
+  const sheet = sheetFor(front, skin)
+  const stride = CELL_W * FRAMES
+
+  const cellAt = (facing: number, frame: number) =>
+    boundsOf(sheet, stride, frame * CELL_W, facing * CELL_H)
+
+  it('builds four facings of four frames', () => {
+    expect(sheet).toHaveLength(stride * CELL_H * FACINGS * 4)
+    expect(FACINGS).toBe(SHEET_FACINGS)
+    expect(FRAMES).toBe(SHEET_FRAMES)
+  })
+
+  it('leaves the front idle exactly as it was drawn', () => {
+    // The pose a viewer sees almost all the time is the approved art, pixel for pixel. Any
+    // transformation of it would be a transformation of somebody's approved face.
+    for (let y = 0; y < CELL_H; y += 1) {
+      for (let x = 0; x < CELL_W; x += 1) {
+        const from = (y * CELL_W + x) * 4
+        const to = (y * stride + x) * 4
+        for (let c = 0; c < 4; c += 1) {
+          expect(sheet[to + c], `${x},${y} channel ${c}`).toBe(front[from + c])
+        }
+      }
+    }
+  })
+
+  it('mirrors the left facing from the right rather than inventing one', () => {
+    for (let y = 0; y < CELL_H; y += 4) {
+      for (let x = 0; x < CELL_W; x += 3) {
+        const right = ((3 * CELL_H + y) * stride + x) * 4
+        const left = ((2 * CELL_H + y) * stride + (CELL_W - 1 - x)) * 4
+        expect(sheet[left + 3], `${x},${y}`).toBe(sheet[right + 3])
+        if (sheet[right + 3] === 0) continue
+        expect(sheet[left], `${x},${y}`).toBe(sheet[right])
+      }
+    }
+  })
+
+  it('turns the face away without moving the silhouette', () => {
+    // The turn reads because a viewer recognises a person by their outline long before they
+    // resolve a face at this size. Moving the outline would make it somebody else.
+    expect(cellAt(1, 0)).toEqual(cellAt(0, 0))
+  })
+
+  it('leaves no skin behind in a head that has turned away', () => {
+    // The head fills with hair. An earlier version kept a patch of skin for a neck and it read
+    // as a hole punched through it, because at this size the jaw and the neck are three rows.
+    const { minY } = cellAt(1, 0)
+    let skinPixels = 0
+    for (let y = minY + 3; y < minY + 12; y += 1) {
+      for (let x = 15; x < 33; x += 1) {
+        const at = (1 * CELL_H + y) * stride + x
+        if (sheet[at * 4 + 3] === 0) continue
+        if (hexAt(sheet, at) === skin.skin.toLowerCase()) skinPixels += 1
+      }
+    }
+    expect(skinPixels).toBe(0)
+  })
+
+  it('plants every frame of every facing on the same row', () => {
+    // The invariant the tile anchor and the depth sort both read. A frame whose feet were a
+    // pixel high would bob the person against the floor as they walked.
+    for (let facing = 0; facing < FACINGS; facing += 1) {
+      for (let frame = 0; frame < FRAMES; frame += 1) {
+        expect(cellAt(facing, frame).maxY, `${facing}/${frame}`).toBe(cellAt(facing, 0).maxY)
+      }
+    }
+  })
+
+  it('makes the stride out of the person who is walking', () => {
+    // The whole claim of this pipeline is that it adds directions and a gait and draws
+    // nothing. The one derived value it is allowed is the darkened crown on the back of a
+    // head, which is the only shade a turn needs that a front pose does not already carry.
+    const approved = coloursOf(front, CELL_W * CELL_H)
+    const drawn = coloursOf(sheet, sheet.length / 4)
+    const invented = [...drawn].filter((hex) => !approved.has(hex))
+    expect(invented.length, `invented ${invented.join(', ')}`).toBeLessThanOrEqual(2)
+  })
+
+  it('actually moves between frames', () => {
+    // A "walk" whose frames are identical is a slide, and it would pass every assertion above.
+    const signature = (frame: number): string => {
+      let out = ''
+      for (let y = 0; y < CELL_H; y += 1) {
+        for (let x = 0; x < CELL_W; x += 1) {
+          out += sheet[(y * stride + frame * CELL_W + x) * 4 + 3] === 0 ? '.' : '#'
+        }
+      }
+      return out
+    }
+    expect(signature(0)).not.toBe(signature(1))
+    expect(signature(1)).not.toBe(signature(3))
+  })
+})
+
+describe('the atlas index', () => {
+  it('covers every candidate on the board, one row each', () => {
+    expect(Object.keys(ATLAS).sort()).toEqual([...ALL].sort())
+    const rows = Object.values(ATLAS).map((entry) => entry.row)
+    expect(new Set(rows).size).toBe(rows.length)
+  })
+
+  it('names only colours the candidate itself contains', () => {
+    // The reason the palette is extracted rather than transcribed: a hand-typed hex digit is a
+    // colour nobody notices is wrong.
     for (const name of ALL.slice(0, 8)) {
-      const image = readPng(candidate(`${name}.png`))
-      const present = new Set<string>()
-      for (let i = 0; i < image.width * image.height; i += 1) {
-        if (image.pixels[i * 4 + 3] > 0) present.add(hexAt(image.pixels, i))
-      }
-
-      for (const [slot, hex] of Object.entries(extract(image, name))) {
-        expect(present.has(hex as string), `${name}.${slot} = ${hex}`).toBe(true)
-      }
-    }
-  })
-
-  it('never casts anyone in the reserved amber', () => {
-    for (const name of ALL) {
-      const skin = extract(readPng(candidate(`${name}.png`)), name)
-      expect(Object.values(skin), name).not.toContain(RESERVED_BEAM)
-    }
-  })
-
-  it('finds skin at the face rather than in a beard or a fringe', () => {
-    // The guard is warmth rather than lightness: the darkest skin tone in this roster and the
-    // lightest hair colour are within a few points of each other, so any lightness threshold
-    // either casts a shadowed jaw as skin or refuses a real deep skin tone.
-    const warmth = (hex: string): number => {
-      const value = Number.parseInt(hex.slice(1), 16)
-      return ((value >> 16) & 0xff) / Math.max(1, value & 0xff)
-    }
-
-    for (const name of ALL) {
-      const { skin } = extract(readPng(candidate(`${name}.png`)), name)
-      expect(warmth(skin), `${name} skin ${skin}`).toBeGreaterThan(1.8)
-    }
-  })
-
-  it('never casts the outline as hair', () => {
-    // Two candidates have hair short enough that the crown is mostly silhouette. Excluding
-    // only the single commonest edge colour left the second outline value to win those, and
-    // they came out with 鸽蓝 hair.
-    for (const name of ALL) {
-      const { hair } = extract(readPng(candidate(`${name}.png`)), name)
-      expect(hair, `${name}`).not.toBe('#253147')
-    }
-  })
-})
-
-// =========================================================================
-// Composition (U11), casting (U12) and appearance (U13)
-// =========================================================================
-
-describe('composing a person', () => {
-  const someone = manifestFor('dir_sales', 1)
-
-  it('builds a sheet of four facings by four frames', () => {
-    const data = composeSheet(someone)
-    expect(SHEET_WIDTH).toBe(CELL_WIDTH * 4)
-    expect(SHEET_HEIGHT).toBe(CELL_HEIGHT * 4)
-    expect(data).toHaveLength(SHEET_WIDTH * SHEET_HEIGHT * 4)
-  })
-
-  it('leaves every pixel fully opaque or fully absent', () => {
-    // No smoothing anywhere in the pipeline. R13's crispness rule is not something the
-    // renderer switches off at the end — it has to be true of the art the whole way through.
-    const data = composeSheet(someone)
-    for (let i = 3; i < data.length; i += 4) {
-      expect(data[i] === 0 || data[i] === 255, `alpha ${data[i]} at ${i}`).toBe(true)
-    }
-  })
-
-  it('paints only colours the person was cast in', () => {
-    // A sentinel surviving into output means a slot nothing resolved, which would ship as a
-    // person with a bright red arm.
-    const palette = new Set(Object.values(resolvePalette(someone.skin)))
-    const data = composeSheet(someone)
-
-    for (let i = 0; i < data.length; i += 4) {
-      if (data[i + 3] === 0) continue
-      const hex = `#${data[i].toString(16).padStart(2, '0')}${data[i + 1]
-        .toString(16)
-        .padStart(2, '0')}${data[i + 2].toString(16).padStart(2, '0')}`
-      expect(palette.has(hex), `${hex} is not in this person's palette`).toBe(true)
-    }
-  })
-
-  it('mirrors the left row from the right rather than authoring it twice', () => {
-    const data = composeSheet(someone)
-    const at = (row: number, x: number, y: number): string =>
-      [0, 1, 2, 3]
-        .map((c) => data[((row * CELL_HEIGHT + y) * SHEET_WIDTH + x) * 4 + c])
-        .join(',')
-
-    const left = SHEET_ROWS.findIndex((row) => row.facing === 'left')
-    const right = SHEET_ROWS.findIndex((row) => row.facing === 'right')
-
-    for (let y = 0; y < CELL_HEIGHT; y += 7) {
-      for (let x = 0; x < CELL_WIDTH; x += 5) {
-        expect(at(left, x, y), `${x},${y}`).toBe(at(right, CELL_WIDTH - 1 - x, y))
-      }
-    }
-  })
-
-  it('layers clothes over the body and hair over the clothes', () => {
-    // The order things sit in front of each other on a real person. Getting it wrong is the
-    // failure that looks nearly right: a shirt over a face reads as a bug, but hair under a
-    // collar just reads as a slightly odd haircut.
-    const bare = { ...someone, outfit: 0, accessory: null }
-    const dressed = { ...bare, outfit: 1 }
-
-    const flatten = (cell: (string | null)[][]): string =>
-      cell.map((row) => row.map((slot) => slot ?? '.').join('')).join('|')
-
-    expect(flatten(composeCell(bare, 'down', 0))).not.toBe(
-      flatten(composeCell(dressed, 'down', 0)),
-    )
-  })
-
-  it('plants every frame’s feet on the same row', () => {
-    // The invariant the tile anchor and the depth sort both read. If one frame's feet were a
-    // pixel high the person would bob against the floor as they walked.
-    for (const view of VIEWS) {
-      for (let frame = 0; frame < 4; frame += 1) {
-        const cell = composeCell(someone, view, frame)
-        const lowest = cell.reduce(
-          (deepest, row, y) => (row.some((slot) => slot !== null) ? y : deepest),
-          -1,
-        )
-        expect(lowest, `${view} frame ${frame}`).toBe(CELL_HEIGHT - 1)
-      }
-    }
-  })
-
-  it('resolves seventeen slots from six colours, deriving rather than inventing', () => {
-    const palette = resolvePalette(someone.skin)
-    expect(palette.skin).toBe(someone.skin.skin)
-    expect(palette.top).toBe(someone.skin.top)
-    // A shade is the same cloth in less light, so it is darker than its base and not equal.
-    expect(palette.topShade).not.toBe(palette.top)
-    expect(palette.outline).toBe(PAL.outline)
-  })
-})
-
-describe('the cast', () => {
-  const ROSTER_IDS = [
-    'you',
-    'dir_sales',
-    'stf_order',
-    'stf_field',
-    'dir_admin',
-    'stf_ap',
-    'stf_buyer',
-    'dir_cs',
-    'stf_cs',
-    'dir_hr',
-    'stf_rec',
-  ]
-
-  it('carries three appearances for each of the eleven identities', () => {
-    expect(Object.keys(CAST).sort()).toEqual([...ROSTER_IDS].sort())
-    for (const [id, appearances] of Object.entries(CAST)) {
-      expect(appearances, id).toHaveLength(3)
-    }
-  })
-
-  it('makes A, B and C of one person differ in at least two features', () => {
-    // The redesign's success criterion: recognisably the same role, materially different
-    // person. One changed accessory is a costume note, not a casting.
-    for (const [id, group] of Object.entries(CAST)) {
-      for (let i = 0; i < group.length; i += 1) {
-        for (let j = i + 1; j < group.length; j += 1) {
-          const a = group[i]
-          const b = group[j]
-          let differences = 0
-          if (a.hair !== b.hair) differences += 1
-          if (a.outfit !== b.outfit) differences += 1
-          if (a.accessory !== b.accessory) differences += 1
-          if (a.skin.skin !== b.skin.skin) differences += 1
-          if (a.skin.top !== b.skin.top) differences += 1
-          expect(differences, `${id} ${i} vs ${j}`).toBeGreaterThanOrEqual(2)
-        }
-      }
-    }
-  })
-
-  it('references only shapes the libraries actually have', () => {
-    for (const [id, group] of Object.entries(CAST)) {
-      for (const manifest of group) {
-        expect(manifest.hair, id).toBeLessThan(LIBRARY_SIZES.hair)
-        expect(manifest.outfit, id).toBeLessThan(LIBRARY_SIZES.outfits)
-        if (manifest.accessory !== null) {
-          expect(manifest.accessory, id).toBeLessThan(LIBRARY_SIZES.accessories)
-        }
+      const image = readPng(candidate(name))
+      const present = coloursOf(image.pixels, 48 * 64)
+      for (const [slot, hex] of Object.entries(ATLAS[name].skin)) {
+        expect(present.has(hex), `${name}.${slot} = ${hex}`).toBe(true)
       }
     }
   })
 
   it('casts nobody in the reserved amber', () => {
-    for (const [id, group] of Object.entries(CAST)) {
-      for (const manifest of group) {
-        expect(Object.values(manifest.skin), id).not.toContain(RESERVED_BEAM)
-      }
+    for (const [name, entry] of Object.entries(ATLAS)) {
+      expect(Object.values(entry.skin), name).not.toContain(RESERVED_BEAM)
     }
   })
 
-  it('gives the player a top no member of staff wears, in every appearance', () => {
-    const staff = ROSTER_IDS.filter((id) => id !== 'you')
-    for (const ceo of CAST.you) {
-      for (const id of staff) {
-        for (const other of CAST[id]) {
-          expect(other.skin.top, id).not.toBe(ceo.skin.top)
-        }
-      }
+  it('finds skin at the face rather than in a beard or a fringe', () => {
+    // The guard is warmth rather than lightness: the darkest skin in this roster and the
+    // lightest hair sit within a few points of each other.
+    const warmth = (hex: string): number => {
+      const value = Number.parseInt(hex.slice(1), 16)
+      return ((value >> 16) & 0xff) / Math.max(1, value & 0xff)
+    }
+    for (const [name, entry] of Object.entries(ATLAS)) {
+      expect(warmth(entry.skin.skin), `${name} skin ${entry.skin.skin}`).toBeGreaterThan(1.8)
+    }
+  })
+
+  it('never casts the outline as hair', () => {
+    for (const [name, entry] of Object.entries(ATLAS)) {
+      expect(entry.skin.hair, name).not.toBe('#253147')
     }
   })
 })
 
-describe('appearance', () => {
-  it('is stable for one run and varies across runs', () => {
+describe('who somebody looks like', () => {
+  it('covers the eleven identities the office can show', () => {
+    expect(IDENTITIES).toHaveLength(11)
+    expect([...IDENTITIES].sort()).toEqual([...ROSTER].sort())
+  })
+
+  it('is stable within a run and varies across runs', () => {
     for (const seed of [0, 1, 7, 4242, 2 ** 31 - 1]) {
       expect(appearanceFor(seed, 'dir_sales')).toBe(appearanceFor(seed, 'dir_sales'))
-      expect(appearanceFor(seed, 'dir_sales')).toBeGreaterThanOrEqual(0)
-      expect(appearanceFor(seed, 'dir_sales')).toBeLessThan(3)
+      expect(appearanceFor(seed, 'dir_sales')).toBeLessThan(APPEARANCES)
     }
-
-    const across = new Set([0, 1, 2, 3, 4, 5, 6, 7].map((seed) => appearanceFor(seed, 'dir_hr')))
+    const across = new Set([0, 1, 2, 3, 4, 5, 6, 7].map((s) => appearanceFor(s, 'dir_hr')))
     expect(across.size).toBeGreaterThan(1)
   })
 
@@ -484,47 +316,43 @@ describe('appearance', () => {
     // Two identities in one run may independently land on different letters. If they moved
     // together the seed would be picking one cast rather than eleven appearances.
     const seeds = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-    const differ = seeds.some(
-      (seed) => appearanceFor(seed, 'dir_sales') !== appearanceFor(seed, 'stf_cs'),
+    expect(seeds.some((s) => appearanceFor(s, 'dir_sales') !== appearanceFor(s, 'stf_cs'))).toBe(
+      true,
     )
-    expect(differ).toBe(true)
   })
 
-  it('keys the sheet cache on the appearance for a lead and on the id for anyone else', () => {
-    expect(sheetKey('dir_sales', 1)).not.toBe(sheetKey('dir_sales', 2))
-    // A procedural coworker has one look, so their key has nothing to vary on.
-    expect(sheetKey('temp_042', 1)).toBe(sheetKey('temp_042', 2))
-  })
-
-  it('dresses anyone the casting board never met, from the same libraries', () => {
-    // R9: procedural coworkers are not *compatible* with the leads, they are the same rig
-    // wearing a manifest that was derived instead of cast.
-    for (const id of ['temp_001', 'temp_002', 'contractor', 'visitor_9']) {
-      const manifest = derivedManifest(id)
-      expect(manifest.hair).toBeLessThan(LIBRARY_SIZES.hair)
-      expect(manifest.outfit).toBeLessThan(LIBRARY_SIZES.outfits)
-      expect(Object.values(manifest.skin)).not.toContain(RESERVED_BEAM)
-
-      const data = composeSheet(manifest)
-      expect(data).toHaveLength(SHEET_WIDTH * SHEET_HEIGHT * 4)
+  it('draws a lead as their own art', () => {
+    for (const id of ROSTER) {
+      for (const seed of [0, 1, 2, 5, 99]) {
+        expect(candidateFor(id, seed).startsWith(`${id}-`), `${id} at ${seed}`).toBe(true)
+      }
     }
   })
 
-  it('derives the same person from the same id, every time', () => {
-    expect(derivedManifest('temp_001')).toEqual(derivedManifest('temp_001'))
+  it('casts anyone the board never met as somebody who is on it', () => {
+    // R9, read as simply as it can be: a background coworker is not *compatible* with the
+    // leads, they are the same casting board.
+    for (const id of ['temp_001', 'temp_002', 'contractor', 'visitor_9']) {
+      expect(ATLAS[candidateFor(id, 3)], id).toBeDefined()
+      expect(skinFor(id, 3).skin, id).toMatch(/^#[0-9a-f]{6}$/)
+    }
   })
 
-  it('makes two adjacent ids differ in more than one feature', () => {
-    // The coprime-stride trick. Without it two ids one character apart differ in exactly one
-    // slot and the background reads as a row of near-clones.
-    const a = derivedManifest('temp_001')
-    const b = derivedManifest('temp_002')
-    let differences = 0
-    if (a.hair !== b.hair) differences += 1
-    if (a.outfit !== b.outfit) differences += 1
-    if (a.skin.skin !== b.skin.skin) differences += 1
-    if (a.skin.top !== b.skin.top) differences += 1
-    expect(differences).toBeGreaterThanOrEqual(2)
+  it('derives the same coworker from the same id every time', () => {
+    expect(candidateFor('temp_001', 3)).toBe(candidateFor('temp_001', 3))
+  })
+
+  it('points at the right cell of the atlas', () => {
+    const entry = ATLAS[candidateFor('dir_sales', 1)]
+    const { sx, sy } = cellRect('dir_sales', 1, 2, 3)
+    expect(sx).toBe(3 * CELL_WIDTH)
+    expect(sy).toBe((entry.row * SHEET_FACINGS + 2) * CELL_HEIGHT)
+  })
+
+  it('walks through a cycle that never stands still', () => {
+    expect(WALK_CYCLE).toHaveLength(4)
+    expect(WALK_CYCLE).not.toContain(0)
+    expect(new Set(WALK_CYCLE).size).toBeGreaterThan(1)
   })
 
   it('never sends an appearance anywhere', () => {
@@ -534,6 +362,6 @@ describe('appearance', () => {
       'utf8',
     )
     expect(gateway).not.toContain('appearance')
-    expect(gateway).not.toContain('manifest')
+    expect(gateway).not.toContain('candidate')
   })
 })

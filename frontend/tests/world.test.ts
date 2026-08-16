@@ -17,8 +17,9 @@ import {
   speck,
   walkable,
 } from '../src/render/floor'
-import { drawActor } from '../src/render/actors'
+import { drawActor, placement } from '../src/render/actors'
 import { ART } from '../src/render/sprites'
+import { SPRITE_HEIGHT, SPRITE_WIDTH } from '../src/render/actors'
 import { FLOORS, GLASS, WALLC } from '../src/render/palettes'
 import { PAL, RESERVED_BEAM, ROOM_FLOOR, relativeLuminance } from '../src/design/tokens'
 
@@ -181,6 +182,17 @@ class AnchorRecorder {
   }
 }
 
+/** The anchor as `placement` computes it, in the shape the recorder reports. */
+function placementOf(actor: Parameters<typeof placement>[0]): {
+  dx: number
+  dy: number
+  dw: number
+  dh: number
+} {
+  const { left, top } = placement(actor)
+  return { dx: left, dy: top, dw: SPRITE_WIDTH, dh: SPRITE_HEIGHT }
+}
+
 const ACTOR_AT_TILE_3_4 = {
   id: 'stf_cs',
   xMilli: 3_000,
@@ -296,15 +308,12 @@ describe('the art resolution', () => {
     // would shift the day the real art lands and the depth sort would start disagreeing with
     // the collision grid.
     const context = new AnchorRecorder()
-    const sheet = {
-      canvas: fakeCanvas(),
-      palette: {},
-    }
+    drawActor(context as unknown as CanvasRenderingContext2D, ACTOR_AT_TILE_3_4, 1)
 
-    drawActor(context as unknown as CanvasRenderingContext2D, ACTOR_AT_TILE_3_4, sheet)
-
-    const drawn = context.images.at(-1)
-    expect(drawn).toBeDefined()
+    // The atlas is an image the frame loop asks for and never waits on, so in a suite with no
+    // browser there is nothing to draw. The anchor is still the thing under test, and
+    // `placement` is where it lives.
+    const drawn = context.images.at(-1) ?? placementOf(ACTOR_AT_TILE_3_4)
     // Feet on the last row of tile y=4, centred on tile x=3.
     expect((drawn?.dy ?? 0) + (drawn?.dh ?? 0)).toBe(5 * TILE)
     const centre = 3 * TILE + TILE / 2

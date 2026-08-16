@@ -193,7 +193,15 @@ export function extract(image, label = 'candidate') {
 
   for (const { slot, top, bottom } of BANDS) {
     const [from, to] = band(top, bottom)
-    const counts = tally(from, to, minX, maxX, ignore)
+    let counts = tally(from, to, minX, maxX, ignore)
+
+    // The top is the coloured thing a person is identified by, so a near-black winner there is
+    // almost always shadow or an open jacket's lining rather than the garment. `you-c` came out
+    // in 鸽蓝 with a teal jacket plainly visible on the casting board.
+    if (slot === 'top') {
+      const chromatic = new Map([...counts].filter(([hex]) => chroma(hex) > 40))
+      if (chromatic.size > 0) counts = chromatic
+    }
     // Falling back to a colour already claimed rather than throwing, because sharing one is a
     // real thing a person can look like: dark shoes under dark trousers give a shoe band with
     // nothing in it that the legs did not already take. Refusing to cast that person would be

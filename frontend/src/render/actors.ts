@@ -1,42 +1,40 @@
 /**
- * Characters: sprite sheets composed at runtime, and the depth sort that puts them in order.
+ * Characters: the approved casting board, drawn on the floor.
  *
- * **A person is a rig wearing a manifest.** One authored body — three views by four frames —
- * plus hair, an outfit and at most one accessory, resolved against six colours that were read
- * out of that person's approved candidate. This is what the prototype's 10×16 cast already
- * did with one hair option and a hashed palette; what changed is fidelity and library size,
- * not architecture, which is why the cache and its `dispose()` contract are untouched.
+ * **A person is their own art.** Every figure in the office is a cell of `cast/atlas.png`,
+ * which holds all 33 candidates the redesign approved, each as four facings by four frames.
+ * There is no composition step and no runtime palette substitution, because there is nothing
+ * to compose — the art already exists and it is better than anything assembled from parts.
  *
- * **The left-facing art is the right-facing art mirrored.** Drawing a separate left profile
- * would mean maintaining two grids that have to stay pixel-identical, and they would drift.
- * Mirroring makes that impossible by construction.
- *
- * **A sheet is one canvas write, not fifty thousand.** 192×256 is 49,152 pixels; `compose`
- * builds them as a flat buffer and this puts them down in one call. The prototype's
- * pixel-at-a-time paint was affordable at 1,920 and is not here.
+ * This replaced a layered rig, and the replacement is the interesting part. The rig was a
+ * shared body wearing hair, outfit and accessory libraries; it scaled to any number of
+ * coworkers and it produced people visibly cruder than the candidates sitting in `docs/`. At
+ * 22 pixels wide a face is four pixels and a jacket is a silhouette, and a generator does not
+ * reach what a person drew. Reaching for the board instead is both simpler and better.
  *
  * **Everything is depth-sorted together, props included.** A desk drawn before a person always
  * sits behind them, which is wrong for the desk they are sitting *at*; a desk drawn after
- * always sits in front, which hides anyone standing beside it. Sorting both by the row their
- * feet are on is what lets a person be behind their own desk and in front of the one below.
+ * always sits in front, which hides anyone standing beside it. Sorting both by the row a
+ * person's feet are on is what lets somebody be behind their own desk and in front of the one
+ * below.
  */
 
 import { RESERVED_BEAM, RESERVED_BEAM_EDGE } from '../design/tokens'
-import { manifestFor, sheetKey } from './cast/appearance'
-import { SHEET_HEIGHT, SHEET_ROWS, SHEET_WIDTH, composeSheet } from './cast/compose'
-import { CELL_FRAMES, CELL_HEIGHT, CELL_WIDTH, WALK_CYCLE } from './cast/slots'
+import {
+  CELL_HEIGHT,
+  CELL_WIDTH,
+  SHEET_FRAMES,
+  WALK_CYCLE,
+  atlasImage,
+  cellRect,
+} from './cast/atlas'
 import { CONTACT_SHADOW, TILE } from './floor'
 
-/** Facing order in a sheet's rows, which is the order `SHEET_ROWS` composes them in. */
-export const DIRS = SHEET_ROWS.map((row) => row.facing) as unknown as readonly [
-  'down',
-  'up',
-  'left',
-  'right',
-]
+/** Facing order, which is the order the atlas builder writes rows in. */
+export const DIRS = ['down', 'up', 'left', 'right'] as const
 export type Facing = (typeof DIRS)[number]
 
-export const FRAMES = CELL_FRAMES
+export const FRAMES = SHEET_FRAMES
 export const SPRITE_WIDTH = CELL_WIDTH
 export const SPRITE_HEIGHT = CELL_HEIGHT
 
@@ -69,59 +67,14 @@ export interface Actor {
   waiting?: boolean
 }
 
-/** One person's sheet: four facings down, four frames across. */
-export interface CharacterSheet {
-  canvas: HTMLCanvasElement
-  palette: Record<string, string | null>
-}
-
-/**
- * Build (and cache) a character sheet.
- *
- * The cache is passed in rather than module-scope, so a renderer's `dispose()` drops it. A
- * module-scope cache is what makes a hot update leak one sheet set per save.
- *
- * Keyed on the person *and their appearance*, not on the person: a resync into a different
- * run picks a different letter for the same id, and an id-only key would serve the previous
- * run's face out of the cache.
- */
-export function characterSheet(
-  id: string,
-  runSeed: number,
-  cache: Map<string, CharacterSheet>,
-  make: () => HTMLCanvasElement,
-): CharacterSheet {
-  const key = sheetKey(id, runSeed)
-  const cached = cache.get(key)
-  if (cached !== undefined) return cached
-
-  const canvas = make()
-  canvas.width = SHEET_WIDTH
-  canvas.height = SHEET_HEIGHT
-
-  const manifest = manifestFor(id, runSeed)
-  const context = canvas.getContext('2d')
-  if (context !== null) {
-    const data = composeSheet(manifest)
-    // One write. `createImageData` rather than `new ImageData` because jsdom has the former
-    // on the context and not the latter as a global.
-    const image = context.createImageData(SHEET_WIDTH, SHEET_HEIGHT)
-    image.data.set(data)
-    context.putImageData(image, 0, 0)
-  }
-
-  const sheet: CharacterSheet = { canvas, palette: {} }
-  cache.set(key, sheet)
-  return sheet
-}
-
 /**
  * How far each actor has walked, so their legs keep their own cadence.
  *
- * Renderer state rather than actor state, because an `Actor` is projected fresh from the
- * store every frame and anything stored on one is thrown away before the next. Dropped by
- * `dispose()` alongside the sheet cache, and pruned when somebody leaves the floor — a Map
- * keyed by id that nothing ever removes from is the same leak in a different shape.
+ * Renderer state rather than actor state, because an `Actor` is projected fresh from the store
+ * every frame and anything stored on one is thrown away before the next. Dropped by
+ * `dispose()`, and pruned when somebody leaves the floor — a Map keyed by id that nothing ever
+ * removes from is the same leak the renderer's lifecycle exists to prevent, in a different
+ * shape.
  */
 export class StrideTracker {
   private readonly walked = new Map<string, number>()
@@ -202,25 +155,36 @@ export function placement(actor: Actor): { left: number; top: number; feet: numb
   }
 }
 
-/** Draw one actor at its interpolated position. */
+/**
+ * Draw one actor at its interpolated position.
+ *
+ * Silently draws nothing when the atlas has not arrived. The frame loop asks and never waits:
+ * an image decode is one round trip against a renderer that owes a frame every sixteen
+ * milliseconds, and a blank office for the length of a decode is the one thing this redesign
+ * cannot afford to look like.
+ */
 export function drawActor(
   context: CanvasRenderingContext2D,
   actor: Actor,
-  sheet: CharacterSheet,
+  runSeed: number,
   frame = 0,
 ): void {
-  const { left, top, feet } = placement(actor)
-  const row = Math.max(0, DIRS.indexOf(actor.facing))
+  const atlas = atlasImage()
+  if (atlas === null) return
 
-  // A contact shadow, so a person does not float the way unshadowed furniture does. Shares
-  // the value furniture uses — two shadows in one room lit differently is worse than none.
+  const { left, top, feet } = placement(actor)
+  const facing = Math.max(0, DIRS.indexOf(actor.facing))
+  const { sx, sy } = cellRect(actor.id, runSeed, facing, frame)
+
+  // A contact shadow, so a person does not float the way unshadowed furniture does. Shares the
+  // value furniture uses — two shadows in one room lit differently is worse than none.
   context.fillStyle = CONTACT_SHADOW
-  context.fillRect(left + 14, feet - 4, SPRITE_WIDTH - 28, 4)
+  context.fillRect(left + 16, feet - 4, SPRITE_WIDTH - 32, 4)
 
   context.drawImage(
-    sheet.canvas,
-    frame * SPRITE_WIDTH,
-    row * SPRITE_HEIGHT,
+    atlas,
+    sx,
+    sy,
     SPRITE_WIDTH,
     SPRITE_HEIGHT,
     left,
@@ -237,8 +201,8 @@ export function drawActor(
  * spends it on nothing else — so this is the only place that draws it.
  *
  * It used to be `#f0a92b` while the chrome's was `#f2c46b`: two ambers for one meaning, in a
- * product whose single strongest claim is that there is exactly one signal that pulls the
- * eye. They are one value now, and it is the token module's.
+ * product whose single strongest claim is that there is exactly one signal that pulls the eye.
+ * They are one value now, and it is the token module's.
  */
 export const BEAM_COLOUR = RESERVED_BEAM
 
@@ -250,10 +214,10 @@ export function drawWaitingBeam(context: CanvasRenderingContext2D, actor: Actor)
   // mark on a pale room; the outline is what makes the one signal that must not be missed
   // legible, and it is the same dove-blue separation the sprites take their edges from.
   context.fillStyle = RESERVED_BEAM_EDGE
-  context.fillRect(centre - 3, top - 13, 6, 11)
-  context.fillRect(centre - 3, top - 1, 6, 3)
+  context.fillRect(centre - 4, top - 14, 8, 12)
+  context.fillRect(centre - 4, top - 1, 8, 3)
 
   context.fillStyle = BEAM_COLOUR
-  context.fillRect(centre - 2, top - 12, 4, 9)
-  context.fillRect(centre - 2, top, 4, 1)
+  context.fillRect(centre - 3, top - 13, 6, 10)
+  context.fillRect(centre - 3, top, 6, 1)
 }

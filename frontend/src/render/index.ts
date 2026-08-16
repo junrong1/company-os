@@ -22,17 +22,16 @@
 
 import {
   type Actor,
-  type CharacterSheet,
   type Drawable,
   SPRITE_HEIGHT,
   SPRITE_WIDTH,
   StrideTracker,
-  characterSheet,
   depthSort,
   drawActor,
   drawWaitingBeam,
   placement,
 } from './actors'
+import { loadAtlas } from './cast/atlas'
 import { Camera } from './camera'
 import { CEO_ID } from './palettes'
 import { RenderClock } from './clock'
@@ -97,7 +96,7 @@ export class Renderer {
   private handle: number | null = null
   private lastFrameAt = 0
   private listeners: Array<() => void> = []
-  private sheets: Map<string, CharacterSheet> | null = null
+  private sheets: Map<string, true> | null = null
   private readonly stride = new StrideTracker()
   private readonly camera = new Camera()
   private tracking = false
@@ -238,7 +237,10 @@ export class Renderer {
 
     // Built once per renderer instance, and dropped by `dispose`. The prototype builds these at
     // module scope, which is why a hot update leaks one set per save.
-    this.sheets = new Map<string, CharacterSheet>()
+    this.sheets = new Map<string, true>()
+    // Requested once and never waited on. The frame loop draws the room from the first frame
+    // and starts drawing people the moment the image resolves.
+    void loadAtlas().catch(() => undefined)
     this.propAtlas = buildPropAtlas(this.makeCanvas)
     if (this.floor !== undefined) {
       this.staticLayer = buildStatic(this.floor, this.makeCanvas)
@@ -337,14 +339,13 @@ export class Renderer {
       for (const actor of present) {
         this.stride.advance(actor)
         const frame = this.stride.frame(actor)
-        const sheet = characterSheet(actor.id, this.runSeed, cache, this.makeCanvas)
         drawables.push({
           // The row their feet are on, not the top of their cell. A 64-pixel figure on a
           // 32-pixel tile overhangs the tile above it, and sorting by the top would put a
           // person behind furniture they are standing well in front of.
           depth: placement(actor).feet,
           draw: (target) => {
-            drawActor(target, actor, sheet, frame)
+            drawActor(target, actor, this.runSeed, frame)
             if (actor.waiting === true) drawWaitingBeam(target, actor)
           },
         })

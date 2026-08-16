@@ -7,9 +7,8 @@ import {
   RESERVED_BEAM_EDGE,
   relativeLuminance,
 } from '../src/design/tokens'
-import { CELL_HEIGHT, CELL_WIDTH, VIEWS } from '../src/render/cast/slots'
-import { composeCell, composeSheet } from '../src/render/cast/compose'
-import { derivedManifest, manifestFor } from '../src/render/cast/appearance'
+import { ATLAS, CELL_HEIGHT, CELL_WIDTH } from '../src/render/cast/atlas-index'
+import { IDENTITIES, candidateFor } from '../src/render/cast/atlas'
 import { TILE, buildStatic, type FloorData } from '../src/render/floor'
 import { drawActor, drawWaitingBeam, placement } from '../src/render/actors'
 import { ART } from '../src/render/sprites'
@@ -160,10 +159,7 @@ describe('the one signal', () => {
 
     // Drawing a person is the whole of what happens when nobody is waiting.
     const quiet = new Frame()
-    drawActor(quiet as unknown as CanvasRenderingContext2D, actor, {
-      canvas: {} as HTMLCanvasElement,
-      palette: {},
-    })
+    drawActor(quiet as unknown as CanvasRenderingContext2D, actor, 1)
     expect(quiet.painted.map(({ fill }) => fill)).not.toContain(RESERVED_BEAM)
   })
 
@@ -191,83 +187,25 @@ describe('the one signal', () => {
 })
 
 describe('the cast holds together', () => {
-  it('draws every person fully opaque or not at all, at every zoom', () => {
-    // Crispness is not something the renderer switches off at the end — partial alpha at any
-    // point in the pipeline is smoothing, and integer zoom cannot undo it.
-    for (const id of ['you', 'dir_sales', 'stf_cs', 'temp_001']) {
-      const data = composeSheet(manifestFor(id, 3))
-      for (let i = 3; i < data.length; i += 4) {
-        expect(data[i] === 0 || data[i] === 255, `${id} alpha ${data[i]}`).toBe(true)
-      }
+  it('draws everyone from the approved board, leads and coworkers alike', () => {
+    // AE3, read as simply as it can be. Leads carry more identity detail than a background
+    // coworker *because the board drew them that way*, and the two share proportions, outline
+    // and weight because they are the same 33 pieces of art.
+    for (const id of [...IDENTITIES, 'temp_001', 'temp_002', 'visitor_9']) {
+      expect(ATLAS[candidateFor(id, 3)], id).toBeDefined()
     }
   })
 
-  it('keeps every identity inside one envelope, authored or derived', () => {
-    // AE3: leads carry more detail, but every person shares proportions, outline and weight.
-    // Asserted over both kinds because "the same game" is the claim, not "a similar game".
-    const envelope = (manifest: ReturnType<typeof manifestFor>): [number, number] => {
-      const cell = composeCell(manifest, 'down', 0)
-      let minX = CELL_WIDTH
-      let maxX = -1
-      let lowest = -1
-      cell.forEach((row, y) =>
-        row.forEach((slot, x) => {
-          if (slot === null) return
-          minX = Math.min(minX, x)
-          maxX = Math.max(maxX, x)
-          lowest = Math.max(lowest, y)
-        }),
-      )
-      return [maxX - minX + 1, lowest]
-    }
-
-    for (const id of ['you', 'dir_hr', 'stf_buyer', 'temp_001', 'temp_002', 'visitor_9']) {
-      const manifest = id.startsWith('temp') || id.startsWith('visitor')
-        ? derivedManifest(id)
-        : manifestFor(id, 3)
-      const [width, feet] = envelope(manifest)
-
-      expect(width, `${id} width`).toBeGreaterThanOrEqual(18)
-      expect(width, `${id} width`).toBeLessThanOrEqual(30)
-      expect(feet, `${id} feet`).toBe(CELL_HEIGHT - 1)
-    }
+  it('gives every candidate one row of four facings by four frames', () => {
+    expect(Object.keys(ATLAS)).toHaveLength(33)
+    const rows = Object.values(ATLAS).map((entry) => entry.row)
+    expect(Math.max(...rows)).toBe(32)
+    expect(new Set(rows).size).toBe(33)
   })
 
-  it('gives no two of the eleven the same silhouette', () => {
-    // R8: identifiable without a name label. Silhouette alone, because that is all there is
-    // to read from across the office.
-    const shapes = new Map<string, string>()
-    for (const id of [
-      'you',
-      'dir_sales',
-      'stf_order',
-      'stf_field',
-      'dir_admin',
-      'stf_ap',
-      'stf_buyer',
-      'dir_cs',
-      'stf_cs',
-      'dir_hr',
-      'stf_rec',
-    ]) {
-      const cell = composeCell(manifestFor(id, 3), 'down', 0)
-      const shape = cell.map((row) => row.map((slot) => (slot === null ? '.' : '#')).join('')).join('')
-      const clash = shapes.get(shape)
-      expect(clash, `${id} has the same silhouette as ${clash}`).toBeUndefined()
-      shapes.set(shape, id)
-    }
-  })
-
-  it('stands everyone on the tile their position names', () => {
-    for (const view of VIEWS) {
-      for (let frame = 0; frame < 4; frame += 1) {
-        const cell = composeCell(manifestFor('dir_cs', 3), view, frame)
-        const lowest = cell.reduce(
-          (deepest, row, y) => (row.some((slot) => slot !== null) ? y : deepest),
-          -1,
-        )
-        expect(lowest, `${view} ${frame}`).toBe(CELL_HEIGHT - 1)
-      }
+  it('never casts anyone in the reserved amber', () => {
+    for (const [name, entry] of Object.entries(ATLAS)) {
+      expect(Object.values(entry.skin), name).not.toContain(RESERVED_BEAM)
     }
   })
 })

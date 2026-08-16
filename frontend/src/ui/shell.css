@@ -1,19 +1,28 @@
 /* The interface around the office.
  *
- * The office is a lit workplace and the interface around it is a quiet, disciplined surface
- * that gets out of its way. A warm world inside restrained chrome reads as a company you
- * work in — which is the framing the redesign chose, over the night-shift control room that
- * read as consequence but made the product look like a dungeon.
+ * This follows the approved visual direction — the prototype at
+ * `.context/compound-engineering/ce-prototype/2026-08-16-daylight-pixel-office/01-whole-product-visual-direction/screens/001-daylight-studio.html`
+ * — a warm world inside a disciplined interface: a topbar, the company pulse, the office
+ * beside an attention rail.
  *
- * Every value here mirrors a slot in src/design/tokens.ts, and `tests/chrome.test.ts` reads
- * both files and asserts they agree. Two copies of a palette is two chances to drift, and
- * the drift would be invisible in review: a panel one value off looks fine alone and wrong
- * beside the office.
+ * Three things in it are decisions rather than decoration, and all three are easy to lose:
  *
- * One slot is deliberately absent. `--shilv` does not appear in this file at all — 石绿 is
- * the CEO's signal inside the office and nothing else, and it measures 2.1:1 against ivory,
- * so a control wearing it would be a control nobody can read. The chrome's action colour is
- * `--tianlan`. */
+ * **The face is a sans, and only figures are monospace.** The approved screen reads as a
+ * product rather than as a terminal because prose is set in a humanist sans and the numbers —
+ * the thing you compare across a row — are the only monospace on it. An earlier pass set
+ * everything in mono and the result read as a console with pictures in it.
+ *
+ * **Edges are drawn, not implied.** A 2px 鸽蓝 rule under the topbar and around the office,
+ * and hard offset shadows rather than soft ones. It is the same drawing language as the pixel
+ * art: a shape has an outline, and the outline is what holds it apart from the daylight.
+ *
+ * **The action is filled.** 天蓝 with a 星蓝 offset behind it, not an outline button. The
+ * office is full of small quiet things and the one thing you are meant to press has to win.
+ *
+ * Every colour is a slot in src/design/tokens.ts, and `tests/chrome.test.ts` reads both files
+ * and asserts they agree. `--shilv` is deliberately absent: 石绿 is the CEO's signal inside
+ * the office and measures 2.1:1 against ivory, so a control wearing it would be a control
+ * nobody can read. The chrome's action colour is `--tianlan`. */
 
 :root {
   /* Ground. */
@@ -23,12 +32,15 @@
   --yuebai: #eef7f2;
   --qinghui: #dfeaef;
   --rule: #c3d5de;
+  --dongfangjibai: #e6f2ff;
+  --xinglan: #93b5cf;
 
   /* Structure and text. */
   --jingyuhui: #475164;
   --yueyingbai: #2d3d52;
   --xinghui: #4a6b85;
   --text: #1c2938;
+  --outline: #253147;
   --text-muted: #475164;
   --text-faint: #5c677a;
 
@@ -43,7 +55,16 @@
   --beam: #f2c46b;
   --beam-edge: #1c2938;
   --tacit: #6b5bb5;
+  --dantaohong: #f6cec1;
+  --chutaofenhong: #f6dcce;
+
+  --ui: "Avenir Next", Avenir, "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --lift: 0 18px 45px rgb(71 81 100 / 14%);
+  --hard: 5px 5px 0 var(--qinghui);
 }
+
+/* ---- the frame -------------------------------------------------------- */
 
 .shell {
   max-width: none;
@@ -51,177 +72,261 @@
   padding: 0;
   min-height: 100vh;
   display: grid;
-  grid-template-rows: auto auto auto 1fr auto auto;
+  grid-template-rows: auto auto auto minmax(430px, 1fr) auto;
   grid-template-areas:
     'topbar'
     'banner'
     'hud'
     'stage'
-    'strip'
     'panels';
-  /* Flat, not a gradient. A gradient on ink reads as depth; the same gradient on ivory reads
-     as a smudge, and the office is where the light is supposed to come from. */
-  background: var(--ganglan);
+  font-family: var(--ui);
   color: var(--text);
+  /* The sky sits behind the top of the page and an ivory wedge crosses it, which is what
+     keeps a pale ground from reading as an empty document. */
+  background:
+    linear-gradient(115deg, rgb(255 254 248 / 88%) 0 29%, transparent 29% 100%),
+    linear-gradient(180deg, var(--dongfangjibai) 0 24%, var(--yanhanlan) 24% 100%);
 }
 
 .topbar { grid-area: topbar; }
 .banner { grid-area: banner; }
 .hud { grid-area: hud; }
 .stage { grid-area: stage; }
-.strip { grid-area: strip; }
 .panels { grid-area: panels; }
-
-/*
- * Wide enough for the office to have a room of its own.
- *
- * Stacked, the shell puts a band of metrics above the office and a band of panels below it,
- * and the office becomes a letterbox between two dashboards — which inverts R1 before a
- * single value is read. Above this width the panels move to the side and the stage claims the
- * height, so the room and the people in it are the largest thing on screen.
- *
- * The breakpoint is where the office at zoom 1 plus a usable rail fits: 992 pixels of floor,
- * a 22rem rail, and the shell's own padding.
- */
-@media (min-width: 1400px) {
-  .shell {
-    grid-template-columns: 1fr 22rem;
-    grid-template-rows: auto auto auto 1fr auto;
-    grid-template-areas:
-      'topbar topbar'
-      'banner banner'
-      'hud    panels'
-      'stage  panels'
-      'strip  panels';
-    height: 100vh;
-    overflow: hidden;
-  }
-
-  .stage {
-    min-height: 0;
-  }
-
-  .panels {
-    grid-template-columns: 1fr;
-    align-content: start;
-    border-left: 1px solid var(--rule);
-    overflow-y: auto;
-    /*
-     * The same `min-height: 0` the stage needs, for the same reason and a worse symptom.
-     *
-     * This column spans three rows, and a grid item's default `min-height: auto` floors at its
-     * own content — so a long org chart and a long work list forced all three rows to the
-     * height of the panels, the stage row ballooned with them, and the office was drawn
-     * hundreds of pixels down the page with its bottom half off the screen. The panels have to
-     * be allowed to scroll before the stage can be allowed to fit.
-     */
-    min-height: 0;
-    height: 100%;
-  }
-}
 
 /* ---- top bar ---------------------------------------------------------- */
 
 .topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(180px, 1fr);
   align-items: center;
-  gap: 1.25rem;
-  padding: 0.5rem 1.25rem;
-  border-bottom: 1px solid var(--rule);
+  gap: 22px;
+  min-height: 62px;
+  padding: 0 26px;
+  background: rgb(255 254 248 / 92%);
+  border-bottom: 2px solid var(--text);
 }
 
 .topbar h1 {
-  margin: 0;
-  font-size: 0.8rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
-
-.stage-toggle,
-.rates {
   display: flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 12px;
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0.04em;
 }
 
-.rates {
-  margin-left: auto;
+/* The mark, with a hard offset rather than a blur — the same drawing language as the sprites. */
+.topbar h1::before {
+  content: 'CO';
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  color: var(--ganglan);
+  background: var(--tianlan);
+  box-shadow: 4px 4px 0 var(--xinglan);
+  font: 800 14px/1 var(--mono);
 }
 
-.stage-toggle button,
-.rates button {
-  background: transparent;
+.stage-toggle {
+  justify-self: center;
+  display: flex;
+  padding: 4px;
   border: 1px solid var(--rule);
-  border-radius: 2px;
+  background: var(--yuebai);
+}
+
+.stage-toggle button {
+  min-width: 82px;
+  border: 0;
+  padding: 7px 12px;
   color: var(--text-muted);
+  background: transparent;
   font: inherit;
-  font-size: 0.72rem;
-  padding: 0.15rem 0.55rem;
+  font-size: 13px;
   cursor: pointer;
 }
 
-.stage-toggle button[data-active='true'],
+.stage-toggle button[data-active='true'] {
+  color: var(--ganglan);
+  background: var(--tianlan);
+}
+
+.rates {
+  justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font: 650 12px/1.2 var(--mono);
+}
+
+.rates button {
+  border: 1px solid var(--rule);
+  padding: 5px 10px;
+  color: var(--text-muted);
+  background: var(--ganglan);
+  font: inherit;
+  cursor: pointer;
+}
+
 .rates button[data-active='true'] {
-  border-color: var(--tianlan);
-  color: var(--tianlan);
+  color: var(--ganglan);
+  background: var(--text);
+  border-color: var(--text);
 }
 
 .topbar .hint {
   color: var(--text-faint);
-  font-size: 0.68rem;
-  letter-spacing: 0.08em;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+/*
+ * The focus ring is 鸽蓝, not the amber the approved screen used for it.
+ *
+ * The prototype rings focus in 决策琥珀 and it looks well, but the Product Contract reserves
+ * that value for one meaning — a person is waiting on your decision — and a ring that borrows
+ * it teaches a keyboard user that amber sometimes means "you are here". The contract wins on
+ * semantics; ink at 15:1 loses nothing in visibility.
+ */
+.stage-toggle button:focus-visible,
+.rates button:focus-visible,
+.item__actions button:focus-visible,
+.decision__actions button:focus-visible,
+.conversation__decision button:focus-visible,
+.compare__ask:focus-visible,
+.person:focus-visible {
+  outline: 3px solid var(--text);
+  outline-offset: 2px;
 }
 
 .banner {
   margin: 0;
-  padding: 0.4rem 1.25rem;
-  background: var(--yanhanlan);
+  padding: 8px 26px;
+  background: var(--chutaofenhong);
   border-bottom: 1px solid var(--rule);
   color: var(--zhuhong);
-  font-size: 0.78rem;
+  font-size: 13px;
 }
 
-/* ---- HUD -------------------------------------------------------------- */
+/* ---- the company pulse ------------------------------------------------ */
 
-/* One quiet row. The office is the surface this product is about, and a HUD that claims a
-   band as tall as the room it describes inverts that before a single value is read. */
+/*
+ * One band, always. The approved direction reads the pulse as a single row you scan across,
+ * and an auto-fit grid wrapped it onto a second line as soon as there were more than six
+ * metrics — which turns "scan the company in one movement" into two.
+ *
+ * So the tiles flow in a column track and the band scrolls if it has to. A metric pushed off
+ * the right is a metric you can reach; a metric wrapped onto a second row is a second row.
+ */
 .hud {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: stretch;
-  gap: 0.4rem;
-  padding: 0.5rem 1.25rem;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(148px, 1fr);
+  margin: 0;
+  padding: 0 26px;
+  background: rgb(255 254 248 / 96%);
   border-bottom: 1px solid var(--rule);
+  overflow-x: auto;
 }
 
 .tile {
-  flex: 1 1 8rem;
-  min-width: 8rem;
-  padding: 0.4rem 0.6rem;
-  background: var(--gangqing);
-  border: 1px solid var(--rule);
-  border-radius: 2px;
+  min-height: 82px;
+  padding: 14px 18px;
+  border-right: 1px solid var(--rule);
 }
 
-.tile--fixed {
-  border-left: 2px solid var(--jingyuhui);
-}
-
-.tile--wide {
-  flex: 2 1 16rem;
-}
+.tile:last-child { border-right: 0; }
+.tile--fixed { box-shadow: inset 3px 0 0 var(--jingyuhui); }
+.tile--wide { grid-column: span 2; }
+.composer { grid-column: span 1; }
 
 .tile__label {
   display: flex;
   align-items: baseline;
-  gap: 0.3rem;
-  margin: 0 0 0.15rem;
-  font-size: 0.62rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--text-faint);
+  gap: 0.35rem;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.2;
 }
+
+.tile__row {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.tile__value {
+  font: 750 23px/1 var(--mono);
+  letter-spacing: -0.05em;
+}
+
+.tile__unit,
+.tile__foot {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.tile__foot { margin: 6px 0 0; }
+.tile__delta { margin-left: auto; font: 650 11px/1 var(--mono); }
+
+.spark { display: block; width: 100%; height: 18px; margin: 8px 0 4px; }
+
+.bar {
+  height: 5px;
+  margin-top: 10px;
+  background: var(--qinghui);
+  overflow: hidden;
+}
+
+.bar > i { display: block; height: 100%; background: var(--xinglan); }
+
+.heat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 11px;
+}
+
+.heat__name { flex: 0 0 5rem; color: var(--text-muted); }
+
+.heat__track {
+  flex: 1;
+  height: 5px;
+  background: var(--qinghui);
+  overflow: hidden;
+}
+
+.heat__track > i {
+  display: block;
+  height: 100%;
+  transition: width 800ms ease-in-out, background 800ms ease-in-out;
+}
+
+.heat__value {
+  flex: 0 0 2.5rem;
+  text-align: right;
+  color: var(--text-faint);
+  font-family: var(--mono);
+}
+
+.heat[data-over='true'] .heat__value { color: var(--zhuhong); }
+
+.composer {
+  align-self: center;
+  padding: 14px 18px;
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.composer summary { cursor: pointer; letter-spacing: 0.08em; text-transform: uppercase; }
+.composer label { display: block; padding: 0.1rem 0; color: var(--text-muted); }
+.composer label[data-fixed='true'] { color: var(--text-faint); }
+.composer__refusal { max-width: 18rem; color: var(--zhuhong); }
 
 /* ---------------------------------------------------------------------------
    The authored-tuning marking (R27, R36)
@@ -247,165 +352,21 @@
   user-select: none;
 }
 
-.mark__glyph {
-  font-weight: 400;
-}
+.mark__glyph { font-weight: 400; }
+.mark__label { font-size: 0.9em; }
 
-.mark__label {
-  font-size: 0.9em;
-}
+/* ---- the office ------------------------------------------------------- */
 
-.tile__row {
-  display: flex;
-  align-items: baseline;
-  gap: 0.3rem;
-}
-
-.tile__value {
-  font-size: 1.15rem;
-  line-height: 1.1;
-}
-
-.tile__unit,
-.tile__foot {
-  font-size: 0.68rem;
-  color: var(--text-faint);
-}
-
-.tile__foot {
-  margin: 0.25rem 0 0;
-}
-
-.tile__delta {
-  margin-left: auto;
-  font-size: 0.68rem;
-}
-
-.spark {
-  display: block;
-  width: 100%;
-  height: 1.2rem;
-  margin: 0.25rem 0 0.15rem;
-}
-
-.bar {
-  height: 3px;
-  background: var(--qinghui);
-  border-radius: 1px;
-  overflow: hidden;
-}
-
-.bar > i {
-  display: block;
-  height: 100%;
-  background: var(--jingyuhui);
-}
-
-/* Load bleed: capacity slides across rather than snapping. A soft ceiling should feel soft. */
-.heat {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  font-size: 0.68rem;
-  margin-top: 0.2rem;
-}
-
-.heat__name {
-  flex: 0 0 5rem;
-  color: var(--text-muted);
-}
-
-.heat__track {
-  flex: 1;
-  height: 6px;
-  background: var(--qinghui);
-  border-radius: 1px;
-  overflow: hidden;
-}
-
-.heat__track > i {
-  display: block;
-  height: 100%;
-  transition: width 800ms ease-in-out, background 800ms ease-in-out;
-}
-
-.heat__value {
-  flex: 0 0 2.5rem;
-  text-align: right;
-  color: var(--text-faint);
-}
-
-.heat[data-over='true'] .heat__value {
-  color: var(--zhuhong);
-}
-
-.composer {
-  flex: 0 0 auto;
-  align-self: center;
-  font-size: 0.68rem;
-  color: var(--text-faint);
-}
-
-.composer summary {
-  cursor: pointer;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
-.composer label {
-  display: block;
-  padding: 0.1rem 0;
-  color: var(--text-muted);
-}
-
-.composer label[data-fixed='true'] {
-  color: var(--text-faint);
-}
-
-.composer__refusal {
-  max-width: 18rem;
-  color: var(--zhuhong);
-}
-
-/* ---- the stage -------------------------------------------------------- */
-
-/*
- * The stage no longer scrolls. Scrolling was the old answer to a canvas sized to the whole
- * floor; the camera is the new one, and keeping both would let a player scroll away from a
- * viewport that then fights them back to the CEO.
- */
 .stage {
   position: relative;
   display: grid;
   place-items: stretch;
   overflow: hidden;
-  padding: 0.5rem;
-  /*
-   * A real floor here, and zero in the wide layout below — the two layouts want opposite
-   * things and giving both the same answer breaks one of them.
-   *
-   * Stacked, the page scrolls: the panels sit under the office and the stage needs a minimum
-   * or it has no reason to have any height at all. Wide, the shell owns the viewport and the
-   * stage takes what is left, which means the row has to be allowed to shrink below its
-   * content — a `1fr` track is `minmax(auto, 1fr)` and `auto` floors at the content's own
-   * minimum, so a canvas sized *from* the row can push the row taller than the screen.
-   *
-   * Setting zero here instead collapsed the stage to nothing on a laptop, because the panels
-   * below it are long and the row had no reason left to hold any height.
-   */
-  /*
-   * A band sized to hold the whole office, and not one pixel more.
-   *
-   * Both bounds are load-bearing and they close opposite failures. The floor is 576 logical
-   * pixels tall, so a shorter band shows a horizontal slice of it — the camera does exactly
-   * what it was asked and the room is still cropped. And a band over 700 takes `chooseZoom`
-   * to 2, at which point a laptop sees about half the office at twice the size.
-   *
-   * Between 38 and 40rem the zoom stays 1 and the room is whole, whatever the panels below
-   * happen to be long enough to do to a `1fr` track.
-   */
-  min-height: 38rem;
-  max-height: 40rem;
+  min-height: 430px;
+  margin: 18px 26px;
+  background: var(--yuebai);
+  border: 2px solid var(--text);
+  box-shadow: var(--lift);
 }
 
 /*
@@ -413,176 +374,136 @@
  * against.
  *
  * In flow it could, and the result was a loop that never settled: the renderer sizes the
- * canvas from the stage, the canvas contributes to the stage's height, the stage changes, the
- * ResizeObserver fires again. Every turn of it assigns `canvas.width`, and assigning that
- * *clears the canvas* — so the office was drawn and wiped, drawn and wiped, and what landed
- * on screen depended on which side of the cycle the frame fell. It read as the camera being
- * broken, because a blank canvas looks the same however it got blank.
- *
- * Out of flow, the stage's height is the grid's business alone and the observer settles after
- * one notification.
+ * canvas from the stage, the canvas contributes to the stage's height, the ResizeObserver
+ * fires again. Every turn of it assigns `canvas.width`, and assigning that *clears the
+ * canvas* — so the office was drawn and wiped, and what landed on screen depended on which
+ * side of the cycle the frame fell.
  */
-.stage > canvas.office {
+.stage > canvas.office,
+.stage > .dag-host {
   position: absolute;
-  inset: 0.5rem;
+  inset: 0;
   width: auto;
   height: auto;
 }
 
 .office,
-.dag-host {
-  image-rendering: pixelated;
-}
+.dag-host { image-rendering: pixelated; }
 
 .office[data-hidden='true'],
 .dag-host[data-hidden='true'] {
-  /* Hidden, not unmounted: unmounting the canvas would tear down the sprite sheets and the
-     frame loop and rebuild them on the way back, and the office has to be rendering unchanged
-     when you return to it. */
+  /* Hidden, not unmounted: unmounting the canvas would tear down the frame loop and rebuild
+     it on the way back, and the office has to be rendering unchanged when you return to it. */
   display: none;
 }
 
-.dag {
-  display: block;
-  image-rendering: pixelated;
-}
+.dag { display: block; image-rendering: pixelated; }
 
-/* ---- the chain strip -------------------------------------------------- */
-
+/* The chain strip sits on the office rather than beside it, the way the approved screen puts
+   its keyboard note there — a small light card with a hard offset. */
 .strip {
-  padding: 0.35rem 1.25rem;
-  border-top: 1px solid var(--rule);
-  border-bottom: 1px solid var(--rule);
-  background: var(--yanhanlan);
+  position: absolute;
+  left: 16px;
+  bottom: 14px;
+  z-index: 3;
+  max-width: calc(100% - 32px);
+  padding: 6px 10px;
+  background: rgb(255 254 248 / 92%);
+  border: 1px solid var(--rule);
+  box-shadow: 3px 3px 0 rgb(147 181 207 / 45%);
   overflow-x: auto;
 }
 
-.strip canvas {
-  display: block;
-  image-rendering: pixelated;
-}
+.strip canvas { display: block; image-rendering: pixelated; }
 
-/* ---- panels ----------------------------------------------------------- */
+/* ---- the attention rail ----------------------------------------------- */
 
 .panels {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
-  gap: 0.6rem;
-  padding: 0.6rem 1.25rem 1.25rem;
+  gap: 18px;
+  padding: 0 26px 26px;
   align-items: start;
 }
 
 .panel {
-  background: var(--gangqing);
+  min-width: 0;
+  background: var(--ganglan);
   border: 1px solid var(--rule);
-  border-radius: 2px;
-  padding: 0.5rem 0.7rem;
+  padding: 16px 18px;
 }
 
 .panel h2 {
-  margin: 0 0 0.4rem;
-  font-size: 0.62rem;
-  letter-spacing: 0.1em;
+  margin: 0 0 10px;
+  color: var(--tianlan);
+  font: 750 11px/1.2 var(--mono);
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--text-faint);
 }
 
-.panel .hint {
-  color: var(--text-faint);
-  font-size: 0.73rem;
-  margin: 0;
+.panel .hint { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.5; }
+
+/*
+ * The person waiting on you is the strongest thing in the chrome, and the only warm thing.
+ *
+ * R12 asks for one warm accent and it belongs to this. It matches the beam over that person's
+ * head in the office, so the two are one signal seen twice rather than two signals — and the
+ * card carries the approved screen's hard offset, which is what lifts it off a page where
+ * everything else is flat.
+ */
+.panel[data-panel='tray'][data-waiting]:not([data-waiting='0']) {
+  background: var(--yuebai);
+  border: 1px solid var(--text);
+  border-top: 5px solid var(--beam);
+  box-shadow: var(--hard), inset 0 0 0 1px var(--beam-edge);
 }
 
-.line {
-  margin-bottom: 0.4rem;
-}
+.line { margin-bottom: 6px; }
 
 .person {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 10px;
   width: 100%;
-  padding: 0.22rem 0.3rem;
+  padding: 9px 4px;
   background: transparent;
   border: 0;
-  border-radius: 2px;
+  border-bottom: 1px solid var(--rule);
   color: var(--text);
   font: inherit;
-  font-size: 0.73rem;
+  font-size: 12px;
   text-align: left;
   cursor: pointer;
 }
 
-.person:hover {
-  background: var(--qinghui);
+.person:hover { background: var(--yuebai); }
+.person--sub { padding-left: 18px; }
+
+.person__stripe { flex: 0 0 9px; height: 9px; align-self: center; }
+.person__body { display: flex; flex-direction: column; min-width: 0; }
+.person__task { color: var(--text-muted); font-size: 11px; }
+
+/* A marker rather than a wash. The amber is a token everywhere it appears, and a tint of it
+   spelled in decimal would be the reserved value escaping the palette by the back door. */
+.person[data-waiting='1'] {
+  box-shadow: inset 3px 0 0 var(--beam), inset 4px 0 0 var(--beam-edge);
 }
 
-.person--sub {
-  padding-left: 1.2rem;
-}
-
-.person__stripe {
-  flex: 0 0 3px;
-  align-self: stretch;
-  border-radius: 1px;
-}
-
-.person__body {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.person__task {
-  color: var(--text-faint);
-  font-size: 0.68rem;
-}
-
-/* The one reserved signal: a person is waiting on your decision. Nothing else may use it.
-   The ring is not decoration — 决策琥珀 is 1.6:1 against this panel and would be a pale dot
-   nobody notices without an edge to hold it. */
+/* The one reserved signal: a person is waiting on your decision. Nothing else may use it. */
 .person__beam {
   flex: 0 0 auto;
-  width: 7px;
-  height: 7px;
+  width: 8px;
+  height: 8px;
   margin-left: auto;
   border-radius: 50%;
   box-shadow: 0 0 0 1px var(--beam-edge);
   animation: beam-breath 1600ms ease-in-out infinite;
 }
 
-/*
- * The person waiting on you is the strongest thing in the chrome, and the only warm thing.
- *
- * R12 asks for one warm accent and it belongs to this. The panel it sits in is otherwise the
- * quietest surface in the product, which is what makes a single amber-edged row read from
- * across the screen — and it matches the beam over that person's head in the office, so the
- * two are one signal seen twice rather than two signals.
- */
-.panel[data-panel='tray'][data-waiting]:not([data-waiting='0']) {
-  border-color: var(--beam);
-  box-shadow: inset 2px 0 0 var(--beam-edge);
-}
-
-/* A marker rather than a wash. The amber is a token everywhere it appears, and a tint of it
-   spelled in decimal would be the reserved value escaping the palette by the back door. */
-.person[data-waiting='1'] {
-  box-shadow: inset 3px 0 0 var(--beam), inset 4px 0 0 var(--beam-edge);
-  border-radius: 2px;
-}
-
-.person[data-waiting='1'] .person__task {
-  color: var(--text-muted);
-}
-
 @keyframes beam-breath {
   0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.45;
-  }
+  100% { opacity: 1; }
+  50% { opacity: 0.45; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -592,107 +513,79 @@
     opacity: 1;
   }
 
-  .heat__track > i {
-    transition: none;
-  }
+  .heat__track > i { transition: none; }
 }
+
+/* ---- work, decisions, deliverables ------------------------------------ */
 
 .item,
 .decision,
 .output {
   display: flex;
-  gap: 0.5rem;
-  padding: 0.3rem 0;
-  border-top: 1px solid var(--rule);
-  font-size: 0.73rem;
-}
-
-.item:first-of-type,
-.decision:first-of-type,
-.output:first-of-type {
-  border-top: 0;
+  gap: 10px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12px;
 }
 
 .decision,
-.output {
-  flex-direction: column;
-}
+.output { flex-direction: column; }
 
-.item__stripe {
-  flex: 0 0 3px;
-  border-radius: 1px;
-}
-
-.item__body {
-  min-width: 0;
-}
+.item__stripe { flex: 0 0 8px; height: 8px; align-self: center; }
+.item__body { min-width: 0; }
 
 .item__title,
 .decision__item,
-.output__title {
-  margin: 0;
-}
+.output__title { margin: 0; font-weight: 600; }
 
 .item__meta,
 .item__locked,
 .output__meta {
-  margin: 0.15rem 0 0;
-  color: var(--text-faint);
-  font-size: 0.68rem;
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
-.item[data-available='false'] .item__title {
-  color: var(--text-faint);
-}
+.item[data-available='false'] .item__title { color: var(--text-faint); font-weight: 400; }
 
 .item__actions,
 .decision__actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.3rem;
-  margin-top: 0.3rem;
+  gap: 6px;
+  margin-top: 9px;
 }
 
 .item__actions button,
 .decision__actions button {
-  background: transparent;
-  border: 1px solid var(--rule);
-  border-radius: 2px;
+  border: 1px solid var(--tianlan);
+  padding: 5px 10px;
   color: var(--tianlan);
+  background: var(--ganglan);
   font: inherit;
-  font-size: 0.68rem;
-  padding: 0.12rem 0.45rem;
+  font-size: 11px;
   cursor: pointer;
 }
 
 .item__actions button:disabled,
 .decision__actions button:disabled {
+  border-color: var(--rule);
   color: var(--text-faint);
   cursor: default;
 }
 
-.decision__prompt {
-  margin: 0.2rem 0 0.35rem;
-  color: var(--text-muted);
-}
+.decision__prompt { margin: 6px 0 10px; color: var(--text-muted); line-height: 1.45; }
 
 .option {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 0.1rem 0.4rem;
-  padding: 0.2rem 0;
+  gap: 3px 8px;
+  padding: 6px 0;
   cursor: pointer;
 }
 
-.option__label {
-  color: var(--text);
-}
-
-.option__detail {
-  grid-column: 2;
-  color: var(--text-faint);
-  font-size: 0.68rem;
-}
+.option__label { color: var(--text); font-weight: 600; }
+.option__detail { grid-column: 2; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 
 /* ---------------------------------------------------------------------------
    What an option costs (R35)
@@ -703,29 +596,15 @@
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 0.1rem 0.5rem;
-  margin-top: 0.15rem;
-  font-size: 0.68rem;
+  gap: 2px 10px;
+  margin-top: 4px;
+  font-size: 11px;
 }
 
-.consequence__figure {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.2rem;
-}
-
-.consequence__label {
-  color: var(--text-faint);
-}
-
-.consequence__delta {
-  font-variant-numeric: tabular-nums;
-}
-
-.consequence__note {
-  flex-basis: 100%;
-  font-size: 0.66rem;
-}
+.consequence__figure { display: inline-flex; align-items: baseline; gap: 0.2rem; }
+.consequence__label { color: var(--text-faint); }
+.consequence__delta { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.consequence__note { flex-basis: 100%; font-size: 11px; }
 
 /* ---------------------------------------------------------------------------
    Where each option leads (R21, R22, R34)
@@ -736,426 +615,365 @@
  * went away, which is what makes "a comparison informs a choice and never makes one" true of
  * the layout as well as of the code.
  */
-.compare {
-  margin-top: 0.4rem;
-}
+.compare { margin-top: 10px; }
 
 .compare__ask {
   width: 100%;
-  font-size: 0.68rem;
+  border: 0;
+  padding: 8px 10px;
+  color: var(--ganglan);
+  background: var(--tianlan);
+  box-shadow: 3px 3px 0 var(--xinglan);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .compare__pending {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 0.4rem;
+  gap: 8px;
   margin: 0;
-  font-size: 0.68rem;
+  font-size: 11px;
 }
 
-.comparison {
-  margin-top: 0.4rem;
-  border-top: 1px solid var(--rule);
-  padding-top: 0.4rem;
-}
+.comparison { margin-top: 10px; border-top: 1px solid var(--rule); padding-top: 10px; }
 
 .comparison__title {
   display: flex;
   align-items: baseline;
-  gap: 0.3rem;
+  gap: 6px;
   margin: 0;
-  font-size: 0.68rem;
+  font: 750 11px/1.2 var(--mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.comparison__basis {
-  margin: 0.15rem 0 0.4rem;
-  font-size: 0.66rem;
-}
+.comparison__basis { margin: 4px 0 10px; color: var(--text-muted); font-size: 11px; }
 
 /*
  * Columns, and they scroll rather than wrap. Three branches read as a comparison only if they
  * are side by side; stacked, they read as three separate answers and the whole point of the
  * panel — scanning one row across — is gone.
  */
-.comparison__columns {
-  display: flex;
-  gap: 0.4rem;
-  overflow-x: auto;
-}
+.comparison__columns { display: flex; gap: 8px; overflow-x: auto; }
 
 .branch {
   flex: 1 0 11rem;
   min-width: 11rem;
   background: var(--yuebai);
   border: 1px solid var(--rule);
-  padding: 0.35rem;
+  padding: 10px;
 }
 
-.branch__label {
-  margin: 0;
-  font-size: 0.73rem;
-  color: var(--text);
-}
-
-.branch__stop {
-  margin: 0.15rem 0 0.35rem;
-  font-size: 0.64rem;
-  color: var(--text-muted);
-}
+.branch__label { margin: 0; font-size: 12px; font-weight: 700; }
+.branch__stop { margin: 3px 0 8px; color: var(--text-muted); font-size: 11px; }
 
 /* A branch that ran out of cash is the most important thing this panel can say. */
-.branch[data-stop='insolvent'] .branch__stop {
-  color: var(--zhuhong);
-}
+.branch[data-stop='insolvent'] .branch__stop { color: var(--zhuhong); }
 
 .branch__row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: 0.3rem;
-  font-size: 0.66rem;
+  gap: 6px;
+  font-size: 11px;
 }
 
-.branch__name {
-  color: var(--text-faint);
-}
-
-.branch__figure {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 0.2rem;
-}
-
-.branch__value {
-  font-variant-numeric: tabular-nums;
-}
+.branch__name { color: var(--text-faint); }
+.branch__figure { display: inline-flex; align-items: baseline; gap: 0.2rem; }
+.branch__value { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 
 /* The measured tick, on every figure. A projection read without one is indistinguishable
    from a fact about now. */
-.branch__at {
-  font-size: 0.9em;
-}
+.branch__at { font-size: 0.9em; }
 
 .branch__gates-at {
   display: flex;
   align-items: baseline;
   gap: 0.2rem;
-  margin: 0.35rem 0 0;
-  font-size: 0.6rem;
+  margin: 8px 0 0;
+  font-size: 10px;
 }
 
 .branch__gates {
-  margin: 0.35rem 0 0;
-  padding-left: 0.9rem;
-  font-size: 0.64rem;
+  margin: 8px 0 0;
+  padding-left: 14px;
   color: var(--text-muted);
+  font-size: 11px;
 }
 
-.branch__gates li[data-gate='foreclosed'] {
-  color: var(--zhuhong);
-}
-
-.branch__note {
-  margin: 0.3rem 0 0;
-  font-size: 0.64rem;
-}
+.branch__gates li[data-gate='foreclosed'] { color: var(--zhuhong); }
+.branch__note { margin: 7px 0 0; font-size: 11px; }
 
 .comparison__close {
-  margin-top: 0.4rem;
   width: 100%;
-  font-size: 0.68rem;
+  margin-top: 10px;
+  border: 1px solid var(--rule);
+  padding: 7px;
+  background: var(--ganglan);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
 }
 
-.decision__cost {
-  margin: 0.3rem 0 0;
-  font-size: 0.68rem;
-}
+.decision__cost { margin: 8px 0 0; font-size: 11px; }
 
 .output__provenance,
 .output__tacit {
-  margin: 0.25rem 0 0;
-  padding-left: 1rem;
-  font-size: 0.68rem;
-  color: var(--text-faint);
+  margin: 6px 0 0;
+  padding-left: 16px;
+  color: var(--text-muted);
+  font-size: 11px;
 }
 
 /* ---- the conversation ------------------------------------------------- */
 
 /*
  * An overlay on the stage rather than a rail entry, so walking over to someone never costs
- * sight of the HUD or the tray. Anchored to `.stage`, which is already positioned.
- *
- * The shadow is a soft neutral rather than the 45% black it carried on ink. Band 4 of the
- * art direction may sit over the office; it may not darken it.
+ * sight of the pulse or the tray. The shadow is a hard offset rather than the 45% black it
+ * carried on ink: band four of the art direction may sit over the office and may never
+ * darken it.
  */
 .conversation {
   position: absolute;
-  top: 1rem;
-  right: 1rem;
-  width: min(20rem, calc(100% - 2rem));
+  top: 16px;
+  right: 16px;
+  z-index: 4;
+  width: min(21rem, calc(100% - 2rem));
   max-height: calc(100% - 2rem);
   overflow-y: auto;
-  background: var(--gangqing);
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  box-shadow: 0 6px 18px rgb(28 41 56 / 12%);
-  padding: 0.7rem;
+  background: var(--ganglan);
+  border: 1px solid var(--text);
+  box-shadow: var(--hard);
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 0.55rem;
-  z-index: 2;
+  gap: 12px;
 }
 
 /* Someone stopped at a decision is the one thing that earns the reserved beam colour. The
    edge carries the contrast the amber cannot; the amber carries the meaning. */
 .conversation[data-state='blocked'] {
-  border-color: var(--beam);
-  box-shadow: 0 0 0 1px var(--beam-edge), 0 6px 18px rgb(28 41 56 / 12%);
+  border-top: 5px solid var(--beam);
+  box-shadow: var(--hard), inset 0 0 0 1px var(--beam-edge);
 }
 
-.conversation__who {
-  display: flex;
-  gap: 0.5rem;
-  align-items: stretch;
-}
-
-.conversation__stripe {
-  width: 3px;
-  border-radius: 2px;
-  flex: none;
-}
-
-.conversation__body {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 0;
-}
-
-.conversation__name {
-  font-weight: 600;
-  font-size: 0.88rem;
-}
-
-.conversation__title {
-  color: var(--text-muted);
-  font-size: 0.73rem;
-}
-
-.conversation__meta {
-  font-size: 0.68rem;
-}
+.conversation__who { display: flex; gap: 10px; align-items: stretch; }
+.conversation__stripe { width: 9px; flex: none; }
+.conversation__body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.conversation__name { font-weight: 700; font-size: 15px; }
+.conversation__title { color: var(--text-muted); font-size: 11px; }
+.conversation__meta { font-size: 11px; }
 
 .conversation__decision {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  padding-top: 0.55rem;
+  gap: 8px;
+  padding-top: 12px;
   border-top: 1px solid var(--rule);
 }
 
-.conversation__item {
-  margin: 0;
-  font-size: 0.73rem;
-  color: var(--text-muted);
-}
-
-.conversation__prompt {
-  margin: 0;
-  font-size: 0.78rem;
-}
+.conversation__item { margin: 0; color: var(--text-muted); font-size: 11px; }
+.conversation__prompt { margin: 0; font-size: 13px; line-height: 1.45; }
 
 /* The line only a visit surfaces. Violet is the tacit slot, spent on nothing else. */
 .conversation__tacit {
   margin: 0;
-  padding: 0.4rem 0.5rem;
+  padding: 10px 12px;
   background: rgb(107 91 181 / 7%);
-  border-left: 2px solid var(--tacit);
-  border-radius: 2px;
-  font-size: 0.73rem;
-  line-height: 1.4;
+  border-left: 3px solid var(--tacit);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .conversation__badge {
   display: block;
-  font-size: 0.6rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  margin-bottom: 4px;
   color: var(--tacit);
-  margin-bottom: 0.2rem;
+  font: 750 10px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .conversation__decision button {
-  background: transparent;
-  border: 1px solid var(--tianlan);
-  border-radius: 2px;
-  color: var(--tianlan);
+  border: 0;
+  padding: 10px 12px;
+  color: var(--ganglan);
+  background: var(--tianlan);
+  box-shadow: 3px 3px 0 var(--xinglan);
   font: inherit;
-  font-size: 0.73rem;
-  padding: 0.28rem 0.6rem;
+  font-size: 13px;
+  font-weight: 700;
   cursor: pointer;
 }
 
 .conversation__decision button:disabled {
-  border-color: var(--rule);
   color: var(--text-faint);
+  background: var(--qinghui);
+  box-shadow: none;
   cursor: default;
 }
 
-.conversation__cost {
-  margin: 0;
-  font-size: 0.66rem;
-  line-height: 1.4;
-}
+.conversation__cost { margin: 0; font-size: 11px; line-height: 1.45; }
 
 .conversation__work {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding-top: 0.55rem;
+  gap: 10px;
+  padding-top: 12px;
   border-top: 1px solid var(--rule);
 }
 
 .conversation__work h3 {
   margin: 0;
-  font-size: 0.6rem;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   color: var(--text-faint);
+  font: 750 10px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
-.offer {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  align-items: flex-start;
-}
-
-.offer__title {
-  margin: 0;
-  font-size: 0.76rem;
-}
-
-.offer__brief {
-  margin: 0;
-  font-size: 0.68rem;
-  color: var(--text-muted);
-  line-height: 1.4;
-}
+.offer { display: flex; flex-direction: column; gap: 5px; align-items: flex-start; }
+.offer__title { margin: 0; font-size: 12px; font-weight: 600; }
+.offer__brief { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 
 .offer button {
-  background: transparent;
   border: 1px solid var(--rule);
-  border-radius: 2px;
+  padding: 5px 10px;
   color: var(--text-muted);
+  background: var(--ganglan);
   font: inherit;
-  font-size: 0.7rem;
-  padding: 0.18rem 0.5rem;
+  font-size: 11px;
   cursor: pointer;
 }
 
 /* Going around a director is the cheaper, costlier route. It should not look like the safe one. */
-.offer[data-bypass='true'] button {
-  border-color: var(--zhuhong);
-  color: var(--zhuhong);
-}
+.offer[data-bypass='true'] button { border-color: var(--zhuhong); color: var(--zhuhong); }
 
-.offer__cost {
-  margin: 0;
-  font-size: 0.64rem;
-  line-height: 1.4;
-}
+.offer__cost { margin: 0; font-size: 10px; line-height: 1.45; }
 
 .conversation__ask {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
-  padding-top: 0.55rem;
+  gap: 8px;
+  padding-top: 12px;
   border-top: 1px solid var(--rule);
 }
 
-.conversation__ask form {
-  display: flex;
-  gap: 0.3rem;
-}
+.conversation__ask form { display: flex; gap: 6px; }
 
 .conversation__ask input {
   flex: 1;
   min-width: 0;
-  background: var(--ganglan);
   border: 1px solid var(--rule);
-  border-radius: 2px;
+  padding: 7px 9px;
   color: var(--text);
+  background: var(--ganglan);
   font: inherit;
-  font-size: 0.73rem;
-  padding: 0.22rem 0.4rem;
+  font-size: 12px;
 }
 
-.conversation__ask input:focus {
-  outline: none;
-  border-color: var(--tianlan);
-}
+.conversation__ask input:focus { outline: none; border-color: var(--tianlan); }
 
 .conversation__ask button {
-  background: transparent;
   border: 1px solid var(--rule);
-  border-radius: 2px;
+  padding: 7px 12px;
   color: var(--text-muted);
+  background: var(--ganglan);
   font: inherit;
-  font-size: 0.7rem;
-  padding: 0.22rem 0.6rem;
+  font-size: 11px;
   cursor: pointer;
 }
 
-.conversation__ask button:disabled {
-  color: var(--text-faint);
-  cursor: default;
-}
+.conversation__ask button:disabled { color: var(--text-faint); cursor: default; }
 
 .said {
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
-  padding-left: 0.5rem;
-  border-left: 2px solid var(--rule);
+  gap: 3px;
+  padding-left: 10px;
+  border-left: 3px solid var(--rule);
 }
 
 /* A first tacit answer is the thing the mechanic exists for. It should look like it. */
-.said[data-tacit='true'] {
-  border-left-color: var(--tacit);
-}
+.said[data-tacit='true'] { border-left-color: var(--tacit); }
 
 /* A miss still says something about them, so it is not styled as an error. */
-.said[data-matched='false'] {
-  border-left-style: dotted;
-}
+.said[data-matched='false'] { border-left-style: dotted; }
 
 .said__q {
   margin: 0;
-  font-size: 0.62rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
   color: var(--text-faint);
+  font: 750 10px/1.2 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
-.said__a {
-  margin: 0;
-  font-size: 0.71rem;
-  line-height: 1.45;
-  color: var(--text-muted);
-}
+.said__a { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
 
 .banner__action {
-  margin-left: 0.6rem;
-  background: transparent;
+  margin-left: 10px;
   border: 1px solid currentcolor;
-  border-radius: 2px;
+  padding: 3px 9px;
   color: inherit;
+  background: transparent;
   font: inherit;
-  font-size: 0.7rem;
-  padding: 0.1rem 0.5rem;
+  font-size: 11px;
   cursor: pointer;
+}
+
+/* ---- wide: the office takes a room of its own ------------------------- */
+
+/*
+ * Above this width the panels become the attention rail the approved direction puts beside
+ * the office, and the stage claims the height. Below it they stack under the office and the
+ * page scrolls — a rail on a narrow screen would take the width the office needs.
+ *
+ * `min-height: 0` on both is load-bearing and is not obvious: a grid item floors at its own
+ * content by default, so a long org chart would push the stage row past the viewport and the
+ * office would be drawn with its bottom half off the screen. Setting it on the stage alone
+ * collapsed the stage to nothing in the stacked layout, where the page scrolls and the row
+ * has no reason left to hold any height — which is why the two layouts get different answers.
+ */
+@media (min-width: 1180px) {
+  .shell {
+    height: 100vh;
+    overflow: hidden;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-rows: auto auto auto minmax(0, 1fr);
+    grid-template-areas:
+      'topbar topbar'
+      'banner banner'
+      'hud    hud'
+      'stage  panels';
+  }
+
+  .stage { min-height: 0; margin: 18px 18px 18px 26px; }
+
+  .panels {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    min-height: 0;
+    height: 100%;
+    padding: 18px 22px;
+    background: var(--ganglan);
+    border-left: 1px solid var(--rule);
+    overflow-y: auto;
+  }
+
+  .panel { border: 0; padding: 0; }
+
+  /* The edge is repeated rather than left to cascade. It does cascade — the base rule's
+     inset shadow survives this override — but "every rule that spends the amber carries its
+     edge" is a property a reader and a test can both check in one place, and a rule that
+     relies on inheriting it is a rule somebody will copy without it. */
+  .panel[data-panel='tray'][data-waiting]:not([data-waiting='0']) {
+    border: 1px solid var(--text);
+    border-top: 5px solid var(--beam);
+    box-shadow: inset 0 0 0 1px var(--beam-edge);
+    padding: 14px;
+  }
 }

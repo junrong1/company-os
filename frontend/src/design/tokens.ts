@@ -50,6 +50,8 @@ export const PAL = {
   yuebai: '#eef7f2', // 月白 — cool quiet surfaces
   qinghui: '#dfeaef', // 远天蓝, lifted — tracks, inactive fills, hover
   rule: '#c3d5de', // 远天蓝 — hairlines
+  dongfangjibai: '#e6f2ff', // 东方既白 — the sky behind the top of the page
+  xinglan: '#93b5cf', // 星蓝 — the offset behind a filled control, and a quiet fill
 
   // Structure and text.
   jingyuhui: '#475164', // 鲸鱼灰 — secondary structure, a flat delta

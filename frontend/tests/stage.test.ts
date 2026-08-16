@@ -1,17 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { CEO_ID } from '../src/render/palettes'
-import {
-  DIRS,
-  FRAMES,
-  SPRITE_HEIGHT,
-  SPRITE_WIDTH,
-  StrideTracker,
-  characterSheet,
-  depthSort,
-} from '../src/render/actors'
-import { manifestFor } from '../src/render/cast/appearance'
-import { ACCENT, PAL } from '../src/design/tokens'
+import { StrideTracker, depthSort } from '../src/render/actors'
+import { ATLAS } from '../src/render/cast/atlas-index'
+import { skinFor } from '../src/render/cast/atlas'
+import { ACCENT } from '../src/design/tokens'
 import { type FloorData, TILE, buildGrid, walkable } from '../src/render/floor'
 import {
   CEO_DIAGONAL_MILLI_PER_TICK,
@@ -119,37 +112,34 @@ describe('the CEO in the actor projection', () => {
 describe('the CEO', () => {
   it('wears a top no member of staff wears', () => {
     // The player has to stay findable among ten people at a glance, which is R1 and is the
-    // one thing about the CEO's appearance that is not cosmetic.
-    const ceo = manifestFor(CEO_ID, 1)
-
-    for (const id of rosterIds()) {
-      expect(manifestFor(id, 1).skin.top, id).not.toBe(ceo.skin.top)
+    // one thing about their appearance that is not cosmetic.
+    for (const seed of [0, 1, 2, 17, 4242]) {
+      const ceo = skinFor(CEO_ID, seed).top
+      for (const id of rosterIds()) {
+        expect(skinFor(id, seed).top, `${id} at seed ${seed}`).not.toBe(ceo)
+      }
     }
   })
 
   it('keeps a cool signal that is not the interface accent', () => {
     // 石绿 in the office, 天蓝 in the chrome. The split exists because the sales room and
     // everyone in it already wear 花青, and a CEO in 天蓝 would read as a sales hire.
+    //
     // Every appearance, not just the one this seed happens to pick: the player's colour is a
-    // requirement rather than a look, so it cannot depend on which letter a run drew.
-    for (const seed of [0, 1, 2, 17, 4242]) {
-      const { top } = manifestFor(CEO_ID, seed).skin
-      expect(top, `seed ${seed}`).not.toBe(ACCENT)
-      expect(top, `seed ${seed}`).toBe(PAL.shilv2)
-    }
+    // requirement rather than a look, so it cannot depend on which letter a run drew. It comes
+    // off the casting board's own art rather than being pinned in code — all three `you`
+    // candidates were drawn in the same teal jacket, which is why this holds without anything
+    // in the client asserting it into place.
+    const tops = new Set([0, 1, 2, 17, 4242].map((seed) => skinFor(CEO_ID, seed).top))
+    expect(tops.size).toBe(1)
+    expect([...tops][0]).not.toBe(ACCENT)
   })
 
-  it('composes a sheet the same shape as everyone else’s', () => {
-    const cache = new Map<string, ReturnType<typeof characterSheet>>()
-    const sheet = characterSheet(CEO_ID, 1, cache, () => ({
-      width: 0,
-      height: 0,
-      getContext: () => null,
-    }) as unknown as HTMLCanvasElement)
-
-
-    expect(sheet.canvas.width).toBe(SPRITE_WIDTH * FRAMES)
-    expect(sheet.canvas.height).toBe(SPRITE_HEIGHT * DIRS.length)
+  it('is drawn from the casting board like everyone else', () => {
+    // They cannot be findable if the atlas has no art for them.
+    for (const letter of ['a', 'b', 'c']) {
+      expect(ATLAS[`${CEO_ID}-${letter}`], letter).toBeDefined()
+    }
   })
 })
 

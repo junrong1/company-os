@@ -10,8 +10,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "cast": "node scripts/make-rig.mjs && node scripts/make-library.mjs && node scripts/build-cast.mjs && node scripts/make-manifests.mjs",
-    "verify": "node scripts/contact-sheet.mjs && node scripts/screenshots.mjs"
+    "cast": "node scripts/make-cast-atlas.mjs",
+    "verify": "node scripts/screenshots.mjs"
   },
   "dependencies": {
     "react": "^19.2.8",
