@@ -417,7 +417,14 @@ export function actorsFromStore(ceo?: CeoPose): Actor[] {
     id: person.id,
     xMilli: person.xMilli,
     yMilli: person.yMilli,
-    facing: person.facing as Facing,
+    // Anyone who has stopped is turned to face us. The kernel leaves `facing` on whatever the
+    // last step was, and staff reach their desks walking north, so the whole office sat with
+    // its back to the camera — and the `up` cell is the one facing the atlas synthesises by
+    // flooding the head with hair, so a stopped person had no face. The floor plan already
+    // assumes this: desks are placed one row nearer the viewer than the seat *so that people
+    // face us* (`world.py`). Client-side until the kernel's own default is corrected, which
+    // is a snapshot field and so a golden change.
+    facing: person.state === 'walking' ? (person.facing as Facing) : 'down',
     moving: person.state === 'walking',
     animTicks,
     // The tray alone. `person.waiting` is set at genesis and by a resync and cleared by
