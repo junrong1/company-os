@@ -332,3 +332,101 @@ it by authoring a wider checkpoint.
 `WAITING_PERSON = 'dir_sales'` with a synthetic `wi_ap_map` tray entry, but a real day-zero run now
 waits on `dir_hr`/`wi_hiring`. Its three checked-in PNGs predate the hints. Whoever owns that
 harness should either switch it to the real seed or keep the injection with a note saying why.
+
+---
+
+## U6 is two passes, and this is the handoff between them
+
+U6 was split after two API deaths at the same point. **Pass 1 shipped as `1a01b44`**: the format, the
+loader, `default.toml`, `schema.md` and 98 tests. Nothing imports it yet, which is why it moved no
+fixture — the plan couples the data move to the schema extension to avoid regenerating golden
+fixtures twice, and a loader with no callers regenerates them zero times.
+
+**Pass 2 is the wiring**, and it is still one change: state-parameterise the roster and catalog,
+put the scenario identity on the genesis payload, bump `KIND_SCHEMA_VERSIONS[GENESIS]` 4 → 5
+**once**, install the guard at three sites, copy `scenarios/` in the `Dockerfile`, route
+`generate_golden.py` through the loader, and regenerate the fixtures a single time.
+
+### The seam pass 1 built
+
+```python
+load(name=DEFAULT_SCENARIO, *, directory=None) -> Scenario
+load_default() -> Scenario
+resolve(name, *, directory=None) -> Path        # name rule only, zero filesystem access
+available(directory=None) -> tuple[str, ...]    # U7's chooser, and the unknown-name refusal
+parse(raw, *, name, origin="") -> Scenario      # no filesystem at all
+
+load_recorded(identity, *, at, directory=None,
+              recorded_roster=None, recorded_catalog=None) -> Scenario
+verify_unchanged(loaded, *, at, directory=None) -> Scenario
+```
+
+`new_run` takes `scenario: Scenario | None = None` defaulting to `load_default()`, so all 42
+existing call sites keep working. The three guard sites are `log._apply_genesis` (from-zero fold),
+`snapshot.from_wire` (snapshot restore) and `log.fold(..., resume_from=...)` (the path that skips
+genesis). `at` is threaded into the message so three guards do not produce one indistinguishable
+string.
+
+`State` gains one field. `sim.snapshot()` — the only input to `hashing.state_hash` — omits it, and
+`state_hash` refuses an undeclared subsystem, so the omission is **enforced rather than
+remembered**: adding it would require a `SHAPE_HISTORY` entry and a deliberate shape bump.
+`Scenario.__deepcopy__` returns `self`, so `log._clone`'s `deepcopy` on a resume does not copy the
+company. `SNAPSHOT_FORMAT_VERSION` bumps 1 → 2 to carry the identity, which is a documented
+drop-and-refold already covered by the existing format-version refusal.
+
+### Exact one-line changes outside U6's stated file list
+
+- `backend/packages/simcore/compare.py:581` — `work.ITEMS` → `state.scenario.items`; the
+  `from simcore import items as work` import then becomes unused.
+- `backend/services/report/fold.py:242` — `lifecycle.decision_supply()` reads
+  `work.TOTAL_CHECKPOINTS` and has `state` in scope, so it becomes
+  `decision_supply(state.scenario)`.
+- `backend/services/kernel/loop.py` needs **nothing**: `new_run` defaults, and
+  `snapshotting.restore(instant)` keeps its signature because the snapshot now carries the identity.
+
+### Two latent `KeyError`s pass 2 should close while it is in there
+
+`PersonRuntime.rank` (`step.py:187`), `roster.spec(person.id).name` (`step.py:1200`) and
+`roster.spec(person_id).mgr` (`step.py:1678`, `:1994`) all raise for an **arrived hire** — someone in
+`state.people` who is not on the authored roster. Nothing reaches them today only because no test
+assigns work to a hire. State-parameterising these lookups is the moment to make them
+`state.rank_of` / `state.name_of` / `state.manager_of`, with a hire falling back to `"staff"`, their
+own id, and their line's director — the last of which reproduces today's value exactly for every
+authored person.
+
+And `request_hire` hardcodes `want="stf_rec"` and `dept="hr"` (`step.py:1815-1820`), which are
+**default-scenario person ids** sitting in code. Pass 2 must derive the recruiter from the scenario:
+the `hr` line's first non-director in roster order, falling back to its director.
+`Scenario.room_of_line` already exists for the `hiring.target_room_for` half.
+
+### Sequencing
+
+**Pass 2's fixture baseline is U3's output, not `3f4a167`.** U3 added `EventKind.STAFF_MOVED = 60`,
+a new `time.walk_position_milli` golden vector (`walk.json`), and regenerated logs. Pass 2 must land
+after U3 and rebase its regeneration onto it. U3 correctly left `KIND_SCHEMA_VERSIONS[GENESIS]` at 4
+— that bump remains pass 2's, and remains exactly one.
+
+### Two things for other units
+
+- **U7** can lift `MINIMAL` from `test_scenario.py` — a four-person, one-item, two-option scenario
+  that loads clean — as the second shipped scenario or as the fixture for "a second scenario
+  produces a different company".
+- **U11 (R19)** inherits the loader as the length cap and the character rule, and should not
+  re-derive either: `MAX_PROSE_CHARS = 512`, `MAX_SHORT_PROSE_CHARS = 256`, `MAX_TITLE_CHARS = 96`,
+  `MAX_LABEL_CHARS = 48`, `MAX_TAG_CHARS = 64`, `MAX_TAGS = 12`, ids `[a-z][a-z0-9_]*` ≤ 48, and
+  every authored string rejects any Unicode category beginning with `C`. Authored copy is therefore
+  always one line of printable prose, and U11 can delimit it as data on that basis.
+- **The six-option gap is now closable by data alone.** `MAX_OPTIONS_PER_CHECKPOINT = 6` is validated
+  at load and a test asserts it equals `step.MAX_BRANCHES_PER_COMPARISON`, so authoring a six-option
+  checkpoint is a pure `default.toml` edit. Pass 1 deliberately did not do it: it would change the
+  catalog, the genesis payload and the content hash as *content*, blurring the "diff limited to the
+  recorded genesis-payload change" statement pass 2 has to make. **Recommended for U21**, after
+  pass 2's fixtures settle.
+
+### One clarification against the plan's wording
+
+The plan says the loader validates "in one pass". It is one pass over the file but two *phases* —
+field shape, then cross-references — because a cross-reference check reading a room id that failed
+its own type check would report an invented failure about the real one. A phase-one refusal says so
+explicitly, so an author who fixes the first batch is not surprised by a second. Nothing is
+constructed in either phase.
