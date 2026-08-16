@@ -141,6 +141,21 @@ export function relativeLuminance(hex: string): number {
  * is what stops a later tuning pass from making a label unreadable and nobody noticing until
  * a user says so.
  */
+/**
+ * A palette slot at partial opacity.
+ *
+ * Canvas surfaces need a few values the palette cannot hold, because a lattice or a wash is a
+ * slot *and* an alpha rather than a colour of its own. Composing them here keeps the hex in
+ * one place: an `rgba(71,81,100,0.16)` written by hand is a palette value nothing points at,
+ * which is precisely how the DAG's recessed-node fill survived the inversion that made it
+ * wrong.
+ */
+export function withAlpha(hex: string, alpha: number): string {
+  const value = Number.parseInt(/^#([0-9a-f]{6})$/i.exec(hex)?.[1] ?? '', 16)
+  if (Number.isNaN(value)) throw new Error(`not a six-digit hex colour: ${hex}`)
+  return `rgba(${(value >> 16) & 0xff}, ${(value >> 8) & 0xff}, ${value & 0xff}, ${alpha})`
+}
+
 export function contrastRatio(a: string, b: string): number {
   const first = relativeLuminance(a)
   const second = relativeLuminance(b)

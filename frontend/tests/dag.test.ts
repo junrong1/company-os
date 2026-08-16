@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+
 import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -8,7 +11,9 @@ import {
   PAL,
   RESERVED_BEAM,
   TACIT,
+  contrastRatio,
   loadColour,
+  relativeLuminance,
 } from '../src/design/tokens'
 import { FONT, paintText } from '../src/design/text'
 import { SEVERED_FRACTION, buildModel, drawGraph, drawPolyline } from '../src/dag/draw'
@@ -22,7 +27,16 @@ import {
   route,
   runLength,
 } from '../src/dag/layout'
-import { GRID, NODE_COLS, NODE_ROWS, PIP_WIDTH, STATUS, drawNode, drawPip } from '../src/dag/nodes'
+import {
+  GLYPH_PALETTE,
+  GRID,
+  NODE_COLS,
+  NODE_ROWS,
+  PIP_WIDTH,
+  STATUS,
+  drawNode,
+  drawPip,
+} from '../src/dag/nodes'
 import { resetSheetCounter, sheetsGenerated } from '../src/render/index'
 import { type ItemStatus, useRunStore } from '../src/net/store'
 import { Shell } from '../src/ui/Shell'
@@ -621,5 +635,104 @@ describe('the stage toggle', () => {
     // Nothing was rebuilt: a fresh renderer would have generated another sheet set, which is
     // exactly the leak the lifecycle work in U12 exists to prevent.
     expect(sheetsGenerated()).toBe(sheetsAtStart)
+  })
+})
+
+// =========================================================================
+// The daylight inversion (U3)
+// =========================================================================
+
+/**
+ * What changed when the ground went from ink to ivory, and what had to not change.
+ *
+ * The DAG reads its colours from `PAL`, so most of the inversion arrived for free with the
+ * token module. These are the four places where it did not — where a value was chosen for a
+ * relationship to a dark ground and had to be re-chosen for a light one — plus the property
+ * that keeps the next value from being picked by hand.
+ */
+describe('the DAG on a light ground', () => {
+  const SOURCES = ['../src/dag/nodes.ts', '../src/dag/draw.ts', '../src/dag/strip.ts'] as const
+
+  it('resolves every colour through the palette rather than a literal', () => {
+    // A literal here is how the ground inverted around a value and left it behind: `#0c1019`
+    // meant "darker than the panel" and survived a palette change that made the panel light,
+    // because nothing pointed at it. Nothing may point at nothing again.
+    for (const source of SOURCES) {
+      const text = readFileSync(fileURLToPath(new URL(source, import.meta.url)), 'utf8')
+      const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '')
+      // Hex *and* functional notation. The lattice was written as a hand-composed
+      // `rgba(71,81,100,0.16)` and would have sailed past a hex-only check while being
+      // exactly the thing the check exists to find: a palette value nothing points at.
+      const found = [...code.matchAll(/#[0-9a-f]{6}\b|\brgba?\s*\(/gi)].map(([hit]) => hit)
+      expect(found, `${source} carries a colour literal`).toEqual([])
+    }
+  })
+
+  it('keeps every status hue readable against the ground', () => {
+    for (const [status, encoding] of Object.entries(STATUS)) {
+      expect(
+        contrastRatio(encoding.hue, PAL.ganglan),
+        `${status} hue`,
+      ).toBeGreaterThanOrEqual(3)
+      expect(
+        contrastRatio(encoding.label, PAL.ganglan),
+        `${status} label`,
+      ).toBeGreaterThanOrEqual(4.5)
+    }
+  })
+
+  it('gives a node an edge, since its plate alone is nearly the ground', () => {
+    // Deliberately not a 3:1 assertion on the plate. A backlog node draws no border at all —
+    // form is the status channel and "none" is what backlog means — so it is the quietest
+    // thing on the graph by design, exactly as it was on ink. What it must not be is
+    // invisible, and the ring is what stops that.
+    const plate = contrastRatio(PAL.gangqing, PAL.ganglan)
+    expect(plate).toBeLessThan(1.2)
+
+    const ring = contrastRatio(PAL.rule, PAL.ganglan)
+    expect(ring).toBeGreaterThan(1.4)
+  })
+
+  it('keeps a done node recessed rather than blackened', () => {
+    const done = new RecordingContext()
+    drawNode(done, baseNode('done'))
+    const open = new RecordingContext()
+    drawNode(open, baseNode('active'))
+
+    // Recessed means darker than its neighbours, which on ivory is a deepening rather than a
+    // blackening — the third cue on `done`, preserved through the inversion.
+    expect(done.colours()).toContain(PAL.qinghui)
+    expect(open.colours()).toContain(PAL.gangqing)
+    expect(relativeLuminance(PAL.qinghui)).toBeLessThan(relativeLuminance(PAL.gangqing))
+  })
+
+  it('keeps a glyph’s two fills apart from each other and from its plate', () => {
+    // On ink the secondary fill could be the panel track, because the track was lighter than
+    // the plate. On ivory the track *is* nearly the plate, and a glyph drawn that way reads
+    // as two dashes rather than as a symbol.
+    expect(contrastRatio(GLYPH_PALETTE.b, PAL.gangqing)).toBeGreaterThanOrEqual(3)
+    expect(contrastRatio(GLYPH_PALETTE.a, PAL.gangqing)).toBeGreaterThanOrEqual(3)
+    expect(contrastRatio(GLYPH_PALETTE.k, PAL.gangqing)).toBeGreaterThanOrEqual(7)
+    expect(GLYPH_PALETTE.a).not.toBe(GLYPH_PALETTE.b)
+  })
+
+  it('lifts a pip off the strip rather than recessing it into the band', () => {
+    const pip = new RecordingContext()
+    drawPip(pip, 0, 0, { status: 'active', dept: 'sales' })
+
+    expect(pip.colours()).toContain(PAL.ganglan)
+    expect(contrastRatio(PAL.ganglan, PAL.yanhanlan)).toBeGreaterThan(1)
+  })
+
+  it('never spends the reserved amber anywhere on either surface', () => {
+    for (const status of Object.keys(STATUS) as (keyof typeof STATUS)[]) {
+      const node = new RecordingContext()
+      drawNode(node, baseNode(status))
+      expect(node.colours(), status).not.toContain(RESERVED_BEAM)
+
+      const pip = new RecordingContext()
+      drawPip(pip, 0, 0, { status, dept: 'sales' })
+      expect(pip.colours(), status).not.toContain(RESERVED_BEAM)
+    }
   })
 })

@@ -23,7 +23,7 @@
  * the information is in the final frame, and only the reveal is motion.
  */
 
-import { PAL, TACIT, ACCENT } from '../design/tokens'
+import { PAL, TACIT, ACCENT, withAlpha } from '../design/tokens'
 import type { PixelContext } from '../design/text'
 import type { ItemStatus } from '../net/store'
 import { type Placement, type Point, layout, pointAt, route, runLength } from './layout'
@@ -136,6 +136,9 @@ export function drawPolyline(
 /** How far along a severed edge the stub stops before its tick. */
 export const SEVERED_FRACTION = 0.34
 
+/** The graph's background lattice: 鲸鱼灰, barely there. */
+export const LATTICE = withAlpha(PAL.jingyuhui, 0.1)
+
 /**
  * One frame of the graph.
  *
@@ -153,8 +156,11 @@ export function drawGraph(
   context.fillStyle = PAL.ganglan
   context.fillRect(0, 0, width, height)
 
-  // A faint lattice, so the shared 16px grid the office uses is legible here too.
-  context.fillStyle = 'rgba(71,81,100,0.16)'
+  // A faint lattice, so nodes read as placed on a grid rather than floating. 鲸鱼灰 at a
+  // tenth: on ink the lattice was a light line lifting off a dark ground, and inverting it
+  // at the same alpha would have drawn a dark line on ivory at more than twice the apparent
+  // weight.
+  context.fillStyle = LATTICE
   for (let x = 0; x < width; x += GRID) context.fillRect(x, 0, 1, height)
   for (let y = 0; y < height; y += GRID) context.fillRect(0, y, width, 1)
 
@@ -171,8 +177,10 @@ export function drawGraph(
     // without opening anything.
     const form = STATUS[model.nodes[edge.from].status].edge
 
-    // The unlit channel, so an edge is present even before it carries anything.
-    drawPolyline(context, points, 1, PAL.qinghui, 2, 0)
+    // The unlit channel, so an edge is present even before it carries anything. The rule
+    // colour rather than the track colour — a track fill is a shape seen against a panel,
+    // and this is a line seen against the ground.
+    drawPolyline(context, points, 1, PAL.rule, 2, 0)
 
     if (form === 'solid') {
       const start = from.layer / (maxLayer + 1)
