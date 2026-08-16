@@ -201,3 +201,40 @@ Neither is in the PRD, and both want their own unit rather than a ride-along in 
 - **`_echo_position` enqueues onto an `asyncio.Queue` from a worker thread**, which is not
   thread-safe. Unchanged; it now at least sits inside the locked region, so the echoed tick and the
   echoed position come from one quantum.
+
+---
+
+## What U9 found, that U12 and U24 need
+
+**U12's file list contradicts a test U8 shipped, and the test is right.**
+`test_modelgw.py::test_the_package_imports_nothing_outside_the_stdlib_but_httpx` walks the AST of
+every `packages/modelgw/*.py` — function bodies included — and requires the third-party import set
+to be exactly `{"httpx"}`. U12's plan file list puts a **store-backed** cache at
+`backend/packages/modelgw/cache.py`, which needs SQLAlchemy and would fail that test.
+
+Do not argue the test down. It is what keeps `modelgw` a package a keyless run imports for free.
+Split the unit the way U9 split its own ledger:
+
+- `backend/packages/modelgw/cache.py` holds the **pure** half — deriving the cache key from the
+  assembled prompt bytes, the authorization scope and the purpose namespace (R3). No store, no
+  SQLAlchemy, stdlib only.
+- The **store-backed** half lives in `backend/services/agents/`, next to `StoreSpendLedger`, which
+  is the precedent U9 set for exactly this reason and which U9's own file list sanctioned.
+
+`SpendLedger` is a `Protocol` with a `MemorySpendLedger` beside it, so the cache should follow the
+same shape: a protocol in `modelgw`, an implementation in the service.
+
+U9 also left U12 a signature rather than a comment: `note_cache_hit(run_id, served: Completion)`
+takes a `Completion` specifically, so a `Failure` **cannot** be recorded as a hit. That is §3 of this
+document expressed as a type — a scripted fallback cannot become a cache entry by accident.
+
+**Nothing publishes the `MODEL_SPEND` control frame, and U24 should own it.** U9 built both ends —
+the `model_spend` table with a `GET /runs/{run_id}/spend` read on the agents service, and the client
+reducer branch plus the HUD tile — but the publisher belongs to the stream that already sends
+`POSITION_ECHO`, in `backend/services/gateway/`, which U9 was told not to touch. Until it exists the
+tile renders its zero-and-absent state, which is the same state a keyless run shows for its whole
+life, so the surface is quiet rather than wrong.
+
+U24 is the right owner: it already composes the gateway and the agents surface into one process, and
+it is the only unit allowed to see both. M28 says the HUD "updates during a run", which is not
+discharged until the frame is published — so this is part of U24's scope, not a nice-to-have.
