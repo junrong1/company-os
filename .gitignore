@@ -28,3 +28,6 @@ backend/var/
 # Environment / secrets
 .env
 .env.local
+
+# Local Compound Engineering prototypes and session artifacts
+.context/compound-engineering/
