@@ -238,3 +238,97 @@ life, so the surface is quiet rather than wrong.
 U24 is the right owner: it already composes the gateway and the agents surface into one process, and
 it is the only unit allowed to see both. M28 says the HUD "updates during a run", which is not
 discharged until the frame is published — so this is part of U24's scope, not a nice-to-have.
+
+---
+
+## What U5 found, that U19 and U24 need
+
+**No authored checkpoint offers six options, so "a six-option comparison" has to be synthesised.**
+All nine offer three. `MAX_BRANCHES_PER_COMPARISON` is six, so six is what one command may cost and
+six is the width worth defending a floor at — but the plan's U5 scenario and its 1.6s figure cannot
+be produced from the shipped scenario. U5's load tests widen `items.ITEMS_BY_ID` for the duration.
+
+Widening `state.dynamic_items` instead does **not** work, and the reason is a real limitation U19
+should know about: `snapshot.to_wire` writes eight fields per dynamic item and no `checkpoints`
+tuple, so a dynamic item's checkpoints do not survive a snapshot round-trip. A branch forked from a
+state holding one comes back with an empty checkpoint tuple and fails on an index. Nothing reaches
+that today — hiring items are the only dynamic items and they carry no checkpoints — but a scenario
+format that authors checkpoints onto a runtime-created item (U6) would make branch comparison of
+that item impossible until `to_wire` carries them.
+
+**The permille metric is confounded in a second way, on top of the truncation U4 recorded.** Because
+`wanted = int(elapsed * 36 * rate)` truncates per wake, a run whose event loop is *delayed* loses a
+smaller fraction: fewer, longer wakes each throw away less than one tick. So a loaded run can measure
+a **higher** observed-against-nominal figure than an idle one — 967-982 permille under sixteen
+concurrent comparisons against an idle reference of 908-910. The figure is still directionally right
+where it matters (683-744 permille when the clock is genuinely starved), but a unit reading it as a
+quality score rather than as a floor will draw the wrong conclusion from a two-percent difference.
+`sim_time_lag_ticks` is the unconfounded figure: it counts quanta the clamp refused to run.
+
+**Two things U5 closed that are recorded as accepted risks elsewhere.**
+`docs/residual-review-findings/feat-option-consequence-comparison.md` §2 — "a comparison occupies the
+worker pool every run's clock depends on" — is discharged by R14, and §1's remaining half (the
+retry that never saw the failure mode it was written for) is discharged with it. The README states
+the old cost as a limitation and is now out of date on it; **U1 owns the README** and should drop or
+amend that sentence.
+
+**`healthy()`'s message text changed**, from "every run with a non-zero rate has a live tick task"
+to "…has a clock that is still moving", and `Diagnosis` gained `seconds_since_last_tick`. Nothing
+outside `backend/` reads either — the client never fetches `/runs/{id}/diagnose` — but **U24** owns
+the status composition and should know the string moved.
+
+---
+
+## The deferred defect register
+
+Pre-existing defects found while executing this plan, none of them in the PRD's M-list, each
+deliberately not fixed by the unit that found it. They are collected here so they are a list
+somebody can schedule rather than five comments in five files.
+
+**`create_all` runs before the writer lease, and on Postgres it drops the append-only triggers.**
+Found by U24 (`2aba425`), and the most serious of these. `LogStore.create_all`'s Postgres path is
+`DROP TRIGGER IF EXISTS` followed by `CREATE TRIGGER`, and the ordering in `KernelRuntime.start`
+puts it before the lease is taken. So a second launcher — one the lease is *about to refuse* —
+briefly drops the append-only guard on a log another kernel is actively appending to. **Measured:
+the trigger OID moved 25640 → 25641.** U24 narrowed the window with a pre-flight DDL check but
+could not close it: closing it needs table creation to happen behind the lease, which
+`KernelRuntime.start`'s own docstring explains it cannot have. Recorded in
+`refuse_a_store_this_build_cannot_read`'s docstring. This is a data-integrity window, not a
+tidiness point, and it wants its own unit.
+
+**`achieved_multiplier_permille` truncates a fraction of a tick at every wake and never accumulates
+it.** Found by U4, confirmed and deepened by U5. At rate 1 the clock runs at roughly 55% of nominal
+while the field reports `1000`, and because the truncation is per-wake a *delayed* loop loses
+proportionally less — so a loaded run can measure higher than an idle one. Two units now assert
+around it rather than on it. Fixing it changes a reported figure, so it wants a unit that can also
+re-baseline whatever reads it.
+
+**`export` hashes a live run's whole state without the per-run lock.** Found by U4. The same class
+of torn read U4 closed on the command path. Locking alone is not the fix: it reads events from the
+store *before* hashing, so making the two agree needs a store read and a state read under one lock,
+which R13 forbids. It wants a snapshot-then-read-through-that-sequence design.
+
+**`_echo_position` enqueues onto an `asyncio.Queue` from a worker thread**, which is not
+thread-safe. Found by U4, which left it inside the locked region so the echoed tick and position at
+least come from one quantum.
+
+**`snapshot.to_wire` writes no `checkpoints` tuple for a dynamic item.** Found by U5. A branch
+forked from a state holding a dynamic item with checkpoints returns from `restore` with an empty
+tuple and fails on an index. Nothing reaches it today, because hiring items are the only dynamic
+items and they carry none — but it constrains U6: an authored catalog must stay on the static path.
+
+**A queued comparison still holds a slot in the *route* pool while it waits.** Found by U5. R14 asks
+for the clock to be protected and it now is, but `post_command` is a synchronous FastAPI route, so
+40 concurrent comparisons still exhaust the route pool. Making it `async` reaches into the gateway
+and the launcher.
+
+**No authored checkpoint offers six options.** Found by U5. All nine offer three, while
+`MAX_BRANCHES_PER_COMPARISON` is 6 — so the plan's "six-option comparison" and its 1.6s figure
+cannot be produced from the shipped scenario, and U5's load tests synthesise the width. Not a
+defect so much as a gap between the plan's numbers and the authored content; U6 or U21 could close
+it by authoring a wider checkpoint.
+
+**`frontend/scripts/screenshots.mjs` disagrees with M6.** Found by U2. The harness injects
+`WAITING_PERSON = 'dir_sales'` with a synthetic `wi_ap_map` tray entry, but a real day-zero run now
+waits on `dir_hr`/`wi_hiring`. Its three checked-in PNGs predate the hints. Whoever owns that
+harness should either switch it to the real seed or keep the injection with a note saying why.
