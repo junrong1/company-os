@@ -1,1606 +1,406 @@
-<meta charset="utf-8" />
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Company OS — Art Direction</title>
-
 <style>
-/* =========================================================================
-   Company OS — art direction specimen.
+  :root {
+    color-scheme: light;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 15px;
+    line-height: 1.6;
 
-   Inherits two rules from company-os.html and does not renegotiate them:
+    --ganglan: #fffef8;
+    --gangqing: #f7fbf9;
+    --yanhanlan: #fbf2e3;
+    --yuebai: #eef7f2;
+    --qinghui: #dfeaef;
+    --rule: #c3d5de;
+    --jingyuhui: #475164;
+    --yueyingbai: #2d3d52;
+    --xinghui: #4a6b85;
+    --text: #1c2938;
+    --outline: #253147;
+    --text-muted: #475164;
+    --text-faint: #5c677a;
+    --tianlan: #1677b3;
+    --shilv: #57c3c2;
+    --shilv2: #2f8c8b;
+    --fenlv: #83cbac;
+    --cuilv: #12775e;
+    --zhuhong: #c8402a;
+    --zheshi: #8a4028;
+    --canglv: #4a6f5f;
+    --beam: #f2c46b;
+    --beam-edge: #1c2938;
+    --tacit: #6b5bb5;
+    --dantaohong: #f6cec1;
+    --chutaofenhong: #f6dcce;
+    --tuose: #8a5a34;
+    --huaqing: #2376b7;
+    --zhulv: #189c7b;
+    --luodianzi: #74759b;
+    --huonizong: #aa6a4c;
+  }
 
-   1. Type is split by WHO IS SPEAKING. Mono for anything the system measured.
-      Sans for anything a person said. Serif only for the quotation mark on
-      human speech.
+  * { box-sizing: border-box; }
 
-   2. --beam is reserved for one meaning: a person is waiting on your decision.
-      Nothing else in the product may use it, which is why the capacity ramp
-      below routes around yellow instead of through it.
+  body {
+    margin: 0;
+    padding: 3rem 1.5rem 6rem;
+    background: var(--ganglan);
+    color: var(--text);
+  }
 
-   What is new here: the canvas palette is re-sourced from traditional Chinese
-   pigment colours (zhongguose.com). The chrome keeps its semantic slots and
-   swaps only the hues. The office is lit; the ground stays ink.
-   ========================================================================= */
+  main { max-width: 54rem; margin: 0 auto; }
 
-:root {
-  color-scheme: dark;
+  h1 { font-size: 1.6rem; margin: 0 0 0.5rem; letter-spacing: -0.01em; }
+  h2 { font-size: 1rem; margin: 3rem 0 0.75rem; }
+  h3 {
+    font-size: 0.68rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+    margin: 1.75rem 0 0.5rem;
+  }
 
-  /* ---- ground: the console the office sits in ---- */
-  --ganglan:      #0f1423;   /* 钢蓝  stage, outermost */
-  --yanhanlan:    #131824;   /* 燕颔蓝 stage, inner */
-  --gangqing:     #142334;   /* 钢青  wall base */
-  --qinghui:      #2b333e;   /* 青灰  panel, wall face-low */
-  --jingyuhui:    #475164;   /* 鲸鱼灰 wall face */
-  --yueyingbai:   #c0c4c3;   /* 月影白 wall lip */
-  --xinghui:      #b2bbbe;   /* 星灰  wall cap */
+  p { margin: 0 0 0.9rem; max-width: 42rem; }
+  .lede { color: var(--text-muted); max-width: 42rem; }
 
-  /* ---- semantic slots ---- */
-  --shilv:        #57c3c2;   /* 石绿  accent — interactive, selected */
-  --cuilv:        #20a162;   /* 翠绿  ok — positive delta */
-  --zhuhong:      #ed5126;   /* 朱红  err — negative delta */
-  --zheshi:       #862617;   /* 赭石  err, weak */
-  --beam:         #f2c46b;   /*       RESERVED — waiting on your decision */
-  --tacit:        #c4b1ff;   /*       knowledge only conversation yields */
+  hr { border: 0; border-top: 1px solid var(--rule); margin: 2.5rem 0; }
 
-  /* ---- room floors ---- */
-  --tuose:        #66462a;   /* 驼色  executive / lounge, plank base */
-  --lujiaozong:   #e3bd8d;   /* 鹿角棕 plank highlight */
-  --huaqing:      #2376b7;   /* 花青  sales */
-  --dianqing:     #1661ab;   /* 靛青  sales, deep */
-  --zhulv:        #1ba784;   /* 竹绿  accounting */
-  --luodianzi:    #74759b;   /* 螺甸紫 people */
-  --huonizong:    #aa6a4c;   /* 火泥棕 support — was amber, moved off the beam */
-  --canglv:       #223e36;   /* 苍绿  load, mid — the desaturation waypoint */
+  table { border-collapse: collapse; width: 100%; font-size: 0.82rem; margin: 0 0 1rem; }
+  th, td { text-align: left; padding: 0.35rem 0.6rem; border-bottom: 1px solid var(--rule); }
+  th { color: var(--text-faint); font-weight: 400; font-size: 0.7rem; letter-spacing: 0.08em; text-transform: uppercase; }
+  td code { font-size: 0.8rem; }
 
-  /* ---- chrome ---- */
-  --text:       #e9edf4;
-  --text-muted: #a2abbb;
-  --text-faint: #737d8e;
-  --rule:       #262b36;
+  code {
+    background: var(--yuebai);
+    padding: 0.1rem 0.3rem;
+    border-radius: 2px;
+  }
 
-  /* The JP fallbacks in the prototype are replaced with SC ahead of JP.
-     Chinese colour names and Phase 3 org data both need this. */
-  --sans: system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial,
-    "PingFang SC", "Noto Sans SC", "Hiragino Sans GB",
-    "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
-  --mono: "SFMono-Regular", "Cascadia Mono", Consolas, "Noto Sans Mono", monospace;
-  --serif: Georgia, "Times New Roman", serif;
-}
+  .swatch {
+    display: inline-block;
+    width: 1.5rem;
+    height: 0.9rem;
+    border: 1px solid var(--outline);
+    border-radius: 1px;
+    vertical-align: -0.1rem;
+    margin-right: 0.4rem;
+  }
 
-*, *::before, *::after { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; }
+  .ramp { display: flex; margin: 0 0 1rem; border: 1px solid var(--rule); }
+  .ramp > i { flex: 1; height: 2rem; }
 
-body {
-  background:
-    radial-gradient(120% 80% at 50% 0%, var(--yanhanlan), var(--ganglan) 70%);
-  color: var(--text);
-  font-family: var(--sans);
-  font-size: 14px;
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-  padding: 0 0 8rem;
-}
+  figure { margin: 1.25rem 0; }
+  figure img {
+    max-width: 100%;
+    display: block;
+    border: 1px solid var(--rule);
+    border-radius: 2px;
+    image-rendering: pixelated;
+  }
+  figcaption { font-size: 0.75rem; color: var(--text-faint); margin-top: 0.4rem; }
 
-h1, h2, h3 { margin: 0; line-height: 1.15; font-weight: 600; }
-p { margin: 0; max-width: 62ch; }
-ul { margin: 0; padding: 0; list-style: none; }
+  .note {
+    border-left: 2px solid var(--rule);
+    padding: 0.1rem 0 0.1rem 0.9rem;
+    color: var(--text-muted);
+    margin: 0 0 1rem;
+    max-width: 42rem;
+  }
 
-.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .reserved {
+    border-left: 3px solid var(--beam);
+    box-shadow: inset 4px 0 0 var(--beam-edge);
+    padding: 0.6rem 0.9rem;
+    background: var(--gangqing);
+    margin: 0 0 1rem;
+    max-width: 42rem;
+  }
 
-/* .said carries the serif quotation mark and nothing else does. */
-.said { font-family: var(--sans); font-style: normal; }
-.said::before {
-  content: '\201C';
-  font-family: var(--serif);
-  font-size: 1.5em;
-  line-height: 0;
-  vertical-align: -0.15em;
-  color: var(--text-faint);
-  margin-right: 0.1em;
-}
-.said::after {
-  content: '\201D';
-  font-family: var(--serif);
-  font-size: 1.5em;
-  line-height: 0;
-  vertical-align: -0.15em;
-  color: var(--text-faint);
-}
-
-/* ---------- spine ---------- */
-.spine { max-width: 68rem; margin: 0 auto; padding: 0 2rem; }
-
-header.masthead { padding: 7rem 0 4rem; }
-.eyebrow {
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--shilv);
-  margin-bottom: 1.75rem;
-}
-h1 {
-  font-size: clamp(2.4rem, 6vw, 4.25rem);
-  letter-spacing: -0.025em;
-  margin-bottom: 1.5rem;
-}
-.thesis { font-size: 1.1rem; color: var(--text-muted); max-width: 54ch; }
-
-section { padding: 4.5rem 0 0; }
-.sect-head { margin-bottom: 2rem; }
-.sect-num {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--text-faint);
-  letter-spacing: 0.14em;
-}
-h2 { font-size: 1.5rem; letter-spacing: -0.01em; margin: 0.35rem 0 0.9rem; }
-.sect-head p { color: var(--text-muted); }
-
-hr {
-  border: 0;
-  border-top: 1px solid var(--rule);
-  margin: 4.5rem 0 0;
-}
-
-/* ---------- the anchor ---------- */
-.stage-frame {
-  margin: 0 0 1.25rem;
-  background: var(--ganglan);
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  overflow-x: auto;
-  padding: 1.5rem;
-}
-.stage-frame canvas { display: block; image-rendering: pixelated; margin: 0 auto; }
-figcaption { font-size: 12px; color: var(--text-faint); max-width: 62ch; }
-
-/* ---------- swatch bands ---------- */
-.band { display: flex; flex-wrap: wrap; gap: 1px; margin-bottom: 1.5rem; }
-.chip { flex: 1 1 8.5rem; min-width: 8.5rem; padding: 1rem 0.9rem 0.9rem; }
-.chip .hanzi { font-size: 1.05rem; font-weight: 600; letter-spacing: 0.02em; }
-.chip .py {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  opacity: 0.72;
-}
-.chip .hex { font-family: var(--mono); font-size: 11px; margin-top: 0.75rem; opacity: 0.85; }
-.chip .role { font-size: 11px; margin-top: 0.15rem; opacity: 0.7; }
-
-/* ---------- slot table ---------- */
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th, td { text-align: left; padding: 0.7rem 0.9rem 0.7rem 0; border-bottom: 1px solid var(--rule); vertical-align: middle; }
-th {
-  font-family: var(--mono);
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  font-weight: 400;
-}
-td.sw { width: 3.5rem; padding-right: 0; }
-.dot { width: 2.25rem; height: 1.15rem; border-radius: 2px; display: block; }
-
-/* ---------- ramp ---------- */
-.ramp { display: flex; height: 3.25rem; border-radius: 3px; overflow: hidden; margin-bottom: 0.6rem; }
-.ramp span { flex: 1; }
-.ramp-label {
-  display: flex; justify-content: space-between;
-  font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
-  color: var(--text-faint); margin-bottom: 1.5rem;
-}
-.wrong { position: relative; opacity: 0.55; }
-.wrong::after {
-  content: '';
-  position: absolute; inset: 0;
-  background: repeating-linear-gradient(135deg,
-    transparent 0 7px, rgba(15,20,35,0.75) 7px 14px);
-}
-.verdict { font-size: 12px; margin-bottom: 2.25rem; }
-.verdict.no { color: var(--zhuhong); }
-.verdict.yes { color: var(--cuilv); }
-
-/* ---------- glyph + font sheets ---------- */
-.sheet {
-  display: flex; flex-wrap: wrap; gap: 1.5rem;
-  background: var(--gangqing);
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  padding: 1.5rem;
-  margin-bottom: 1.25rem;
-}
-.gcell { text-align: center; }
-.gcell canvas { display: block; image-rendering: pixelated; margin: 0 auto 0.5rem; }
-.gcell .gname {
-  font-family: var(--mono); font-size: 10px;
-  letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-faint);
-}
-
-.fontsheet {
-  background: var(--gangqing);
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  padding: 1.5rem;
-  margin-bottom: 1.25rem;
-  overflow-x: auto;
-}
-.fontsheet canvas { display: block; image-rendering: pixelated; }
-.fontsheet canvas + canvas { margin-top: 1.25rem; }
-
-/* ---------- geometry diagram ---------- */
-.geom {
-  display: flex; flex-wrap: wrap; gap: 2.5rem; align-items: flex-start;
-  background: var(--ganglan);
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  padding: 2rem 1.5rem;
-  margin-bottom: 1.25rem;
-}
-.geom canvas { image-rendering: pixelated; display: block; }
-.geom-note { flex: 1 1 18rem; min-width: 16rem; font-size: 13px; color: var(--text-muted); }
-.geom-note strong { color: var(--text); font-weight: 600; }
-
-/* ---------- dag ---------- */
-.dag-frame {
-  background: var(--ganglan);
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  padding: 1.5rem;
-  margin-bottom: 1rem;
-  overflow-x: auto;
-}
-.dag-frame canvas { display: block; image-rendering: pixelated; margin: 0 auto; }
-button.replay {
-  font: inherit;
-  font-family: var(--mono);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--ganglan);
-  background: var(--shilv);
-  border: 0;
-  border-radius: 2px;
-  padding: 0.55rem 1.1rem;
-  cursor: pointer;
-  transition: transform 120ms ease, filter 120ms ease;
-}
-button.replay:hover { filter: brightness(1.12); transform: translateY(-1px); }
-button.replay:active { transform: translateY(0); }
-:focus-visible { outline: 2px solid var(--shilv); outline-offset: 3px; }
-
-/* ---------- motion demos ---------- */
-.motion-row { display: flex; flex-wrap: wrap; gap: 1px; margin-bottom: 1.25rem; }
-.motion-cell {
-  flex: 1 1 14rem; min-width: 13rem;
-  background: var(--gangqing);
-  padding: 1.5rem 1.25rem;
-}
-.motion-cell h3 { font-size: 13px; margin-bottom: 0.15rem; }
-.motion-cell .ms {
-  font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em;
-  color: var(--shilv); margin-bottom: 1rem;
-}
-.motion-cell p { font-size: 12px; color: var(--text-muted); }
-
-.beam-demo { height: 4rem; display: flex; align-items: flex-end; justify-content: center; margin-bottom: 1rem; }
-.beam-col {
-  width: 8px; height: 100%;
-  background: linear-gradient(to top, var(--beam), transparent);
-  animation: breathe 1.6s ease-in-out infinite;
-}
-@keyframes breathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
-
-.bleed-demo {
-  height: 4rem; border-radius: 2px; margin-bottom: 1rem;
-  animation: bleed 3.2s ease-in-out infinite;
-}
-@keyframes bleed {
-  0%, 22%   { background: var(--zhulv); }
-  50%, 72%  { background: var(--canglv); }
-  100%      { background: var(--zheshi); }
-}
-
-.cascade-demo { height: 4rem; display: flex; align-items: center; gap: 6px; margin-bottom: 1rem; }
-.cascade-demo i {
-  width: 14px; height: 14px; border-radius: 1px;
-  background: var(--qinghui);
-  animation: light 2.4s ease-in-out infinite;
-}
-.cascade-demo i:nth-child(2) { animation-delay: 0.16s; }
-.cascade-demo i:nth-child(3) { animation-delay: 0.32s; }
-.cascade-demo i:nth-child(4) { animation-delay: 0.48s; }
-.cascade-demo i:nth-child(5) { animation-delay: 0.64s; }
-@keyframes light {
-  0%, 55%, 100% { background: var(--qinghui); }
-  62%, 88%      { background: var(--shilv); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .beam-col, .bleed-demo, .cascade-demo i { animation: none; }
-}
-
-/* ---------- validation ---------- */
-.validate {
-  font-family: var(--mono); font-size: 11px;
-  padding: 0.9rem 1.1rem; border-radius: 3px;
-  border: 1px solid var(--rule);
-}
-.validate.pass { color: var(--cuilv); }
-.validate.fail { color: var(--zhuhong); }
-
-@media (max-width: 720px) {
-  .spine { padding: 0 1.25rem; }
-  header.masthead { padding: 4rem 0 2.5rem; }
-}
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: 0.6rem; }
+  .card { background: var(--gangqing); border: 1px solid var(--rule); border-radius: 2px; padding: 0.6rem 0.75rem; font-size: 0.8rem; }
+  .card b { display: block; font-weight: 600; margin-bottom: 0.2rem; }
 </style>
+</head>
+<body>
+<main>
 
-<div class="spine">
+<h1>A lit office, and chrome that gets out of its way.</h1>
+<p class="lede">
+  Company OS is a bright contemporary workplace, not a night-shift control room. The office and
+  the people in it are the first thing the eye lands on; the metrics explain their situation
+  without replacing them.
+</p>
 
-<header class="masthead">
-  <div class="eyebrow">Company OS · Art Direction · 2026-08-12</div>
-  <h1>A lit office on ink ground.</h1>
-  <p class="thesis">
-    The office glows in traditional pigment colour; the console around it stays
-    ink. Smallville's information design comes across — status glyphs above the
-    head, click to inspect, knowledge that is partial by default — but not its
-    daylight. A night-shift control room reads as consequence. A sunny village
-    reads as play, and play is the framing this product rejected.
+<div class="note">
+  <p style="margin:0">
+    This specimen replaces the ink one. Every value below is the value in
+    <code>frontend/src/design/tokens.ts</code>, and <code>frontend/tests/chrome.test.ts</code>
+    reads that file and the stylesheet and asserts they agree — so a swatch here that has drifted
+    from the product is a failing test rather than a stale document.
   </p>
-</header>
-
-<hr />
-
-<section>
-  <div class="sect-head">
-    <div class="sect-num">01 / STAGE</div>
-    <h2>The anchor</h2>
-    <p>
-      Two rooms in pigment on ink ground, drawn through the same runtime
-      ASCII-grid pipeline the prototype already uses. One person is working and
-      carries a status glyph at the shoulder. One is waiting on a decision and
-      carries the beam above the head. The two signals never occupy the same
-      space, which is what keeps the beam readable at a glance.
-    </p>
-  </div>
-  <figure class="stage-frame">
-    <canvas id="stage" width="720" height="288"></canvas>
-  </figure>
-  <figcaption>
-    Sales in 花青 <span class="mono">#2376b7</span>, Accounting in 竹绿
-    <span class="mono">#1ba784</span>, walls capped 星灰
-    <span class="mono">#b2bbbe</span> over 钢青 <span class="mono">#142334</span>.
-    Rendered at 3× integer zoom, nearest-neighbour.
-  </figcaption>
-</section>
-
-<hr />
-
-<section>
-  <div class="sect-head">
-    <div class="sect-num">02 / SEMANTIC SLOTS</div>
-    <h2>Chrome keeps its meanings, swaps its hues</h2>
-    <p>
-      Every slot below already existed. Only the hue is re-sourced. The beam is
-      the exception and stays exactly as it was: it is the product's single
-      reserved signal, it is already tuned, and re-sourcing everything around it
-      leaves it the most saturated warm in the frame.
-    </p>
-  </div>
-  <table>
-    <thead>
-      <tr><th></th><th>Slot</th><th>Meaning</th><th>Colour</th><th>Hex</th></tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td class="sw"><span class="dot" style="background:#57c3c2"></span></td>
-        <td class="mono">accent</td><td>interactive, selected</td>
-        <td>石绿 <span class="mono" style="opacity:.6">shilv</span></td>
-        <td class="mono">#57c3c2</td>
-      </tr>
-      <tr>
-        <td class="sw"><span class="dot" style="background:#20a162"></span></td>
-        <td class="mono">ok</td><td>positive delta</td>
-        <td>翠绿 <span class="mono" style="opacity:.6">cuilv</span></td>
-        <td class="mono">#20a162</td>
-      </tr>
-      <tr>
-        <td class="sw"><span class="dot" style="background:#ed5126"></span></td>
-        <td class="mono">err</td><td>negative delta</td>
-        <td>朱红 <span class="mono" style="opacity:.6">zhuhong</span></td>
-        <td class="mono">#ed5126</td>
-      </tr>
-      <tr>
-        <td class="sw"><span class="dot" style="background:#862617"></span></td>
-        <td class="mono">err-weak</td><td>negative, backing</td>
-        <td>赭石 <span class="mono" style="opacity:.6">zheshi</span></td>
-        <td class="mono">#862617</td>
-      </tr>
-      <tr>
-        <td class="sw"><span class="dot" style="background:#f2c46b"></span></td>
-        <td class="mono">beam</td><td><strong>reserved</strong> — waiting on your decision</td>
-        <td>retained, unchanged</td>
-        <td class="mono">#f2c46b</td>
-      </tr>
-      <tr>
-        <td class="sw"><span class="dot" style="background:#c4b1ff"></span></td>
-        <td class="mono">tacit</td><td>knowledge only conversation yields</td>
-        <td>retained — see note</td>
-        <td class="mono">#c4b1ff</td>
-      </tr>
-      <tr>
-        <td class="sw"><span class="dot" style="background:#0f1423;outline:1px solid #262b36"></span></td>
-        <td class="mono">stage</td><td>ground under the office</td>
-        <td>钢蓝 <span class="mono" style="opacity:.6">ganglan</span></td>
-        <td class="mono">#0f1423</td>
-      </tr>
-    </tbody>
-  </table>
-  <p style="margin-top:1.5rem;color:var(--text-muted);font-size:13px">
-    <strong style="color:var(--text)">One honest gap.</strong> The zhongguose
-    dataset's violets are all dark — 紫灰 <span class="mono">#5d3f51</span>,
-    螺甸紫 <span class="mono">#74759b</span> — and none reach the luminance
-    <span class="mono">tacit</span> needs as a text accent on ink. It keeps its
-    current value rather than getting a worse one for the sake of consistency.
-    In light mode 紫灰 works and should be used.
-  </p>
-</section>
-
-<hr />
-
-<section>
-  <div class="sect-head">
-    <div class="sect-num">03 / ROOMS</div>
-    <h2>Six floors, and the one that had to move</h2>
-    <p>
-      Customer Support's floor was the <span class="mono">amber</span> room
-      style — an amber floor sitting under an amber light column. The canvas has
-      its own palette so nothing collided in code, but perceptually it diluted
-      the one signal that must not dilute. It moves to 火泥棕.
-    </p>
-  </div>
-  <div class="band">
-    <div class="chip" style="background:#66462a;color:#f9e9cd">
-      <div class="hanzi">驼色</div><div class="py">tuose</div>
-      <div class="hex">#66462a</div><div class="role">Executive · Lounge</div>
-    </div>
-    <div class="chip" style="background:#2376b7;color:#eef7f2">
-      <div class="hanzi">花青</div><div class="py">huaqing</div>
-      <div class="hex">#2376b7</div><div class="role">Sales</div>
-    </div>
-    <div class="chip" style="background:#1ba784;color:#0f1423">
-      <div class="hanzi">竹绿</div><div class="py">zhulv</div>
-      <div class="hex">#1ba784</div><div class="role">Accounting</div>
-    </div>
-    <div class="chip" style="background:#2b333e;color:#c0c4c3">
-      <div class="hanzi">青灰</div><div class="py">qinghui</div>
-      <div class="hex">#2b333e</div><div class="role">Meeting · Admin</div>
-    </div>
-    <div class="chip" style="background:#74759b;color:#0f1423">
-      <div class="hanzi">螺甸紫</div><div class="py">luodianzi</div>
-      <div class="hex">#74759b</div><div class="role">People</div>
-    </div>
-    <div class="chip" style="background:#aa6a4c;color:#f9e9cd">
-      <div class="hanzi">火泥棕</div><div class="py">huonizong</div>
-      <div class="hex">#aa6a4c</div><div class="role">Support — moved off amber</div>
-    </div>
-  </div>
-  <div class="band">
-    <div class="chip" style="background:#b2bbbe;color:#0f1423">
-      <div class="hanzi">星灰</div><div class="py">xinghui</div>
-      <div class="hex">#b2bbbe</div><div class="role">wall cap</div>
-    </div>
-    <div class="chip" style="background:#c0c4c3;color:#0f1423">
-      <div class="hanzi">月影白</div><div class="py">yueyingbai</div>
-      <div class="hex">#c0c4c3</div><div class="role">wall lip</div>
-    </div>
-    <div class="chip" style="background:#475164;color:#eef7f2">
-      <div class="hanzi">鲸鱼灰</div><div class="py">jingyuhui</div>
-      <div class="hex">#475164</div><div class="role">wall face</div>
-    </div>
-    <div class="chip" style="background:#142334;color:#c0c4c3">
-      <div class="hanzi">钢青</div><div class="py">gangqing</div>
-      <div class="hex">#142334</div><div class="role">wall base</div>
-    </div>
-    <div class="chip" style="background:#e3bd8d;color:#66462a">
-      <div class="hanzi">鹿角棕</div><div class="py">lujiaozong</div>
-      <div class="hex">#e3bd8d</div><div class="role">plank highlight</div>
-    </div>
-  </div>
-</section>
-
-<hr />
-
-<section>
-  <div class="sect-head">
-    <div class="sect-num">04 / LOAD</div>
-    <h2>The ramp must not pass through yellow</h2>
-    <p>
-      Capacity runs green to red. The obvious interpolation goes through yellow,
-      and yellow is the beam. A department at two-thirds load would then look
-      like a person waiting on a decision, and the product's one reserved signal
-      would be spent on ambient telemetry. The ramp desaturates through 苍绿
-      instead.
-    </p>
-  </div>
-
-  <div class="ramp wrong">
-    <span style="background:#1ba784"></span><span style="background:#7ec850"></span>
-    <span style="background:#d2d97a"></span><span style="background:#f2c46b"></span>
-    <span style="background:#f28e16"></span><span style="background:#ed5126"></span>
-  </div>
-  <div class="ramp-label"><span>0%</span><span>LOAD</span><span>140%</span></div>
-  <p class="verdict no">
-    Rejected. Steps four and five sit on and beside <span class="mono">--beam
-    #f2c46b</span>. Ambient load would read as a pending decision.
-  </p>
-
-  <div class="ramp">
-    <span style="background:#1ba784"></span><span style="background:#2c9678"></span>
-    <span style="background:#428675"></span><span style="background:#223e36"></span>
-    <span style="background:#862617"></span><span style="background:#ed5126"></span>
-  </div>
-  <div class="ramp-label">
-    <span>竹绿 #1ba784</span><span>青矾绿 · 亚丁绿 · 苍绿 #223e36</span><span>赭石 → 朱红 #ed5126</span>
-  </div>
-  <p class="verdict yes">
-    Adopted. Saturation drains toward 苍绿 at the ceiling, then warmth returns as
-    red. The midpoint reads as strain rather than as a signal, and no step comes
-    near the beam.
-  </p>
-</section>
-
-<hr />
-
-<section>
-  <div class="sect-head">
-    <div class="sect-num">05 / GEOMETRY</div>
-    <h2>Beam above the head, glyph at the shoulder</h2>
-    <p>
-      Smallville puts an emoji speech bubble directly above the avatar. That
-      space is already spoken for here, so the status glyph moves down and to the
-      side. Both signals can be present at once without competing.
-    </p>
-  </div>
-  <div class="geom">
-    <canvas id="geom" width="470" height="270"></canvas>
-    <div class="geom-note">
-      <p style="margin-bottom:1rem">
-        <strong>Beam.</strong> A vertical column rising from directly above the
-        head, 8 px wide at 1×, fading to transparent. Breathes at 1.6 s. The only
-        indefinite loop in the product.
-      </p>
-      <p style="margin-bottom:1rem">
-        <strong>Status glyph.</strong> An 8×8 pixel glyph in a plate offset 6 px
-        right and 4 px down from the head top, drawn through the sprite pipeline
-        rather than as emoji. System emoji would be the wrong resolution, would
-        drift between platforms, and would be the one thing on the canvas not
-        made of pixels.
-      </p>
-      <p>
-        <strong>Inspect shows less than conversation.</strong> Clicking a person
-        reveals observable state only — their item, effort burned, load, what
-        they are blocked on. The tacit line stays earned by walking over. This is
-        the one place where adopting Smallville's affordance wholesale would
-        dissolve the mechanic the product is built on.
-      </p>
-    </div>
-  </div>
-  <figcaption>
-    Left: working, glyph only. Centre: waiting, beam only. Right: both — waiting
-    on a decision while a meeting is in progress.
-  </figcaption>
-</section>
-
-<hr />
-
-<section>
-  <div class="sect-head">
-    <div class="sect-num">06 / GLYPHS</div>
-    <h2>Status vocabulary</h2>
-    <p>
-      Eight states, each an 8×8 ASCII grid compiled at runtime, validated for
-      rectangularity the way <span class="mono">test/sprites.js</span> validates
-      the character sheets. Shown at 4× and 2×.
-    </p>
-  </div>
-  <div class="sheet" id="glyphs"></div>
-  <div class="validate" id="gvalid"></div>
-</section>
-
-<hr />
-
-<section>
-  <div class="sect-head">
-    <div class="sect-num">07 / LABELS</div>
-    <h2>A 5×7 bitmap face, generated not downloaded</h2>
-    <p>
-      Room names and person labels are currently drawn with the system sans over
-      the canvas, which floats on top of the art instead of belonging to it. A
-      5×7 bitmap alphabet built from the same grid pipeline stays crisp at every
-      integer zoom, needs no network request, and reads as part of the world. The
-      prototype's zero-request property survives.
-    </p>
-  </div>
-  <div class="fontsheet">
-    <canvas id="fontA" width="700" height="120"></canvas>
-    <canvas id="fontB" width="700" height="76"></canvas>
-  </div>
-  <figcaption>
-    Full set at 3×, then in-world labels at 2× over 花青 and 竹绿 floors. The
-    mono / sans split still holds in the chrome — this face is for the canvas
-    only. Note which line is amber: <span class="mono">DECISION PENDING</span>
-    earns the beam because that is the reserved meaning.
-    <span class="mono">LOAD 62%</span> does not, and stays neutral — measured
-    telemetry in amber is exactly how the signal gets spent.
-  </figcaption>
-</section>
-
-<hr />
-
-<section>
-  <div class="sect-head">
-    <div class="sect-num">08 / DAG</div>
-    <h2>Circuit board, not flowchart</h2>
-    <p>
-      The failure mode for this view is a default graph library: bezier curves,
-      drop shadows, rounded pills. Drawn instead on the same 16 px grid as the
-      office, with orthogonally routed pixel-stepped edges, it belongs to the
-      same world. A node carries a department stripe in its floor colour and a
-      load tint, so an overloaded path is visible without opening the office.
-    </p>
-  </div>
-  <div class="dag-frame">
-    <canvas id="dag" width="760" height="330"></canvas>
-  </div>
-  <button class="replay" id="replay">Replay unlock cascade</button>
-  <figcaption style="margin-top:1rem">
-    A deliverable completes, the edge draws forward, the newly unlocked node
-    lights. This is the moment causality becomes visible, and it is the only
-    place in the product where an animation carries information rather than
-    atmosphere. Edge state comes from the source node: solid means upstream
-    delivered, dashed means upstream is still open, and the violet stub is a
-    severed chain — a decision is blocking that path.
-  </figcaption>
-</section>
-
-<hr />
-
-<section>
-  <div class="sect-head">
-    <div class="sect-num">09 / NODE STATUS</div>
-    <h2>Five states, and why none of them is amber</h2>
-    <p>
-      A node already spends two colour channels — the department stripe and the
-      load bar. Status cannot be a third: three simultaneous colour codings on a
-      small plate is unreadable, and it would collide with both. So status is
-      carried by <strong>border form</strong> plus a glyph, with hue as a
-      secondary cue that only ever reuses a slot for the thing it already means.
-    </p>
-  </div>
-  <figure class="stage-frame">
-    <canvas id="status" width="760" height="240"></canvas>
-  </figure>
-  <table style="margin-top:1.5rem">
-    <thead>
-      <tr><th>State</th><th>Border</th><th>Glyph</th><th>Outgoing edge</th><th>Hue</th></tr>
-    </thead>
-    <tbody>
-      <tr><td class="mono">backlog</td><td>none — plate only</td><td>hollow square</td><td>dashed</td><td>label dimmed to 鲸鱼灰</td></tr>
-      <tr><td class="mono">assigned</td><td>dotted</td><td>arrow into bracket</td><td>dashed</td><td>月影白 <span class="mono" style="opacity:.6">#c0c4c3</span></td></tr>
-      <tr><td class="mono">in progress</td><td>solid</td><td>document</td><td>dashed</td><td>石绿 <span class="mono" style="opacity:.6">#57c3c2</span> — accent already means live</td></tr>
-      <tr><td class="mono">blocked</td><td>broken on the outgoing edge</td><td>question mark</td><td><strong>severed + tick</strong></td><td>tacit violet <span class="mono" style="opacity:.6">#c4b1ff</span></td></tr>
-      <tr><td class="mono">complete</td><td>double — sealed, plate recessed</td><td>parcel</td><td>solid</td><td>翠绿 <span class="mono" style="opacity:.6">#20a162</span> — ok already means landed</td></tr>
-    </tbody>
-  </table>
-  <p style="margin-top:1.5rem;color:var(--text-muted);font-size:13px">
-    <strong style="color:var(--text)">The blocked state is the load-bearing
-    one.</strong> It must not use <span class="mono">--beam</span>: amber means
-    a <em>person</em> is waiting on you, never a work item. Violet is not a
-    dilution of <span class="mono">--tacit</span> — a blocked node is precisely
-    the site where the tacit line is available, so it is the same meaning
-    applied to the object that holds it. In the office you see amber above a
-    head; in the DAG you see violet on a node. Same underlying fact, two
-    different objects, and the pairing is teachable rather than confusing.
-  </p>
-</section>
-
-<hr />
-
-<section>
-  <div class="sect-head">
-    <div class="sect-num">10 / LAYOUT</div>
-    <h2>The DAG takes the stage; a strip keeps it present</h2>
-    <p>
-      The office is where the CEO acts. The DAG is where they orient. Those are
-      different jobs at different cadences, so they do not want equal weight on
-      screen at the same time — a split view leaves both cramped, and a panel
-      tab leaves the DAG unusable in a narrow rail.
-    </p>
-  </div>
-  <figure class="stage-frame">
-    <canvas id="layout" width="760" height="440"></canvas>
-  </figure>
-  <figcaption>
-    <span class="mono">Tab</span> swaps what the stage renders. The chain strip
-    along the bottom persists in both modes.
-  </figcaption>
-  <p style="margin-top:1.5rem;color:var(--text-muted);font-size:13px">
-    <strong style="color:var(--text)">The chain strip is what makes the toggle
-    safe.</strong> A flow requirement says blocked work must be visible in both
-    the office and the DAG — a full-stage toggle would break that if the DAG
-    were the only place status lived. Collapsing the graph to one pip per item in
-    dependency order, carrying the same border encoding, means a severed chain
-    shows violet while you are still standing in the office. You never need to
-    open the DAG to learn that something stopped; you open it to learn what is
-    downstream of the thing that stopped. The strip is also why the encoding had
-    to survive shrinking — the pips below are drawn by the same function as the
-    full nodes above, at 1 px stroke.
-  </p>
-</section>
-
-<hr />
-
-<section>
-  <div class="sect-head">
-    <div class="sect-num">11 / MOTION</div>
-    <h2>Three motions, no more</h2>
-  </div>
-  <div class="motion-row">
-    <div class="motion-cell">
-      <div class="beam-demo"><div class="beam-col"></div></div>
-      <h3>Beam breathing</h3>
-      <div class="ms">1600ms · ease-in-out · infinite</div>
-      <p>Waiting has to read as waiting, not as a static badge. The only loop allowed to run forever.</p>
-    </div>
-    <div class="motion-cell">
-      <div class="bleed-demo"></div>
-      <h3>Load bleed</h3>
-      <div class="ms">800ms · ease-in-out · on change</div>
-      <p>Capacity slides across a room floor rather than snapping. A soft ceiling should feel soft.</p>
-    </div>
-    <div class="motion-cell">
-      <div class="cascade-demo"><i></i><i></i><i></i><i></i><i></i></div>
-      <h3>Unlock cascade</h3>
-      <div class="ms">160ms stagger · on completion</div>
-      <p>Edges draw forward and downstream nodes light in dependency order. Carries information.</p>
-    </div>
-  </div>
-  <p style="color:var(--text-muted);font-size:13px">
-    The walk cycle stays as it is — four facings, three frames, already built and
-    already tested. Everything here honours
-    <span class="mono">prefers-reduced-motion</span>; the beam falls back to its
-    full-opacity state so the signal never disappears.
-  </p>
-</section>
-
 </div>
 
-<script>
-/* =========================================================================
-   Everything below compiles pixel art from ASCII grids at runtime — the same
-   approach as company-os.html, so nothing here needs an asset pipeline.
-   ========================================================================= */
-
-const PAL = {
-  ganglan: '#0f1423', yanhanlan: '#131824', gangqing: '#142334',
-  qinghui: '#2b333e', jingyuhui: '#475164', yueyingbai: '#c0c4c3',
-  xinghui: '#b2bbbe', shilv: '#57c3c2', cuilv: '#20a162',
-  zhuhong: '#ed5126', zheshi: '#862617', beam: '#f2c46b',
-  tuose: '#66462a', lujiaozong: '#e3bd8d', huaqing: '#2376b7',
-  dianqing: '#1661ab', zhulv: '#1ba784', luodianzi: '#74759b',
-  huonizong: '#aa6a4c', canglv: '#223e36', mise: '#f9e9cd',
-  yuebai: '#eef7f2', tacit: '#c4b1ff',
-};
-
-/* ---------- 8×8 status glyphs -------------------------------------------
-   '.' transparent · 'k' ink outline · 'a' primary fill · 'b' secondary fill */
-const GLYPHS = {
-  work: [
-    '..kkkkk.', '..kaaak.', '..kbbbk.', '..kaaak.',
-    '..kbbbk.', '..kaaak.', '..kkkkk.', '........',
-  ],
-  transit: [
-    '........', '....k...', '....kk..', 'kkkkkkk.',
-    '....kk..', '....k...', '........', '........',
-  ],
-  raised: [
-    '..kkkk..', '.kaaaak.', '.kk..ak.', '....kk..',
-    '...kk...', '...kk...', '........', '...kk...',
-  ],
-  meeting: [
-    '.kk..kk.', 'kaakkaak', '.kk..kk.', '........',
-    'kkkkkkkk', 'kaaaaaak', '........', '........',
-  ],
-  idle: [
-    '........', '.kkkkk..', '....kk..', '...kk...',
-    '..kk....', '.kkkkk..', '........', '........',
-  ],
-  overload: [
-    '.kkkkkk.', '.kaaaak.', '.kkkkkk.', '.kbbbbk.',
-    '.kkkkkk.', '.kaaaak.', '.kkkkkk.', '........',
-  ],
-  deliver: [
-    '.kkkkkk.', '.kaakak.', '.kaakak.', '.kkkkkk.',
-    '.kaakak.', '.kaakak.', '.kkkkkk.', '........',
-  ],
-  hiring: [
-    '.kkkk...', '.kaak...', '.kkkk...', '..kk..k.',
-    '..kk.kkk', '..kk..k.', '........', '........',
-  ],
-  /* Node-status glyphs. work / raised / deliver are reused from the person
-     set above — a node in progress, blocked, or delivered means the same
-     thing as a person doing, asking, or handing over. */
-  backlog: [
-    '........', '.kkkkkk.', '.k....k.', '.k....k.',
-    '.k....k.', '.k....k.', '.kkkkkk.', '........',
-  ],
-  assigned: [
-    '........', '..k..kk.', '...k..k.', 'kkkk..k.',
-    '...k..k.', '..k..kk.', '........', '........',
-  ],
-};
-
-/* The plate behind a glyph is dark, so the glyph's structure has to be the
-   light value. Inking 'k' in ganglan would make it vanish into the plate and
-   leave only the interior fill showing — the glyph would read as two dashes. */
-const GLYPH_PAL = { k: PAL.yueyingbai, a: PAL.jingyuhui, b: PAL.qinghui };
-
-/* ---------- node status encoding ---------------------------------------
-   Colour is already spent twice on a node — the department stripe and the
-   load bar — so status is carried by BORDER FORM plus a glyph, with hue as a
-   secondary cue only. Every hue below is an existing semantic slot used for
-   the thing it already means:
-
-     accent 石绿  = live / interactive        → in progress
-     ok     翠绿  = a good outcome landed     → complete
-     tacit  violet = knowledge only a conversation yields → blocked
-
-   The blocked state is the load-bearing case. It must not use --beam: amber
-   belongs to a PERSON waiting on the CEO, never to a work item. Violet is
-   not a dilution of tacit — a blocked node is precisely the site where the
-   tacit line is available, so it is the same meaning applied to the object
-   that holds it. Three redundant cues carry it (broken border, "?" glyph,
-   severed outgoing edge) so the state survives at pip scale and in
-   greyscale. */
-const STATUS = {
-  backlog:  { glyph: 'backlog',  hue: PAL.jingyuhui, border: 'none',   edge: 'dashed', label: PAL.jingyuhui },
-  assigned: { glyph: 'assigned', hue: PAL.yueyingbai, border: 'dotted', edge: 'dashed', label: PAL.xinghui },
-  progress: { glyph: 'work',     hue: PAL.shilv,     border: 'solid',  edge: 'dashed', label: PAL.yuebai },
-  blocked:  { glyph: 'raised',   hue: PAL.tacit,     border: 'broken', edge: 'severed', label: PAL.tacit },
-  complete: { glyph: 'deliver',  hue: PAL.cuilv,     border: 'double', edge: 'solid',  label: PAL.yuebai },
-};
-
-/* Border form is the primary status channel, shared by the full node and the
-   collapsed pip. Scaling it down is the test: dotted thins to corner ticks and
-   broken keeps its gap, so all five states stay distinguishable at 10 px and
-   in greyscale — which hue alone would not survive. */
-function border(g, x, y, w, h, style, hue, t) {
-  if (style === 'none') return;
-  t = t || 2;
-  g.fillStyle = hue;
-  if (style === 'solid') {
-    g.fillRect(x, y, w, t); g.fillRect(x, y + h - t, w, t);
-    g.fillRect(x, y, t, h);  g.fillRect(x + w - t, y, t, h);
-    return;
-  }
-  if (style === 'dotted') {
-    const step = Math.max(3, t * 3), run = Math.max(1, t);
-    for (let i = 0; i < w; i += step) {
-      g.fillRect(x + i, y, run, t); g.fillRect(x + i, y + h - t, run, t);
-    }
-    for (let i = 0; i < h; i += step) {
-      g.fillRect(x, y + i, t, run); g.fillRect(x + w - t, y + i, t, run);
-    }
-    return;
-  }
-  if (style === 'broken') {
-    /* Solid except a gap on the outgoing edge — the chain is cut here. */
-    const gap = Math.max(4, Math.round(h * 0.35)), mid = Math.round(h / 2);
-    g.fillRect(x, y, w, t); g.fillRect(x, y + h - t, w, t);
-    g.fillRect(x, y, t, h);
-    g.fillRect(x + w - t, y, t, Math.max(0, mid - gap / 2));
-    g.fillRect(x + w - t, y + mid + gap / 2, t, Math.max(0, h - mid - gap / 2));
-    return;
-  }
-  if (style === 'double') {
-    /* Two concentric rules — "sealed". This exists because complete and in
-       progress would otherwise share the solid form, and the encoding has to
-       hold with hue stripped out. */
-    const off = t + Math.max(1, t);
-    g.fillRect(x, y, w, t); g.fillRect(x, y + h - t, w, t);
-    g.fillRect(x, y, t, h);  g.fillRect(x + w - t, y, t, h);
-    g.fillRect(x + off, y + off, w - off * 2, t);
-    g.fillRect(x + off, y + h - off - t, w - off * 2, t);
-    g.fillRect(x + off, y + off, t, h - off * 2);
-    g.fillRect(x + w - off - t, y + off, t, h - off * 2);
-  }
-}
-
-/* The collapsed view: one pip per work item, dependency order, same encoding. */
-function drawPips(g, x, y, items, pw, ph) {
-  let cx = x;
-  for (const it of items) {
-    const s = STATUS[it.st];
-    g.fillStyle = PAL.gangqing;
-    g.fillRect(cx, y, pw, ph);
-    g.fillStyle = it.dept;
-    g.fillRect(cx, y, 2, ph);
-    border(g, cx, y, pw, ph, s.border, s.hue, 1);
-    cx += pw + 3;
-  }
-  return cx - x - 3;
-}
-
-/* ---------- 10×16 person, seated, facing away --------------------------- */
-const PERSON = [
-  '..........', '...hhhh...', '..hhhhhh..', '..hkkkkh..',
-  '..hkkkkh..', '...kkkk...', '..tttttt..', '.tttttttt.',
-  '.tttttttt.', '..tttttt..', '..pppppp..', '..pp..pp..',
-  '..pp..pp..', '..pp..pp..', '..bb..bb..', '..........',
-];
-
-/* ---------- 5×7 label face ---------------------------------------------- */
-const FONT = {
-  A:'01110/10001/10001/11111/10001/10001/10001', B:'11110/10001/10001/11110/10001/10001/11110',
-  C:'01110/10001/10000/10000/10000/10001/01110', D:'11110/10001/10001/10001/10001/10001/11110',
-  E:'11111/10000/10000/11110/10000/10000/11111', F:'11111/10000/10000/11110/10000/10000/10000',
-  G:'01110/10001/10000/10111/10001/10001/01110', H:'10001/10001/10001/11111/10001/10001/10001',
-  I:'11111/00100/00100/00100/00100/00100/11111', J:'00111/00010/00010/00010/00010/10010/01100',
-  K:'10001/10010/10100/11000/10100/10010/10001', L:'10000/10000/10000/10000/10000/10000/11111',
-  M:'10001/11011/10101/10101/10001/10001/10001', N:'10001/11001/10101/10011/10001/10001/10001',
-  O:'01110/10001/10001/10001/10001/10001/01110', P:'11110/10001/10001/11110/10000/10000/10000',
-  Q:'01110/10001/10001/10001/10101/10011/01101', R:'11110/10001/10001/11110/10100/10010/10001',
-  S:'01111/10000/10000/01110/00001/00001/11110', T:'11111/00100/00100/00100/00100/00100/00100',
-  U:'10001/10001/10001/10001/10001/10001/01110', V:'10001/10001/10001/10001/10001/01010/00100',
-  W:'10001/10001/10001/10101/10101/11011/10001', X:'10001/10001/01010/00100/01010/10001/10001',
-  Y:'10001/10001/01010/00100/00100/00100/00100', Z:'11111/00001/00010/00100/01000/10000/11111',
-  0:'01110/10001/10011/10101/11001/10001/01110', 1:'00100/01100/00100/00100/00100/00100/01110',
-  2:'01110/10001/00001/00010/00100/01000/11111', 3:'11111/00010/00100/00010/00001/10001/01110',
-  4:'00010/00110/01010/10010/11111/00010/00010', 5:'11111/10000/11110/00001/00001/10001/01110',
-  6:'00110/01000/10000/11110/10001/10001/01110', 7:'11111/00001/00010/00100/01000/01000/01000',
-  8:'01110/10001/10001/01110/10001/10001/01110', 9:'01110/10001/10001/01111/00001/00010/01100',
-  '.':'00000/00000/00000/00000/00000/01100/01100', ':':'00000/01100/01100/00000/01100/01100/00000',
-  '%':'11001/11010/00010/00100/01000/01011/10011', '$':'00100/01111/10100/01110/00101/11110/00100',
-  '+':'00000/00100/00100/11111/00100/00100/00000', '-':'00000/00000/00000/11111/00000/00000/00000',
-  '/':'00001/00010/00010/00100/01000/01000/10000', ' ':'00000/00000/00000/00000/00000/00000/00000',
-};
-
-/* ---------- painters ---------------------------------------------------- */
-
-function paintGrid(g, rows, ox, oy, pal, z) {
-  for (let y = 0; y < rows.length; y++) {
-    for (let x = 0; x < rows[y].length; x++) {
-      const c = pal[rows[y][x]];
-      if (!c) continue;
-      g.fillStyle = c;
-      g.fillRect(ox + x * z, oy + y * z, z, z);
-    }
-  }
-}
-
-function paintText(g, text, ox, oy, z, color) {
-  let cx = ox;
-  for (const ch of text.toUpperCase()) {
-    const def = FONT[ch];
-    if (!def) { cx += 6 * z; continue; }
-    const rows = def.split('/');
-    paintGrid(g, rows, cx, oy, { 1: color }, z);
-    cx += 6 * z;
-  }
-  return cx - ox;
-}
-
-function textWidth(text, z) { return text.length * 6 * z - z; }
-
-/* Deterministic speckle, matching the prototype's approach. */
-function speck(x, y) { return (((x * 73856093) ^ (y * 19349663)) >>> 0) % 13; }
-
-function paintFloor(g, x0, y0, cols, rows, base, tint, z) {
-  for (let ty = 0; ty < rows; ty++) {
-    for (let tx = 0; tx < cols; tx++) {
-      g.fillStyle = base;
-      g.fillRect(x0 + tx * 16 * z, y0 + ty * 16 * z, 16 * z, 16 * z);
-      for (let py = 0; py < 16; py += 2) {
-        for (let px = 0; px < 16; px += 2) {
-          const s = speck(tx * 16 + px, ty * 16 + py);
-          if (s > 10) {
-            g.fillStyle = tint;
-            g.fillRect(x0 + (tx * 16 + px) * z, y0 + (ty * 16 + py) * z, z, z);
-          }
-        }
-      }
-    }
-  }
-}
-
-function paintWallRun(g, x0, y0, cols, z) {
-  const w = cols * 16 * z;
-  g.fillStyle = PAL.gangqing;   g.fillRect(x0, y0, w, 16 * z);
-  g.fillStyle = PAL.jingyuhui;  g.fillRect(x0, y0, w, 11 * z);
-  g.fillStyle = PAL.yueyingbai; g.fillRect(x0, y0 + 3 * z, w, z);
-  g.fillStyle = PAL.xinghui;    g.fillRect(x0, y0, w, 3 * z);
-}
-
-function personPal(top, pant) {
-  return { h: '#3a2a20', k: '#d9a67e', t: top, p: pant, b: '#2f2118' };
-}
-
-/* ---------- 01 the anchor ----------------------------------------------- */
-(function stage() {
-  const cv = document.getElementById('stage');
-  const g = cv.getContext('2d');
-  const z = 3;
-
-  g.fillStyle = PAL.ganglan;
-  g.fillRect(0, 0, cv.width, cv.height);
-
-  const WALL_Y = 24;
-  const FLOOR_Y = WALL_Y + 16 * z;          /* 72 */
-  const ROWS = 4;                            /* room is deep enough to hold a desk */
-  const COLS = 7;
-  const ROOM_W = COLS * 16 * z;
-  const AX = 24, BX = AX + ROOM_W + 18;
-
-  /* Sales — 花青 */
-  paintWallRun(g, AX, WALL_Y, COLS, z);
-  paintFloor(g, AX, FLOOR_Y, COLS, ROWS, PAL.huaqing, PAL.dianqing, z);
-  paintText(g, 'SALES', AX + 10, FLOOR_Y + 8, 2, PAL.yuebai);
-
-  /* Accounting — 竹绿 */
-  paintWallRun(g, BX, WALL_Y, COLS, z);
-  paintFloor(g, BX, FLOOR_Y, COLS, ROWS, PAL.zhulv, PAL.canglv, z);
-  paintText(g, 'ACCOUNTING', BX + 10, FLOOR_Y + 8, 2, PAL.ganglan);
-
-  /* Desk drawn after the person, so the person reads as seated behind it. */
-  function desk(x, y) {
-    g.fillStyle = '#4a3526'; g.fillRect(x, y, 24 * z, 8 * z);
-    g.fillStyle = '#6b4d36'; g.fillRect(x, y, 24 * z, 2 * z);
-  }
-
-  /* The person faces away, so the panel shows its back — no lit screen.
-     Only the spill above the bezel says it is on. */
-  function monitor(x, y) {
-    g.fillStyle = PAL.gangqing;  g.fillRect(x, y - 6 * z, 7 * z, 6 * z);
-    g.fillStyle = PAL.jingyuhui; g.fillRect(x, y - 6 * z, 7 * z, z);
-    g.fillStyle = PAL.shilv;     g.fillRect(x + z, y - 7 * z, 5 * z, z);
-  }
-
-  const PERSON_Y = FLOOR_Y + 46;             /* 118 */
-  const DESK_Y   = PERSON_Y + 40;            /* overlaps the legs */
-  const NAME_Y   = DESK_Y + 9 * z + 6;
-
-  function plate(gx, gy, key) {
-    g.fillStyle = 'rgba(15,20,35,0.85)';
-    g.fillRect(gx - z, gy - z, 10 * z, 10 * z);
-    g.fillStyle = PAL.jingyuhui;
-    g.fillRect(gx - z, gy - z, 10 * z, z);
-    paintGrid(g, GLYPHS[key], gx, gy, GLYPH_PAL, z);
-  }
-
-  /* The beam rises from the head and stops at the wall line — it never
-     crosses into the wall band, so the column always reads against floor. */
-  function beam(headX) {
-    const top = FLOOR_Y + 1, bottom = PERSON_Y + 3 * z;
-    const grd = g.createLinearGradient(0, top, 0, bottom);
-    grd.addColorStop(0, 'rgba(242,196,107,0)');
-    grd.addColorStop(0.55, 'rgba(242,196,107,0.55)');
-    grd.addColorStop(1, PAL.beam);
-    g.fillStyle = grd;
-    g.fillRect(headX, top, 4 * z, bottom - top);
-  }
-
-  /* Desks sit in the right half of each room so the beam never crosses the
-     room label. In the real floorplan the planner already keeps this clear. */
-  const SEAT = 170;
-
-  /* Dana — working, glyph at the shoulder, no beam */
-  const dx = AX + SEAT;
-  paintGrid(g, PERSON, dx, PERSON_Y, personPal(PAL.huonizong, PAL.qinghui), z);
-  desk(dx - 10 * z, DESK_Y);
-  monitor(dx - 9 * z, DESK_Y);
-  plate(dx + 11 * z, PERSON_Y + 4 * z, 'work');
-  paintText(g, 'DANA REYES', dx - 10 * z + 4, NAME_Y, 2, PAL.yuebai);
-
-  /* Priya — waiting, beam above the head, no glyph */
-  const px = BX + SEAT;
-  beam(px + 3 * z);
-  paintGrid(g, PERSON, px, PERSON_Y, personPal(PAL.luodianzi, PAL.gangqing), z);
-  desk(px - 10 * z, DESK_Y);
-  monitor(px - 9 * z, DESK_Y);
-  paintText(g, 'PRIYA RAMAN', px - 10 * z + 4, NAME_Y, 2, PAL.ganglan);
-})();
-
-/* ---------- 05 geometry diagram ----------------------------------------- */
-(function geom() {
-  const cv = document.getElementById('geom');
-  const g = cv.getContext('2d');
-  const z = 3;
-
-  g.fillStyle = PAL.ganglan;
-  g.fillRect(0, 0, cv.width, cv.height);
-
-  const cases = [
-    { x: 30,  glyph: 'work',    beam: false, label: 'WORKING' },
-    { x: 180, glyph: null,      beam: true,  label: 'WAITING' },
-    { x: 330, glyph: 'meeting', beam: true,  label: 'BOTH' },
-  ];
-
-  for (const c of cases) {
-    const y = 130;
-    if (c.beam) {
-      const grd = g.createLinearGradient(0, y - 30 * z, 0, y + 2 * z);
-      grd.addColorStop(0, 'rgba(242,196,107,0)');
-      grd.addColorStop(1, PAL.beam);
-      g.fillStyle = grd;
-      g.fillRect(c.x + 3 * z, y - 30 * z, 4 * z, 32 * z);
-    }
-    paintGrid(g, PERSON, c.x, y, personPal(PAL.shilv, PAL.qinghui), z);
-    if (c.glyph) {
-      const gx = c.x + 16 * z, gy = y + 4 * z;
-      g.fillStyle = 'rgba(15,20,35,0.82)';
-      g.fillRect(gx - z, gy - z, 10 * z, 10 * z);
-      g.fillStyle = PAL.jingyuhui;
-      g.fillRect(gx - z, gy - z, 10 * z, z);
-      paintGrid(g, GLYPHS[c.glyph], gx, gy, GLYPH_PAL, z);
-    }
-    paintText(g, c.label, c.x, y + 19 * z, 2, PAL.jingyuhui);
-  }
-  /* No measure annotations on the canvas — the prose beside it already carries
-     the numbers, and at 1× they collided with the case labels. */
-})();
-
-/* ---------- 06 glyph sheet + validation --------------------------------- */
-(function glyphSheet() {
-  const host = document.getElementById('glyphs');
-  const bad = [];
-
-  for (const [name, rows] of Object.entries(GLYPHS)) {
-    const widths = new Set(rows.map((r) => r.length));
-    if (widths.size !== 1 || rows.length !== 8 || !widths.has(8)) {
-      bad.push(`${name}: ${rows.length} rows, widths ${[...widths].join('/')}`);
-    }
-
-    const cell = document.createElement('div');
-    cell.className = 'gcell';
-
-    for (const z of [4, 2]) {
-      const cv = document.createElement('canvas');
-      cv.width = 8 * z; cv.height = 8 * z;
-      paintGrid(cv.getContext('2d'), rows, 0, 0, GLYPH_PAL, z);
-      cell.appendChild(cv);
-    }
-
-    const cap = document.createElement('div');
-    cap.className = 'gname';
-    cap.textContent = name;
-    cell.appendChild(cap);
-    host.appendChild(cell);
-  }
-
-  const v = document.getElementById('gvalid');
-  const fontBad = Object.entries(FONT).filter(([, def]) => {
-    const rows = def.split('/');
-    return rows.length !== 7 || rows.some((r) => r.length !== 5);
-  }).map(([ch]) => ch);
-
-  if (bad.length === 0 && fontBad.length === 0) {
-    v.className = 'validate pass';
-    v.textContent =
-      `PASS — ${Object.keys(GLYPHS).length} glyphs at 8×8, ` +
-      `${Object.keys(FONT).length} label characters at 5×7. All grids rectangular.`;
-  } else {
-    v.className = 'validate fail';
-    v.textContent = 'FAIL — ' + [...bad, ...fontBad.map((c) => `font ${c}`)].join(' · ');
-  }
-})();
-
-/* ---------- 07 label face sheet ----------------------------------------- */
-(function fontSheet() {
-  const a = document.getElementById('fontA');
-  const g = a.getContext('2d');
-  g.fillStyle = PAL.gangqing; g.fillRect(0, 0, a.width, a.height);
-
-  const z = 3;
-  const rows = ['ABCDEFGHIJKLM', 'NOPQRSTUVWXYZ', '0123456789.:%$+-/'];
-  rows.forEach((r, i) => paintText(g, r, 8, 10 + i * 11 * z, z, PAL.xinghui));
-
-  const b = document.getElementById('fontB');
-  const h = b.getContext('2d');
-  const z2 = 2;
-
-  /* Left, on the dark 花青 floor: the one line that legitimately earns --beam.
-     "Decision pending" IS the reserved meaning, and the dark floor gives the
-     amber the contrast it needs. */
-  paintFloor(h, 0, 0, Math.ceil(b.width / (16 * z2)), 3, PAL.huaqing, PAL.dianqing, z2);
-  paintText(h, 'SALES', 12, 10, z2, PAL.yuebai);
-  paintText(h, 'MARCUS WEBB', 12, 26, z2, PAL.yuebai);
-  paintText(h, 'DECISION PENDING', 12, 42, z2, PAL.beam);
-
-  /* Right, on the light 竹绿 floor: measured values stay neutral. Load and
-     effort are telemetry, not a request for a decision — putting them in amber
-     would spend the reserved signal on ambient data. */
-  const half = Math.floor(b.width / 2);
-  h.save();
-  h.beginPath(); h.rect(half, 0, b.width - half, b.height); h.clip();
-  paintFloor(h, half, 0, Math.ceil((b.width - half) / (16 * z2)), 3, PAL.zhulv, PAL.canglv, z2);
-  paintText(h, 'ACCOUNTING', half + 12, 10, z2, PAL.ganglan);
-  paintText(h, 'PRIYA RAMAN', half + 12, 26, z2, PAL.ganglan);
-  paintText(h, 'LOAD 62%  14/20H', half + 12, 42, z2, PAL.ganglan);
-  h.restore();
-})();
-
-/* ---------- 08 the DAG -------------------------------------------------- */
-const dag = (function () {
-  const cv = document.getElementById('dag');
-  const g = cv.getContext('2d');
-  const G = 16;   /* the office's tile, reused as the graph's grid */
-
-  /* Grid coordinates, so nodes land on the same lattice as the floor. */
-  const NODES = [
-    { id: 'map',   gx: 1,  gy: 4, w: 11, label: 'AP PROCESS MAP',   dept: PAL.zhulv,   load: 0.42, stage: 0, st: 'complete' },
-    { id: 'auto',  gx: 16, gy: 1, w: 11, label: 'INVOICE MATCHING', dept: PAL.zhulv,   load: 0.71, stage: 1, st: 'progress' },
-    { id: 'dup',   gx: 16, gy: 7, w: 11, label: 'DUPLICATE ENTRY',  dept: PAL.huaqing, load: 1.12, stage: 1, st: 'blocked' },
-    { id: 'close', gx: 31, gy: 4, w: 11, label: 'MONTH END CLOSE',  dept: PAL.qinghui, load: 0.55, stage: 2, st: 'backlog' },
-    { id: 'rank',  gx: 31, gy: 11, w: 11, label: 'AI LEAD RANKING', dept: PAL.huaqing, load: 0.88, stage: 2, st: 'assigned' },
-  ];
-  const EDGES = [['map','auto'], ['map','dup'], ['auto','close'], ['dup','close'], ['dup','rank']];
-
-  const NH = 4;   /* node height in grid units */
-  const byId = (id) => NODES.find((n) => n.id === id);
-
-  function loadColor(t) {
-    /* The adopted ramp: 竹绿 → 青矾绿 → 亚丁绿 → 苍绿 → 赭石 → 朱红. */
-    const stops = ['#1ba784', '#2c9678', '#428675', '#223e36', '#862617', '#ed5126'];
-    const i = Math.min(stops.length - 1, Math.max(0, Math.floor(t / 1.4 * stops.length)));
-    return stops[i];
-  }
-
-  /* Orthogonal route: out the right edge, step vertically at the midpoint,
-     into the left edge. Pixel-stepped, never curved. */
-  function route(a, b) {
-    const ax = (a.gx + a.w) * G, ay = (a.gy + NH / 2) * G;
-    const bx = b.gx * G,          by = (b.gy + NH / 2) * G;
-    const mid = Math.round(((ax + bx) / 2) / G) * G;
-    return [[ax, ay], [mid, ay], [mid, by], [bx, by]];
-  }
-
-  function runLength(pts) {
-    let total = 0;
-    for (let i = 1; i < pts.length; i++) {
-      total += Math.abs(pts[i][0] - pts[i - 1][0]) + Math.abs(pts[i][1] - pts[i - 1][1]);
-    }
-    return total;
-  }
-
-  function drawPolyline(pts, upto, color, thick, dash) {
-    /* upto ∈ [0,1] — how much of the run has been drawn.
-       dash > 0 draws in alternating runs of that many pixels. */
-    let budget = runLength(pts) * upto;
-    let walked = 0;
-    g.fillStyle = color;
-    for (let i = 1; i < pts.length && budget > 0; i++) {
-      const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
-      const len = Math.abs(x1 - x0) + Math.abs(y1 - y0);
-      const take = Math.min(len, budget);
-      budget -= take;
-      const vert = x0 === x1;
-      const dir = vert ? (y1 > y0 ? 1 : -1) : (x1 > x0 ? 1 : -1);
-      if (!dash) {
-        if (vert) g.fillRect(x0 - thick / 2, dir > 0 ? y0 : y0 - take, thick, take);
-        else      g.fillRect(dir > 0 ? x0 : x0 - take, y0 - thick / 2, take, thick);
-      } else {
-        for (let d = 0; d < take; d++) {
-          if (Math.floor((walked + d) / dash) % 2) continue;
-          if (vert) g.fillRect(x0 - thick / 2, y0 + dir * d, thick, 1);
-          else      g.fillRect(x0 + dir * d, y0 - thick / 2, 1, thick);
-        }
-      }
-      walked += take;
-    }
-  }
-
-  /* Point at fraction f along the run, plus whether that leg is vertical —
-     used to cap a severed edge with a perpendicular tick. */
-  function pointAt(pts, f) {
-    let budget = runLength(pts) * f;
-    for (let i = 1; i < pts.length; i++) {
-      const [x0, y0] = pts[i - 1], [x1, y1] = pts[i];
-      const len = Math.abs(x1 - x0) + Math.abs(y1 - y0);
-      const vert = x0 === x1;
-      const dir = vert ? (y1 > y0 ? 1 : -1) : (x1 > x0 ? 1 : -1);
-      if (budget <= len) {
-        return vert ? { x: x0, y: y0 + dir * budget, vert }
-                    : { x: x0 + dir * budget, y: y0, vert };
-      }
-      budget -= len;
-    }
-    const last = pts[pts.length - 1];
-    return { x: last[0], y: last[1], vert: false };
-  }
-
-  function drawBorder(x, y, w, h, style, hue) { border(g, x, y, w, h, style, hue); }
-
-  function drawNode(n, lit) {
-    const x = n.gx * G, y = n.gy * G, w = n.w * G, h = NH * G;
-    const s = STATUS[n.st];
-
-    /* plate */
-    g.fillStyle = PAL.qinghui;
-    g.fillRect(x, y, w, h);
-    g.fillStyle = n.st === 'complete' ? '#0c1019' : PAL.gangqing;
-    g.fillRect(x + 2, y + 2, w - 4, h - 4);
-
-    /* department stripe, left edge, in the room's floor colour */
-    g.fillStyle = n.dept;
-    g.fillRect(x + 2, y + 2, 4, h - 4);
-
-    /* load bar, bottom edge, on the adopted ramp */
-    g.fillStyle = PAL.qinghui;
-    g.fillRect(x + 10, y + h - 8, w - 20, 4);
-    g.fillStyle = loadColor(n.load);
-    g.fillRect(x + 10, y + h - 8, Math.min(1, n.load / 1.4) * (w - 20), 4);
-
-    /* status glyph, top-right corner — never where the stripe or bar sit */
-    paintGrid(g, GLYPHS[s.glyph], x + w - 8 - 8, y + 7, GLYPH_PAL, 1);
-
-    /* label */
-    paintText(g, n.label, x + 10, y + 7, 1, s.label);
-    paintText(g, `LOAD ${Math.round(n.load * 100)}%`, x + 10, y + 18, 1,
-      n.load > 1 ? PAL.zhuhong : PAL.jingyuhui);
-
-    drawBorder(x, y, w, h, s.border, s.hue);
-
-    /* the cascade's payload rides on top without replacing the status border */
-    if (lit && n.st !== 'blocked') {
-      g.fillStyle = PAL.shilv;
-      g.fillRect(x - 2, y - 2, w + 4, 1);
-      g.fillRect(x - 2, y + h + 1, w + 4, 1);
-    }
-  }
-
-  let t0 = null, raf = null;
-  const DUR = 2600;
-
-  function frame(ts) {
-    if (t0 === null) t0 = ts;
-    const p = Math.min(1, (ts - t0) / DUR);
-
-    g.fillStyle = PAL.ganglan;
-    g.fillRect(0, 0, cv.width, cv.height);
-
-    /* faint lattice, so the shared 16px grid is legible */
-    g.fillStyle = 'rgba(71,81,100,0.16)';
-    for (let x = 0; x < cv.width; x += G) g.fillRect(x, 0, 1, cv.height);
-    for (let y = 0; y < cv.height; y += G) g.fillRect(0, y, cv.width, 1);
-
-    /* Edge state comes from the SOURCE node's status, so the chain itself
-       carries the information: solid means upstream delivered, dashed means
-       upstream is still open, severed means a decision is blocking the path.
-       Reading the graph tells you where work can flow without opening a node. */
-    const maxStage = Math.max(...NODES.map((n) => n.stage));
-    for (const [aId, bId] of EDGES) {
-      const a = byId(aId), b = byId(bId);
-      const pts = route(a, b);
-      const es = STATUS[a.st].edge;
-      drawPolyline(pts, 1, PAL.qinghui, 2, 0);
-
-      if (es === 'solid') {
-        const start = a.stage / (maxStage + 1);
-        const span = 1 / (maxStage + 1);
-        const local = Math.max(0, Math.min(1, (p - start) / span));
-        if (local > 0) drawPolyline(pts, local, PAL.shilv, 2, 0);
-      } else if (es === 'dashed') {
-        drawPolyline(pts, 1, PAL.jingyuhui, 2, 5);
-      } else if (es === 'severed') {
-        drawPolyline(pts, 0.34, PAL.tacit, 2, 0);
-        const c = pointAt(pts, 0.34);
-        g.fillStyle = PAL.tacit;
-        if (c.vert) g.fillRect(c.x - 6, c.y - 1, 12, 2);
-        else        g.fillRect(c.x - 1, c.y - 6, 2, 12);
-      }
-    }
-    for (const n of NODES) {
-      const lit = p >= (n.stage + 0.55) / (maxStage + 1);
-      drawNode(n, lit);
-    }
-
-    if (p < 1) raf = requestAnimationFrame(frame);
-  }
-
-  function play() {
-    if (raf) cancelAnimationFrame(raf);
-    t0 = null;
-    raf = requestAnimationFrame(frame);
-  }
-
-  return { play };
-})();
-
-document.getElementById('replay').addEventListener('click', () => dag.play());
-
-/* ---------- 09 the five states, full size ------------------------------- */
-const SAMPLE = [
-  { st: 'backlog',  dept: PAL.qinghui, label: 'MONTH END CLOSE',  load: 0.55 },
-  { st: 'assigned', dept: PAL.huaqing, label: 'AI LEAD RANKING',  load: 0.88 },
-  { st: 'progress', dept: PAL.zhulv,   label: 'INVOICE MATCHING', load: 0.71 },
-  { st: 'blocked',  dept: PAL.huaqing, label: 'DUPLICATE ENTRY',  load: 1.12 },
-  { st: 'complete', dept: PAL.zhulv,   label: 'AP PROCESS MAP',   load: 0.42 },
-];
-
-function loadRamp(t) {
-  const stops = ['#1ba784', '#2c9678', '#428675', '#223e36', '#862617', '#ed5126'];
-  return stops[Math.min(stops.length - 1, Math.max(0, Math.floor(t / 1.4 * stops.length)))];
-}
-
-/* One plate, independent of the DAG's grid — reused by the status sheet. */
-function drawPlate(g, n, x, y, w, h) {
-  const s = STATUS[n.st];
-  g.fillStyle = PAL.qinghui;
-  g.fillRect(x, y, w, h);
-  g.fillStyle = n.st === 'complete' ? '#0c1019' : PAL.gangqing;
-  g.fillRect(x + 2, y + 2, w - 4, h - 4);
-  g.fillStyle = n.dept;
-  g.fillRect(x + 2, y + 2, 4, h - 4);
-
-  g.fillStyle = PAL.qinghui;
-  g.fillRect(x + 10, y + h - 10, w - 20, 4);
-  g.fillStyle = loadRamp(n.load);
-  g.fillRect(x + 10, y + h - 10, Math.min(1, n.load / 1.4) * (w - 20), 4);
-
-  paintGrid(g, GLYPHS[s.glyph], x + w - 16, y + 8, GLYPH_PAL, 1);
-  paintText(g, n.label, x + 10, y + 8, 1, s.label);
-  paintText(g, `LOAD ${Math.round(n.load * 100)}%`, x + 10, y + 19, 1,
-    n.load > 1 ? PAL.zhuhong : PAL.jingyuhui);
-  border(g, x, y, w, h, s.border, s.hue, 2);
-}
-
-(function statusSheet() {
-  const cv = document.getElementById('status');
-  const g = cv.getContext('2d');
-  g.fillStyle = PAL.ganglan;
-  g.fillRect(0, 0, cv.width, cv.height);
-
-  const W = 132, H = 64, GAPX = 20, x0 = 14, y0 = 26;
-
-  SAMPLE.forEach((n, i) => {
-    const x = x0 + i * (W + GAPX);
-    paintText(g, n.st, x, 10, 1, PAL.jingyuhui);
-    drawPlate(g, n, x, y0, W, H);
-
-    /* the outgoing edge stub, so edge state reads next to the plate */
-    const ey = y0 + H / 2, ex = x + W;
-    const es = STATUS[n.st].edge;
-    g.fillStyle = PAL.qinghui; g.fillRect(ex, ey - 1, GAPX, 2);
-    if (es === 'solid') { g.fillStyle = PAL.shilv; g.fillRect(ex, ey - 1, GAPX, 2); }
-    if (es === 'dashed') {
-      g.fillStyle = PAL.jingyuhui;
-      for (let d = 0; d < GAPX; d++) if (Math.floor(d / 5) % 2 === 0) g.fillRect(ex + d, ey - 1, 1, 2);
-    }
-    if (es === 'severed') {
-      g.fillStyle = PAL.tacit;
-      g.fillRect(ex, ey - 1, 7, 2);
-      g.fillRect(ex + 6, ey - 6, 2, 12);
-    }
-  });
-
-  /* the same five, collapsed to pips — same function, 1px stroke */
-  paintText(g, 'COLLAPSED TO PIPS  SAME ENCODING', x0, y0 + H + 26, 1, PAL.shilv);
-  drawPips(g, x0, y0 + H + 44, SAMPLE, 22, 22);
-
-  /* Same five with every hue forced to one value. This test is why complete
-     uses a double rule: it and progress were both solid, so hue was silently
-     doing the work the form was supposed to do. */
-  paintText(g, 'HUE REMOVED  FORM STILL SEPARATES THEM', x0 + 240, y0 + H + 26, 1, PAL.jingyuhui);
-  let cx = x0 + 240;
-  for (const n of SAMPLE) {
-    g.fillStyle = PAL.gangqing; g.fillRect(cx, y0 + H + 44, 22, 22);
-    border(g, cx, y0 + H + 44, 22, 22, STATUS[n.st].border, PAL.xinghui, 1);
-    cx += 25;
-  }
-})();
-
-/* ---------- 10 layout: office mode, DAG mode, persistent chain strip ----- */
-(function layout() {
-  const cv = document.getElementById('layout');
-  const g = cv.getContext('2d');
-  g.fillStyle = PAL.ganglan;
-  g.fillRect(0, 0, cv.width, cv.height);
-
-  const FW = 720, FH = 190, RAIL = 150, STRIP = 20;
-
-  function frame(x, y, mode) {
-    /* chrome */
-    g.fillStyle = PAL.qinghui;
-    g.fillRect(x, y, FW, FH);
-    g.fillStyle = PAL.gangqing;
-    g.fillRect(x + 1, y + 1, FW - 2, FH - 2);
-
-    /* metric strip */
-    g.fillStyle = PAL.qinghui;
-    g.fillRect(x + 8, y + 8, FW - 16, 18);
-    ['CASH 4800K', 'MANUAL 420H', 'LEAD 12D', 'MORALE 72', 'VIS 6%'].forEach((m, i) => {
-      paintText(g, m, x + 16 + i * 132, y + 13, 1, PAL.xinghui);
-    });
-
-    const sx = x + 8, sy = y + 32, sw = FW - 16 - RAIL - 8, sh = FH - 32 - 8 - STRIP - 4;
-
-    /* stage */
-    g.fillStyle = PAL.ganglan;
-    g.fillRect(sx, sy, sw, sh);
-
-    if (mode === 'office') {
-      /* two lit rooms and a beam */
-      g.fillStyle = PAL.huaqing; g.fillRect(sx + 24, sy + 18, 180, 76);
-      g.fillStyle = PAL.zhulv;   g.fillRect(sx + 218, sy + 18, 180, 76);
-      g.fillStyle = PAL.qinghui; g.fillRect(sx + 24, sy + 10, 180, 8);
-      g.fillStyle = PAL.qinghui; g.fillRect(sx + 218, sy + 10, 180, 8);
-      paintText(g, 'SALES', sx + 30, sy + 24, 1, PAL.yuebai);
-      paintText(g, 'ACCOUNTING', sx + 224, sy + 24, 1, PAL.ganglan);
-      g.fillStyle = PAL.huonizong; g.fillRect(sx + 96, sy + 58, 8, 14);
-      g.fillStyle = PAL.luodianzi; g.fillRect(sx + 300, sy + 58, 8, 14);
-      const grd = g.createLinearGradient(0, sy + 30, 0, sy + 58);
-      grd.addColorStop(0, 'rgba(242,196,107,0)');
-      grd.addColorStop(1, PAL.beam);
-      g.fillStyle = grd; g.fillRect(sx + 301, sy + 30, 5, 28);
-      paintText(g, 'OFFICE  WHERE YOU ACT', sx + 24, sy + sh - 14, 1, PAL.jingyuhui);
-    } else {
-      /* miniature graph */
-      g.fillStyle = 'rgba(71,81,100,0.16)';
-      for (let gx = sx; gx < sx + sw; gx += 16) g.fillRect(gx, sy, 1, sh);
-      for (let gy = sy; gy < sy + sh; gy += 16) g.fillRect(sx, gy, sw, 1);
-      /* Short labels at mini scale — the full names would run under the
-         status glyph in the top-right corner. */
-      const mini = [
-        { ...SAMPLE[4], label: 'AP MAP',      x: sx + 16,  y: sy + 40 },
-        { ...SAMPLE[2], label: 'INVOICE OCR', x: sx + 160, y: sy + 12 },
-        { ...SAMPLE[3], label: 'DUP ENTRY',   x: sx + 160, y: sy + 68 },
-        { ...SAMPLE[0], label: 'MONTH CLOSE', x: sx + 304, y: sy + 40 },
-      ];
-      g.fillStyle = PAL.shilv;
-      g.fillRect(sx + 128, sy + 52, 32, 2);
-      g.fillStyle = PAL.jingyuhui;
-      for (let d = 0; d < 32; d++) if (Math.floor(d / 5) % 2 === 0) g.fillRect(sx + 128 + d, sy + 80, 1, 2);
-      g.fillStyle = PAL.tacit;
-      g.fillRect(sx + 272, sy + 80, 12, 2); g.fillRect(sx + 283, sy + 75, 2, 12);
-      for (const m of mini) drawPlate(g, m, m.x, m.y, 112, 40);
-      paintText(g, 'DAG  WHERE YOU ORIENT', sx + 16, sy + sh - 14, 1, PAL.jingyuhui);
-    }
-
-    /* chain strip — persists in both modes */
-    const cy = sy + sh + 4;
-    g.fillStyle = PAL.qinghui;
-    g.fillRect(sx, cy, sw, STRIP);
-    drawPips(g, sx + 4, cy + 3, [...SAMPLE, ...SAMPLE].slice(0, 8), 14, 14);
-    paintText(g, 'CHAIN STRIP', sx + sw - 70, cy + 7, 1, PAL.shilv);
-
-    /* console rail */
-    const rx = x + FW - 8 - RAIL;
-    g.fillStyle = PAL.qinghui;
-    g.fillRect(rx, sy, RAIL, sh + 4 + STRIP);
-    ['ASSIGN', 'TRAY', 'OUTPUTS', 'LOG'].forEach((t, i) => {
-      g.fillStyle = i === 0 ? PAL.gangqing : 'transparent';
-      if (i === 0) g.fillRect(rx + 4, sy + 4 + i * 16, RAIL - 8, 14);
-      paintText(g, t, rx + 10, sy + 8 + i * 16, 1, i === 0 ? PAL.shilv : PAL.jingyuhui);
-    });
-    paintText(g, mode === 'office' ? 'MODE  OFFICE' : 'MODE  DAG',
-      rx + 10, sy + sh - 14, 1, PAL.xinghui);
-  }
-
-  frame(20, 14, 'office');
-
-  /* the toggle, between the frames */
-  g.fillStyle = PAL.shilv;
-  g.fillRect(cv.width / 2 - 1, 212, 2, 26);
-  g.fillRect(cv.width / 2 - 7, 232, 14, 2);
-  paintText(g, 'TAB', cv.width / 2 + 14, 218, 1, PAL.shilv);
-
-  frame(20, 240, 'dag');
-})();
-
-if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-  /* Draw the settled state once; the replay button still works on demand. */
-  dag.play();
-} else {
-  dag.play();
-}
-</script>
+<hr>
+
+<h2>The ground, and what is measured against it</h2>
+<p>
+  象牙白 is the product ground and the reference every contrast rule uses. Nothing in the product
+  is brighter, which matters more than it sounds: if something were, every readability claim in
+  the palette would be measuring against the wrong thing.
+</p>
+
+<table>
+  <thead><tr><th>Slot</th><th>Value</th><th>Role</th><th>Against the ground</th></tr></thead>
+  <tbody>
+    <tr><td><span class="swatch" style="background:var(--ganglan)"></span>象牙白</td><td><code>#fffef8</code></td><td>Product ground</td><td>—</td></tr>
+    <tr><td><span class="swatch" style="background:var(--gangqing)"></span>月白, lifted</td><td><code>#f7fbf9</code></td><td>A card</td><td>1.0</td></tr>
+    <tr><td><span class="swatch" style="background:var(--yanhanlan)"></span>粉白</td><td><code>#fbf2e3</code></td><td>Warm quiet bands</td><td>1.1</td></tr>
+    <tr><td><span class="swatch" style="background:var(--yuebai)"></span>月白</td><td><code>#eef7f2</code></td><td>Cool quiet surfaces</td><td>1.1</td></tr>
+    <tr><td><span class="swatch" style="background:var(--qinghui)"></span>远天蓝, lifted</td><td><code>#dfeaef</code></td><td>Tracks, hover, inactive fills</td><td>1.3</td></tr>
+    <tr><td><span class="swatch" style="background:var(--rule)"></span>远天蓝</td><td><code>#c3d5de</code></td><td>Hairlines</td><td>1.6</td></tr>
+  </tbody>
+</table>
+
+<h3>Text and structure</h3>
+<table>
+  <thead><tr><th>Slot</th><th>Value</th><th>Role</th><th>Ratio</th></tr></thead>
+  <tbody>
+    <tr><td><span class="swatch" style="background:var(--text)"></span>鸽蓝</td><td><code>#1c2938</code></td><td>Primary text, strong borders</td><td>15.0</td></tr>
+    <tr><td><span class="swatch" style="background:var(--outline)"></span>鸽蓝, art</td><td><code>#253147</code></td><td>Character outlines, structural edges</td><td>12.7</td></tr>
+    <tr><td><span class="swatch" style="background:var(--yueyingbai)"></span>—</td><td><code>#2d3d52</code></td><td>Glyph structure, decision pressure</td><td>10.9</td></tr>
+    <tr><td><span class="swatch" style="background:var(--textmuted, var(--text-muted))"></span>鲸鱼灰</td><td><code>#475164</code></td><td>Secondary text and structure</td><td>7.5</td></tr>
+    <tr><td><span class="swatch" style="background:var(--text-faint)"></span>鲸鱼灰, lifted</td><td><code>#5c677a</code></td><td>Small labels</td><td>5.7</td></tr>
+    <tr><td><span class="swatch" style="background:var(--xinghui)"></span>星蓝, deepened</td><td><code>#4a6b85</code></td><td>Secondary labels, inactive states</td><td>5.6</td></tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <p style="margin:0">
+    <b>Two dove blues, on purpose.</b> <code>#1c2938</code> is the text ink the Product Contract
+    names; <code>#253147</code> is the art ink <code>VISUAL_DESIGN.md</code> §2 names, and all 33
+    approved character candidates are already drawn with it. They answer to different documents
+    and one of them is in shipped pixels, so they are separate slots rather than a variant.
+  </p>
+</div>
+
+<hr>
+
+<h2>One cool accent per surface, and they are not the same one</h2>
+<p>
+  The Product Contract gives 天蓝 to "primary action and player emphasis". <code>VISUAL_DESIGN.md</code>
+  and the shipped candidate art give the CEO 石绿. Both are right about their own surface, and the
+  role divides rather than one of them losing.
+</p>
+
+<div class="cards">
+  <div class="card">
+    <b><span class="swatch" style="background:var(--tianlan)"></span>天蓝 <code>#1677b3</code></b>
+    The chrome's action, selection and focus. Clears 4.9:1 against ivory, which 石绿 cannot —
+    a control wearing 石绿 would be a control nobody can read.
+  </div>
+  <div class="card">
+    <b><span class="swatch" style="background:var(--shilv)"></span>石绿 <code>#57c3c2</code></b>
+    The player, inside the office, and nothing in the interface. It cannot be 天蓝 because the
+    sales room and everyone in it already wear 花青, and the CEO would read as a sales hire.
+  </div>
+</div>
+
+<p>
+  Neither surface has two cool accents, so "the player is the strongest cool accent" survives
+  intact where it is actually looked at. The CEO's clothing is <code>#2f8c8b</code>, 石绿 deepened
+  — the value their own candidates carry.
+</p>
+
+<hr>
+
+<h2>The one reserved signal, and the edge it cannot appear without</h2>
+
+<div class="reserved">
+  <p style="margin:0">
+    <b>决策琥珀 <code>#f2c46b</code> means one thing: a person is waiting on your decision.</b>
+    Not a work item's status, not a warning, not ambient telemetry. The product has exactly one
+    signal that pulls the eye and its value comes from being the only one.
+  </p>
+</div>
+
+<p>
+  On ink the amber was the brightest thing on screen. On ivory it measures 1.6:1 — nearly
+  invisible. So the reserved signal is a <em>pair</em>: the amber carries the meaning and
+  <code>#1c2938</code> carries the contrast, the same way the office's sprites take their
+  separation from a dove-blue outline rather than from their fill. Spending the amber without
+  the edge is how the one signal that must not be missed becomes the one signal nobody sees.
+</p>
+
+<p>
+  It appears in exactly three shapes: the dot beside a waiting person, the conversation open on
+  one of them, and the tray holding the queue. The suite reads the stylesheet and fails on a
+  fourth.
+</p>
+
+<hr>
+
+<h2>The load ramp, re-derived rather than re-tinted</h2>
+<div class="ramp">
+  <i style="background:var(--zhulv)"></i>
+  <i style="background:#2f8b73"></i>
+  <i style="background:#41806f"></i>
+  <i style="background:var(--canglv)"></i>
+  <i style="background:var(--zheshi)"></i>
+  <i style="background:var(--zhuhong)"></i>
+</div>
+<p>
+  On ink the middle steps were chosen to be <em>dark enough not to read as amber</em>. On ivory
+  that reasoning inverts: a desaturated mid-green disappears into the surface instead of reading
+  as strain. The ramp now deepens as load rises, gaining contrast against the ground at every
+  step.
+</p>
+<p>
+  What did not change is the constraint. A naive green-to-red interpolation runs through yellow,
+  and a department at two-thirds load would look like a person waiting. No stop sits in the
+  beam's confusable band — close in hue <em>and</em> close in lightness. The last two stops are
+  warm by necessity, because strain has to end in red, and what keeps them unmistakable is that
+  they are dark: a brick red at a tenth of the beam's luminance reads as alarm, never as amber.
+</p>
+
+<hr>
+
+<h2>Departments: a stripe in the panels, a rug on the floor</h2>
+<p>
+  A department used to be a saturated dark slab covering a whole room, which is why the office
+  read as seven coloured caves. It arrives through a border course and an inset rug now — both
+  lines and shapes rather than fields — and the rug is also what keeps the walkable middle of
+  each room clear.
+</p>
+<table>
+  <thead><tr><th>Department</th><th>Stripe</th><th>Floor</th></tr></thead>
+  <tbody>
+    <tr><td>Executive, lounge</td><td><span class="swatch" style="background:var(--tuose)"></span>土色 <code>#8a5a34</code></td><td>warm timber</td></tr>
+    <tr><td>Sales</td><td><span class="swatch" style="background:var(--huaqing)"></span>花青 <code>#2376b7</code></td><td>cool light</td></tr>
+    <tr><td>Accounting</td><td><span class="swatch" style="background:var(--zhulv)"></span>竹绿 <code>#189c7b</code></td><td>月白</td></tr>
+    <tr><td>Meeting, administration</td><td><span class="swatch" style="background:var(--text-muted)"></span>鲸鱼灰 <code>#475164</code></td><td>neutral light</td></tr>
+    <tr><td>People</td><td><span class="swatch" style="background:var(--luodianzi)"></span>落电紫 <code>#74759b</code></td><td>violet tint</td></tr>
+    <tr><td>Support</td><td><span class="swatch" style="background:var(--huonizong)"></span>火泥棕 <code>#aa6a4c</code></td><td>粉白</td></tr>
+  </tbody>
+</table>
+<p class="note" style="margin-top:1rem">
+  The stripes are chrome-strength because they are the only thing distinguishing one team from
+  another in the panels; the floors are deliberately pale because a floor is a ground, not a
+  state. The two lists are the same departments answered for opposite jobs, which is why they
+  are two tables and not one.
+</p>
+
+<hr>
+
+<h2>The office, at the size the criteria name</h2>
+<figure>
+  <img src="../assets/company-os-visual-redesign/verification/office-desktop-1440x900.png"
+       alt="The Company OS office at 1440×900: eight lit department rooms with rugs, windows, plants and eleven people at their desks">
+  <figcaption>
+    1440×900, produced by <code>npm run verify</code>. Above 1400 the panels move to a rail and
+    the stage claims the height; below it they stack and the office holds a band tall enough for
+    the whole floor. Both bounds are load-bearing — a shorter band crops the room and a taller
+    one takes the zoom to 2, at which point a laptop sees half the office at twice the size.
+  </figcaption>
+</figure>
+
+<h3>Four depth bands</h3>
+<div class="cards">
+  <div class="card"><b>1 · Daylight shell</b>Light partitions, glazing, and light that falls from the windows inward.</div>
+  <div class="card"><b>2 · Work zones</b>Light floors carrying a department in a border course and a rug.</div>
+  <div class="card"><b>3 · People and objects</b>The highest local edge contrast, depth-sorted on the row a person's feet are on.</div>
+  <div class="card"><b>4 · Chrome</b>Clean overlays that may sit over the office and may never darken it.</div>
+</div>
+
+<p style="margin-top:1rem">
+  Bands 1 and 2 bake into one canvas once. Band 3 is the per-frame depth-sorted pass. Band 4 is
+  DOM. What is <em>not</em> here is the vignette — a 34% black radial over the whole floor, and
+  the single thing that most made this product read as a control room. Nothing replaced it: light
+  now comes from the glazing and falls off over six tiles, as a warm colour at low alpha rather
+  than an additive blend, because on a near-white floor <code>lighter</code> goes straight to
+  white and the floor stops existing.
+</p>
+
+<hr>
+
+<h2>The cast: one rig, thirty-three skins</h2>
+<figure>
+  <img src="../assets/company-os-visual-redesign/verification/cast-contact-sheet.png"
+       alt="Contact sheet: the composed cast beside the approved candidates they were read out of"
+       style="max-height: 40rem; object-fit: contain; object-position: top left">
+  <figcaption>
+    The composed cast in the left column, the approved casting board in the right. Full sheet at
+    <code>docs/assets/company-os-visual-redesign/verification/cast-contact-sheet.png</code>.
+  </figcaption>
+</figure>
+
+<p>
+  A person is one authored body — three views by four frames, at 48×64 — wearing hair, an outfit
+  and at most one accessory, resolved against six colours read out of that person's candidate
+  rather than transcribed from it. The eleventh identity is the CEO; anyone the casting board
+  never met gets the same rig with a manifest derived from their id, which is what makes a
+  background coworker the same game rather than a similar one.
+</p>
+
+<div class="cards">
+  <div class="card"><b>~3.5 heads</b>Compact adult. The head is 19 of the 62 rows a figure occupies.</div>
+  <div class="card"><b>Feet on row 63</b>In all twelve rig cells. The tile anchor and the depth sort both read it.</div>
+  <div class="card"><b>Left is mirrored</b>From <code>side</code>, at composition time — two profiles kept identical by hand drift.</div>
+  <div class="card"><b>One accessory</b>At most. Two make a costume, and one person wears none.</div>
+</div>
+
+<p style="margin-top:1rem">
+  Silhouette is the channel that survives distance, so no two of the eleven share one. That is
+  enforced against the <em>composed</em> outline rather than against the feature indices behind
+  it — five of the six accessories draw inside the body, and two different hair shapes can occupy
+  the same pixels, so any cheaper key declares two identical people distinct.
+</p>
+
+<hr>
+
+<h2>Movement</h2>
+<p>
+  Four frames: standing, and a three-frame stride cycled contact–pass–contact–pass. The frame is
+  keyed to <em>distance travelled</em>, not to elapsed ticks — the CEO covers a tile in about
+  seven ticks and staff take about thirteen, so one cadence for both left one of them skating.
+</p>
+<p>
+  The camera follows the player with a dead zone, translates by whole logical pixels before the
+  integer zoom, and clamps to the building. On a laptop the office is <em>narrower</em> than the
+  stage, so it centres horizontally and follows only vertically; a camera that followed anyway
+  would slide a floor with room to spare from side to side as the player walked.
+</p>
+
+<hr>
+
+<h2>What the suites hold</h2>
+<table>
+  <thead><tr><th>Claim</th><th>Held by</th></tr></thead>
+  <tbody>
+    <tr><td>The stylesheet and the token module agree</td><td><code>tests/chrome.test.ts</code></td></tr>
+    <tr><td>Text, actions and stripes clear their contrast thresholds</td><td><code>tests/tokens.test.ts</code></td></tr>
+    <tr><td>No ramp stop is mistakable for the beam</td><td><code>tests/tokens.test.ts</code></td></tr>
+    <tr><td>The beam is spent once, and never without its edge</td><td><code>tests/chrome.test.ts</code>, <code>tests/visual.test.ts</code></td></tr>
+    <tr><td>The office lays down no dark field</td><td><code>tests/visual.test.ts</code></td></tr>
+    <tr><td>Geometry did not move when the tile doubled</td><td><code>tests/world.test.ts</code></td></tr>
+    <tr><td>Art round-trips PNG → grid exactly, or fails naming the pixel</td><td><code>tests/cast.test.ts</code></td></tr>
+    <tr><td>No two of the eleven share a silhouette</td><td><code>tests/visual.test.ts</code></td></tr>
+    <tr><td>No command carries an appearance</td><td><code>tests/cast.test.ts</code></td></tr>
+    <tr><td>The camera keeps the player on screen at every width</td><td><code>tests/camera.test.ts</code></td></tr>
+  </tbody>
+</table>
+
+<p class="note" style="margin-top:1.5rem">
+  Sources: <code>docs/plans/2026-08-16-1527-feat-company-os-visual-redesign-plan.md</code> (the
+  Product Contract), <code>docs/plans/2026-08-16-002-feat-daylight-pixel-visual-system-plan.md</code>
+  (how it landed), <code>VISUAL_DESIGN.md</code> (the rendering specification), and
+  <a href="https://zhongguose.com/ai/docs/mcp">Zhongguose</a> for the palette's names.
+</p>
+
+</main>
+</body>
+</html>

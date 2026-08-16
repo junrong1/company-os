@@ -27,6 +27,9 @@ stands against it. Statuses come from the plan frontmatter, the coverage audit
 - [x] `docs/residual-review-findings/feat-option-consequence-comparison.md` — three findings accepted knowingly
 - [x] `docs/design/art-direction.html` — approved specimen, load-bearing for three client units
 - [x] `docs/prd/2026-08-16-company-os-mvp-prd.md` — MVP PRD, M1–M67, `status: active`
+- [x] `docs/plans/2026-08-16-1527-feat-company-os-visual-redesign-plan.md` — the daylight redesign's Product Contract, R1–R13 + R9a, F1–F3, AE1–AE4
+- [x] `docs/plans/2026-08-16-002-feat-daylight-pixel-visual-system-plan.md` — the implementation plan, U1–U17, `status: active`
+- [x] `VISUAL_DESIGN.md` — the rendering specification the redesign is drawn to
 - [x] `CONTEXT.md` — the glossary the PRD is written in
 
 ---
@@ -68,6 +71,39 @@ Nine Phase 1 requirements that no Phase 1 unit had discharged were found and fix
 way — held-direction movement, the render clock, the extrapolation budget, the undrawn CEO,
 the nameless roster, the tacit line's transport, unlock announcement, run creation from the
 page. The table in the coverage audit names each with its commit.
+
+---
+
+## Phase 4 — the daylight pixel visual system
+
+All seventeen units shipped with tests. The kernel, the wire and the store are untouched: no
+event, command, payload field or schema version changed, and `frontend/tests/golden.test.ts`
+never moved.
+
+| Unit | Status | Evidence |
+|---|---|---|
+| U1. The daylight token set | `[x]` | `tokens.test.ts` — contrast held as assertions, not intentions |
+| U2. The chrome, rebuilt bright | `[x]` | `chrome.test.ts` — stylesheet and token module read and compared |
+| U3. DAG and chain strip on a light ground | `[x]` | `dag.test.ts` — no colour literal survives in those three files |
+| U4. The base resolution, 16 → 32 | `[x]` | `world.test.ts` — written first, and the grid signature did not move |
+| U5. The daylight shell | `[x]` | `world.test.ts` — no dark field, no `lighter` blend, light from the glazing |
+| U6. Team floor zones | `[x]` | `world.test.ts` — border course and inset rug per room |
+| U7. The prop set at 32×32 | `[x]` | `render.test.ts` — sixteen props, a daylight set with dark outlines |
+| U8. The rig format and its converter | `[x]` | `cast.test.ts` — exact round trip, or an error naming the pixel |
+| U9. The body rig | `[x]` | `cast.test.ts` — twelve cells, feet on row 63 in every one |
+| U10. The feature libraries | `[x]` | 8 hair, 8 outfits, 6 accessories, each with three views |
+| U11. Composition and the drawing pass | `[x]` | `cast.test.ts` — one `putImageData`, mirrored left, layered in order |
+| U12. The eleven identities, cast | `[x]` | 33 manifests read out of the candidates, silhouettes unique |
+| U13. Appearance from the run seed | `[x]` | `cast.test.ts` — stable in a run, and no command carries it |
+| U14. The camera | `[x]` | `camera.test.ts` — dead zone, whole pixels, clamped to the building |
+| U15. People first, across the chrome | `[x]` | `chrome.test.ts` — panels on a rail above 1400, one warm accent |
+| U16. The visual verification harness | `[x]` | `visual.test.ts` plus `npm run verify` artifacts |
+| U17. The record | `[x]` | the specimen rebuilt, `VISUAL_DESIGN.md` and `CONTEXT.md` updated |
+
+Three rendering bugs surfaced only under the harness, and none of them could have been caught by
+a unit test: `resize()` cleared the canvas on every observation, the canvas fed its own size back
+into the box it was measured against, and two grid tracks floored at their content's height and
+pushed the office off the screen.
 
 ---
 
