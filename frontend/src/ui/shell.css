@@ -93,6 +93,12 @@
       'hud    panels'
       'stage  panels'
       'strip  panels';
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .stage {
+    min-height: 0;
   }
 
   .panels {
@@ -100,7 +106,17 @@
     align-content: start;
     border-left: 1px solid var(--rule);
     overflow-y: auto;
-    max-height: 100vh;
+    /*
+     * The same `min-height: 0` the stage needs, for the same reason and a worse symptom.
+     *
+     * This column spans three rows, and a grid item's default `min-height: auto` floors at its
+     * own content — so a long org chart and a long work list forced all three rows to the
+     * height of the panels, the stage row ballooned with them, and the office was drawn
+     * hundreds of pixels down the page with its bottom half off the screen. The panels have to
+     * be allowed to scroll before the stage can be allowed to fit.
+     */
+    min-height: 0;
+    height: 100%;
   }
 }
 
@@ -364,12 +380,53 @@
   place-items: stretch;
   overflow: hidden;
   padding: 0.5rem;
-  min-height: 18rem;
+  /*
+   * A real floor here, and zero in the wide layout below — the two layouts want opposite
+   * things and giving both the same answer breaks one of them.
+   *
+   * Stacked, the page scrolls: the panels sit under the office and the stage needs a minimum
+   * or it has no reason to have any height at all. Wide, the shell owns the viewport and the
+   * stage takes what is left, which means the row has to be allowed to shrink below its
+   * content — a `1fr` track is `minmax(auto, 1fr)` and `auto` floors at the content's own
+   * minimum, so a canvas sized *from* the row can push the row taller than the screen.
+   *
+   * Setting zero here instead collapsed the stage to nothing on a laptop, because the panels
+   * below it are long and the row had no reason left to hold any height.
+   */
+  /*
+   * A band sized to hold the whole office, and not one pixel more.
+   *
+   * Both bounds are load-bearing and they close opposite failures. The floor is 576 logical
+   * pixels tall, so a shorter band shows a horizontal slice of it — the camera does exactly
+   * what it was asked and the room is still cropped. And a band over 700 takes `chooseZoom`
+   * to 2, at which point a laptop sees about half the office at twice the size.
+   *
+   * Between 38 and 40rem the zoom stays 1 and the room is whole, whatever the panels below
+   * happen to be long enough to do to a `1fr` track.
+   */
+  min-height: 38rem;
+  max-height: 40rem;
 }
 
+/*
+ * Absolutely positioned, so the canvas cannot influence the size of the box it is measured
+ * against.
+ *
+ * In flow it could, and the result was a loop that never settled: the renderer sizes the
+ * canvas from the stage, the canvas contributes to the stage's height, the stage changes, the
+ * ResizeObserver fires again. Every turn of it assigns `canvas.width`, and assigning that
+ * *clears the canvas* — so the office was drawn and wiped, drawn and wiped, and what landed
+ * on screen depended on which side of the cycle the frame fell. It read as the camera being
+ * broken, because a blank canvas looks the same however it got blank.
+ *
+ * Out of flow, the stage's height is the grid's business alone and the observer settles after
+ * one notification.
+ */
 .stage > canvas.office {
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  inset: 0.5rem;
+  width: auto;
+  height: auto;
 }
 
 .office,

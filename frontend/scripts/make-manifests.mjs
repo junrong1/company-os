@@ -17,6 +17,7 @@ import { basename, join } from 'node:path'
 
 import { extract } from './palette-from-candidate.mjs'
 import { readPng } from './png.mjs'
+import { silhouette } from './cast-preview.mjs'
 
 const CANDIDATES = new URL(
   '../../docs/assets/company-os-visual-redesign/roster-characters/',
@@ -124,6 +125,41 @@ for (const [identity, group] of byIdentity) {
       }
     }
   }
+}
+
+/**
+ * No two of the thirty-three share a silhouette.
+ *
+ * A/B/C of one person differing is not enough, and the first version only checked that. R8
+ * asks that an identity be recognisable with its name label hidden, and a silhouette is all
+ * there is to read from across the office — so the requirement is across the whole cast, not
+ * within one person's variants. Two identities came out in the same hair, the same outfit and
+ * the same accessory, and no amount of different colour fixes a shape.
+ *
+ * With eight hair shapes, eight outfits and seven accessory states there are 448 triples for
+ * 33 people, so nudging a collision is always possible. Outfit moves first because it is the
+ * least of the three that a person was cast *for*.
+ */
+const taken = new Set()
+for (const entry of entries) {
+  // Keyed on the *composed* outline rather than on the feature indices behind it. Two cheaper
+  // keys were tried and both were wrong. Including the accessory declares two identical
+  // outlines distinct, because five of the six accessories draw inside the body. Excluding it
+  // and keying on hair-plus-outfit is closer, and still wrong: two different hair shapes can
+  // occupy the same pixels and differ only in which slots those pixels carry, so the feature
+  // pair is unique while the silhouette is not.
+  //
+  // The only key that cannot be wrong is the thing R8 is about.
+  let guard = 0
+  while (taken.has(silhouette(entry)) && guard < OUTFIT_COUNT * HAIR_COUNT) {
+    entry.outfit = (entry.outfit + 1) % OUTFIT_COUNT
+    if (entry.outfit === 0) entry.hair = (entry.hair + 1) % HAIR_COUNT
+    guard += 1
+  }
+  if (taken.has(silhouette(entry))) {
+    throw new Error(`${entry.id}: every silhouette in the library is already taken`)
+  }
+  taken.add(silhouette(entry))
 }
 
 const body = [

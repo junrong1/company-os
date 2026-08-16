@@ -256,8 +256,21 @@ export class Renderer {
    */
   resize(availableWidth: number, availableHeight: number): void {
     this.zoom = chooseZoom(availableWidth, availableHeight)
-    this.canvas.width = Math.max(1, Math.floor(availableWidth))
-    this.canvas.height = Math.max(1, Math.floor(availableHeight))
+
+    const width = Math.max(1, Math.floor(availableWidth))
+    const height = Math.max(1, Math.floor(availableHeight))
+
+    // Assigned only when they actually change, and that guard is load-bearing rather than an
+    // optimisation. Writing `canvas.width` *clears the canvas* even when the value is
+    // identical — and this is driven by a ResizeObserver that the canvas's own layout feeds
+    // back into, so an unconditional write means a resize can land after the frame that drew
+    // and leave the office blank until something else happens to move.
+    //
+    // The symptom was an empty stage on exactly the layouts where the observer fired most,
+    // and it looked like the camera or the zoom being wrong, because a blank canvas looks the
+    // same however it got blank.
+    if (this.canvas.width !== width) this.canvas.width = width
+    if (this.canvas.height !== height) this.canvas.height = height
   }
 
   get currentZoom(): number {

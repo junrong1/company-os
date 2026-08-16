@@ -164,7 +164,7 @@ export const CAST: Record<string, Manifest[]> = {
     },
     {
       hair: 3,
-      outfit: 5,
+      outfit: 6,
       accessory: null,
       skin: {
         skin: '#d89a52',
@@ -179,7 +179,7 @@ export const CAST: Record<string, Manifest[]> = {
   stf_ap: [
     {
       hair: 2,
-      outfit: 0,
+      outfit: 1,
       accessory: 3,
       skin: {
         skin: '#d89a52',
@@ -220,7 +220,7 @@ export const CAST: Record<string, Manifest[]> = {
   stf_buyer: [
     {
       hair: 2,
-      outfit: 0,
+      outfit: 2,
       accessory: 0,
       skin: {
         skin: '#d89a52',
@@ -260,8 +260,8 @@ export const CAST: Record<string, Manifest[]> = {
   ],
   stf_cs: [
     {
-      hair: 5,
-      outfit: 7,
+      hair: 6,
+      outfit: 1,
       accessory: null,
       skin: {
         skin: '#d89a52',
@@ -315,7 +315,7 @@ export const CAST: Record<string, Manifest[]> = {
     },
     {
       hair: 6,
-      outfit: 0,
+      outfit: 2,
       accessory: 1,
       skin: {
         skin: '#b56743',
@@ -327,8 +327,8 @@ export const CAST: Record<string, Manifest[]> = {
       },
     },
     {
-      hair: 3,
-      outfit: 7,
+      hair: 4,
+      outfit: 0,
       accessory: null,
       skin: {
         skin: '#d89a52',
@@ -343,7 +343,7 @@ export const CAST: Record<string, Manifest[]> = {
   stf_order: [
     {
       hair: 3,
-      outfit: 3,
+      outfit: 4,
       accessory: 3,
       skin: {
         skin: '#d89a52',
@@ -410,7 +410,7 @@ export const CAST: Record<string, Manifest[]> = {
     },
     {
       hair: 1,
-      outfit: 1,
+      outfit: 2,
       accessory: 3,
       skin: {
         skin: '#b56743',

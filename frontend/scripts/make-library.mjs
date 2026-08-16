@@ -190,31 +190,55 @@ const OUTFIT_HEIGHT = 24
 const SHOULDER = 21
 const HEM = 41
 
+/**
+ * The rig's own shoulder half-width. An outfit that stays inside it changes nothing a viewer
+ * can read from across the office.
+ *
+ * This is the finding that reshaped half the library. The first set drew every garment
+ * *within* the body the rig already fills — a collar here, a seam there — so hair was the
+ * only channel that changed a person's outline, and eight hair shapes cannot distinguish
+ * eleven people by silhouette. R8 asks for a combination of silhouette, hair, skin, outfit
+ * and accent, and an outfit that never touches the outline is not in that combination.
+ *
+ * So half of these now break the shoulder line: a flared jacket, a bulky knit, a hood, puff
+ * sleeves. The other half stay tailored on purpose, because a cast where everybody has a big
+ * silhouette has no silhouette variation either.
+ */
+const BODY_HALF = 8
+
 const OUTFITS = [
   {
     name: 'shirt',
     draw(cell, view) {
       collar(cell, view)
       rect(cell, CX - 8, SHOULDER + 3, 17, 1, 'topLine')
+      // Rolled cuffs: a small step out at the forearm. Small, but on the outline — the three
+      // tailored outfits used to be identical in silhouette, which meant only five of the
+      // eight were doing any work at the distance a person is actually read from.
+      rect(cell, CX - BODY_HALF - 1, SHOULDER + 12, 3, 3, 'topShade')
+      if (view !== 'side') rect(cell, CX + BODY_HALF - 1, SHOULDER + 12, 3, 3, 'topShade')
     },
   },
   {
     name: 'jacket',
     draw(cell, view) {
       collar(cell, view)
-      // Open, so the lapels break the torso vertically — the clearest silhouette an outfit
-      // can have at this size without changing the body's outline.
-      rect(cell, CX - 8, SHOULDER + 1, 3, HEM - 2, 'accent')
-      if (view !== 'side') rect(cell, CX + 6, SHOULDER + 1, 3, HEM - 2, 'accent')
-      rect(cell, CX - 2, SHOULDER + 2, 5, 4, 'topShade')
+      // Open and flared past the shoulder, so the outline itself says "jacket" — the lapels
+      // alone were invisible from any distance at which a person is 22 pixels wide.
+      rect(cell, CX - BODY_HALF - 2, SHOULDER + 2, 4, 16, 'accent')
+      if (view !== 'side') rect(cell, CX + BODY_HALF - 1, SHOULDER + 2, 4, 16, 'accent')
+      rect(cell, CX - 3, SHOULDER + 2, 7, 5, 'topShade')
     },
   },
   {
     name: 'blazer',
     draw(cell, view) {
       collar(cell, view)
-      rect(cell, CX - 8, SHOULDER + 1, 2, HEM - 2, 'topShade')
-      if (view !== 'side') rect(cell, CX + 7, SHOULDER + 1, 2, HEM - 2, 'topShade')
+      // Squared shoulders — a tailored jacket's one structural claim, and one pixel of it is
+      // enough to be a different outline from a shirt's.
+      rect(cell, CX - BODY_HALF - 1, SHOULDER + 1, 19, 3, 'topShade')
+      rect(cell, CX - 8, SHOULDER + 4, 2, HEM - 5, 'topShade')
+      if (view !== 'side') rect(cell, CX + 7, SHOULDER + 4, 2, HEM - 5, 'topShade')
       // A buttoned front: one vertical seam and two accent pips.
       rect(cell, CX, SHOULDER + 4, 1, HEM - 8, 'topLine')
       put(cell, CX + 1, SHOULDER + 7, 'accent')
@@ -225,9 +249,12 @@ const OUTFITS = [
     name: 'knit',
     draw(cell, view) {
       collar(cell, view)
-      // Ribbing at the hem and cuffs, which is what says knitwear rather than cotton.
+      // Bulky: a shoulder wider than the body under it, which is most of what reads as wool.
+      rect(cell, CX - BODY_HALF - 1, SHOULDER + 1, 19, 6, 'top')
+      rect(cell, CX - BODY_HALF - 1, SHOULDER + 1, 19, 1, 'topShade')
+      // Ribbing at the hem, which is the rest of it.
       rect(cell, CX - 7, HEM - 4, 15, 3, 'topShade')
-      for (let y = SHOULDER + 4; y < HEM - 5; y += 3) {
+      for (let y = SHOULDER + 8; y < HEM - 5; y += 3) {
         rect(cell, CX - 6, y, 13, 1, 'topShade')
       }
     },
@@ -238,16 +265,19 @@ const OUTFITS = [
       collar(cell, view)
       rect(cell, CX - 3, SHOULDER, 7, 4, 'topShade')
       rect(cell, CX, SHOULDER + 1, 1, 4, 'topLine')
-      // Short sleeves: a cuff line high on the arm.
-      rect(cell, CX - 9, SHOULDER + 6, 4, 2, 'topLine')
-      if (view !== 'side') rect(cell, CX + 6, SHOULDER + 6, 4, 2, 'topLine')
+      // Short sleeves that end in a cuff and leave the forearm bare, so the outline steps
+      // *in* where the other outfits step out.
+      rect(cell, CX - BODY_HALF - 1, SHOULDER + 2, 3, 6, 'top')
+      if (view !== 'side') rect(cell, CX + BODY_HALF - 1, SHOULDER + 2, 3, 6, 'top')
+      rect(cell, CX - BODY_HALF - 1, SHOULDER + 7, 3, 2, 'topLine')
+      if (view !== 'side') rect(cell, CX + BODY_HALF - 1, SHOULDER + 7, 3, 2, 'topLine')
     },
   },
   {
     name: 'hoodie',
     draw(cell, view) {
-      // The hood is the silhouette, and it sits above the shoulder line.
-      rect(cell, CX - 7, 0, 15, 2, 'topShade')
+      // The hood is the silhouette, and it sits above and behind the shoulders.
+      ellipse(cell, CX, SHOULDER - 2, BODY_HALF + 1, 5, 'topShade', SHOULDER - 5, SHOULDER + 1)
       collar(cell, view)
       rect(cell, CX - 5, SHOULDER + 1, 11, 3, 'topShade')
       rect(cell, CX - 4, SHOULDER + 8, 9, 4, 'topLine')
@@ -258,8 +288,9 @@ const OUTFITS = [
     name: 'blouse',
     draw(cell, view) {
       collar(cell, view)
-      rect(cell, CX - 6, SHOULDER + 1, 3, 3, 'topShade')
-      if (view !== 'side') rect(cell, CX + 4, SHOULDER + 1, 3, 3, 'topShade')
+      // Puff sleeves: a bulge at the shoulder that falls back to the arm underneath.
+      ellipse(cell, CX - BODY_HALF - 1, SHOULDER + 4, 3, 4, 'top')
+      if (view !== 'side') ellipse(cell, CX + BODY_HALF + 1, SHOULDER + 4, 3, 4, 'top')
       rect(cell, CX - 8, HEM - 3, 17, 1, 'topLine')
       put(cell, CX, SHOULDER + 3, 'accent')
     },
@@ -268,8 +299,10 @@ const OUTFITS = [
     name: 'apron',
     draw(cell, view) {
       collar(cell, view)
-      // A bib and two straps. Reads instantly and belongs to exactly one kind of role.
-      rect(cell, CX - 5, SHOULDER + 3, 11, HEM - 6, 'accent')
+      // A bib and two straps, with the skirt of it wider than the body. Reads instantly and
+      // belongs to exactly one kind of role.
+      rect(cell, CX - 5, SHOULDER + 3, 11, 12, 'accent')
+      rect(cell, CX - BODY_HALF - 1, SHOULDER + 14, 19, HEM - SHOULDER - 15, 'accent')
       rect(cell, CX - 5, SHOULDER, 2, 4, 'accent')
       if (view !== 'side') rect(cell, CX + 4, SHOULDER, 2, 4, 'accent')
       rect(cell, CX - 5, SHOULDER + 10, 11, 1, 'topLine')
@@ -345,11 +378,18 @@ const ACCESSORIES = [
   {
     name: 'cap',
     draw(cell, view) {
-      rect(cell, CX - 8, HEAD_TOP, 17, 6, 'accent')
-      rect(cell, CX - 6, HEAD_TOP - 2, 13, 3, 'accent')
+      // A dome with a brim, not a slab. The first version was two stacked rectangles in the
+      // accent with no outline, and on a head it read as a block of colour hovering above
+      // somebody rather than as a hat — the one accessory big enough that its silhouette is
+      // the whole of what it says.
+      ellipse(cell, CX, HEAD_TOP + 6, 8, 6, 'accent', HEAD_TOP - 1, HEAD_TOP + 6)
+      rect(cell, CX - 8, HEAD_TOP + 5, 17, 2, 'topShade')
+      // A crown seam, so the dome has a top rather than only an edge.
+      rect(cell, CX - 1, HEAD_TOP - 1, 2, 2, 'topShade')
+
       // The peak, which is the only part with a direction — so it disappears from behind.
-      if (view === 'down') rect(cell, CX - 8, HEAD_TOP + 6, 17, 2, 'outline')
-      if (view === 'side') rect(cell, CX + 2, HEAD_TOP + 6, 10, 2, 'outline')
+      if (view === 'down') rect(cell, CX - 7, HEAD_TOP + 7, 15, 2, 'topShade')
+      if (view === 'side') rect(cell, CX + 2, HEAD_TOP + 7, 11, 2, 'topShade')
     },
   },
   {
