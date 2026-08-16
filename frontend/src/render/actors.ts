@@ -17,7 +17,8 @@
  * person be behind their own desk and in front of the one below it.
  */
 
-import { paint, TILE } from './floor'
+import { RESERVED_BEAM, RESERVED_BEAM_EDGE } from '../design/tokens'
+import { CONTACT_SHADOW, paint, TILE } from './floor'
 import { hasLongHair, personPalette } from './palettes'
 import { BODY, LEGS, LONG_HAIR } from './sprites'
 
@@ -28,6 +29,17 @@ export type Facing = (typeof DIRS)[number]
 export const FRAMES = 3
 export const SPRITE_WIDTH = 10
 export const SPRITE_HEIGHT = 16
+
+/**
+ * How much bigger than its source a character is drawn.
+ *
+ * The tile doubled to 32 for the 48×64 cast, but the cast has not landed yet — this sheet is
+ * still the prototype's 10×16 art. Drawing it 1:1 into a 32-pixel tile would halve everyone's
+ * apparent size the moment the resolution changed, which would make the intermediate state
+ * look like a regression rather than like a step. So it scales at the blit, exactly as the
+ * props do, and both scalings disappear when their real art arrives.
+ */
+export const SPRITE_SCALE = 2
 
 /** The prototype's walk cycle: frame 0, 1, 0, 2 — so the stride reads as alternating feet. */
 export const WALK_CYCLE = [0, 1, 0, 2] as const
@@ -141,9 +153,17 @@ export function drawActor(
   const row = DIRS.indexOf(actor.facing)
   const frame = walkFrame(actor)
 
-  // A contact shadow, so a person does not float the way unshadowed furniture does.
-  context.fillStyle = 'rgba(0,0,0,0.20)'
-  context.fillRect(x + 3, y + TILE - 2, SPRITE_WIDTH - 3, 2)
+  const drawnWidth = SPRITE_WIDTH * SPRITE_SCALE
+  const drawnHeight = SPRITE_HEIGHT * SPRITE_SCALE
+  // Centred on the tile horizontally, feet on its last row. Derived rather than written down,
+  // so the anchor survives the cast's real cell size arriving.
+  const left = x + Math.round((TILE - drawnWidth) / 2)
+  const top = y + TILE - drawnHeight
+
+  // A contact shadow, so a person does not float the way unshadowed furniture does. Shares
+  // the value furniture uses — two shadows in one room lit differently is worse than none.
+  context.fillStyle = CONTACT_SHADOW
+  context.fillRect(left + 2, y + TILE - 4, drawnWidth - 4, 4)
 
   context.drawImage(
     sheet.canvas,
@@ -151,10 +171,10 @@ export function drawActor(
     Math.max(0, row) * SPRITE_HEIGHT,
     SPRITE_WIDTH,
     SPRITE_HEIGHT,
-    x + 3,
-    y,
-    SPRITE_WIDTH,
-    SPRITE_HEIGHT,
+    left,
+    top,
+    drawnWidth,
+    drawnHeight,
   )
 }
 
@@ -163,14 +183,28 @@ export function drawActor(
  *
  * Amber is reserved for exactly this meaning across the whole product — the art direction spends it
  * on nothing else — so this is the only place that draws it.
+ *
+ * It used to be `#f0a92b` while the chrome's was `#f2c46b`: two ambers for one meaning, in a
+ * product whose single strongest claim is that there is exactly one signal that pulls the
+ * eye. They are one value now, and it is the token module's.
  */
-export const BEAM_COLOUR = '#f0a92b'
+export const BEAM_COLOUR = RESERVED_BEAM
 
 export function drawWaitingBeam(context: CanvasRenderingContext2D, actor: Actor): void {
   const x = Math.round((actor.xMilli * TILE) / 1000)
   const y = Math.round((actor.yMilli * TILE) / 1000)
 
+  const centre = x + Math.round(TILE / 2)
+  const head = y + TILE - SPRITE_HEIGHT * SPRITE_SCALE
+
+  // The edge first, then the amber inside it. On a daylight floor the amber alone is a pale
+  // mark on a pale room; the outline is what makes the one signal that must not be missed
+  // legible, and it is the same dove-blue separation the sprites take their edges from.
+  context.fillStyle = RESERVED_BEAM_EDGE
+  context.fillRect(centre - 3, head - 13, 6, 11)
+  context.fillRect(centre - 3, head - 1, 6, 3)
+
   context.fillStyle = BEAM_COLOUR
-  context.fillRect(x + 7, y - 6, 2, 4)
-  context.fillRect(x + 7, y - 1, 2, 1)
+  context.fillRect(centre - 2, head - 12, 4, 9)
+  context.fillRect(centre - 2, head, 4, 1)
 }

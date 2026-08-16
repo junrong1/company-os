@@ -9,6 +9,7 @@ import {
   positionDiverged,
 } from '../src/render/clock'
 import { TICKS_PER_SIM_HOUR } from '../src/render/interpolate'
+import { RESERVED_BEAM } from '../src/design/tokens'
 
 /** Wall milliseconds that advance the clock by at least `ticks` at rate 1. */
 function wallMsFor(ticks: bigint): number {
@@ -755,8 +756,12 @@ describe('a frame', () => {
   })
 
   it('draws the reserved amber only for someone waiting on a decision', () => {
-    /* Amber means one thing across the whole product, and this is the only place that spends it. */
-    expect(BEAM_COLOUR).toBe('#f0a92b')
+    /* Amber means one thing across the whole product, and this is the only place that spends
+     * it. Asserted against the token module rather than against a literal, because for a
+     * while there were two of them — the canvas drew `#f0a92b` while the chrome drew
+     * `#f2c46b`, which is two ambers for one meaning in a product whose strongest claim is
+     * that exactly one signal pulls the eye. Pinning the hex here is what let them drift. */
+    expect(BEAM_COLOUR).toBe(RESERVED_BEAM)
 
     const withBeam = recordingCanvas()
     drawWaitingBeam(withBeam.canvas.getContext('2d')!, { ...ACTOR, waiting: true })

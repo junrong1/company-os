@@ -18,11 +18,38 @@
  * sizes therefore render the same office rather than folding the same log to different desks.
  */
 
+import { PAL, withAlpha } from '../design/tokens'
 import { ART, PROPS } from './sprites'
 import { FLOORS, WALLC } from './palettes'
 
-/** One tile is 16 logical pixels, drawn at integer zoom with nearest-neighbour scaling. */
-export const TILE = 16
+/**
+ * The shadow a thing standing on the floor casts.
+ *
+ * 鸽蓝 rather than black, and lighter than it was. A contact shadow's job is to say "this
+ * object touches the ground here"; on ink that took 22% black because the ground was already
+ * dark, and the same value on a daylight floor reads as a hole rather than as contact.
+ * Shared by furniture and by people, so the two cannot drift into looking lit from different
+ * rooms.
+ */
+export const CONTACT_SHADOW = withAlpha(PAL.text, 0.13)
+
+/**
+ * One tile is 32 logical pixels, drawn at integer zoom with nearest-neighbour scaling.
+ *
+ * **This is an art resolution, not a unit of geometry.** The kernel's floor is 31×18 *tiles*
+ * and `buildGrid`, `walkable` and every milli-tile position work in those units, none of
+ * which move when this number does. What moves is how much art one tile holds.
+ *
+ * It doubled from 16 for the cast. The approved 48×64 characters put a figure of roughly
+ * 22×62 pixels inside their canvas; against a 16-pixel tile that person stands almost four
+ * tiles tall and a tile and a half wide, which is not a character in an office but a
+ * character wearing one. At 32 the same figure is 0.7 tiles wide by 1.9 tall — the
+ * proportion the art was drawn for.
+ *
+ * The floor is consequently 992×576 at zoom 1 rather than 496×288, which is larger than the
+ * stage on most laptops. `camera.ts` is what makes that survivable.
+ */
+export const TILE = 32
 
 export const WALL = 0
 export const FLOOR = 1
@@ -107,22 +134,29 @@ function paintFloorTile(
   if (wood) {
     // Floorboards run the whole way across; only every fourth tile gets an end joint, otherwise
     // the staggered joints read as brickwork rather than as boards.
+    //
+    // Re-derived at 32 rather than doubled. The board *bands* scale — three boards of ten
+    // rows instead of three of five — but a seam stays one pixel, because a doubled seam is a
+    // two-pixel dark line and reads as a gap between boards rather than as the joint between
+    // them. That distinction is the whole reason this function was not simply scaled at the
+    // blit like the props were.
     context.fillStyle = palette.b
-    context.fillRect(ox, oy + 5, TILE, 5)
+    context.fillRect(ox, oy + 11, TILE, 10)
     context.fillStyle = palette.c
-    context.fillRect(ox, oy + 11, TILE, 5)
+    context.fillRect(ox, oy + 22, TILE, 10)
     context.fillStyle = palette.seam
-    context.fillRect(ox, oy + 4, TILE, 1)
     context.fillRect(ox, oy + 10, TILE, 1)
-    context.fillRect(ox, oy + 15, TILE, 1)
+    context.fillRect(ox, oy + 21, TILE, 1)
+    context.fillRect(ox, oy + 31, TILE, 1)
     if (tx % 4 === 1) {
-      context.fillRect(ox + 6, oy, 1, 4)
-      context.fillRect(ox + 6, oy + 11, 1, 4)
+      context.fillRect(ox + 12, oy, 1, 10)
+      context.fillRect(ox + 12, oy + 22, 1, 9)
     }
-    if (tx % 4 === 3) context.fillRect(ox + 10, oy + 5, 1, 5)
+    if (tx % 4 === 3) context.fillRect(ox + 20, oy + 11, 1, 10)
+    // Two short grain lifts, so a board is not a flat band.
     context.fillStyle = palette.a
-    context.fillRect(ox + 3, oy + 7, 6, 1)
-    context.fillRect(ox + 9, oy + 13, 5, 1)
+    context.fillRect(ox + 6, oy + 15, 12, 1)
+    context.fillRect(ox + 18, oy + 26, 10, 1)
     return
   }
 
@@ -149,11 +183,13 @@ function paintWall(context: CanvasRenderingContext2D, tx: number, ty: number): v
   context.fillStyle = WALLC.face
   context.fillRect(ox, oy, TILE, TILE)
   context.fillStyle = WALLC.faceLo
-  context.fillRect(ox, oy + 11, TILE, 3)
+  context.fillRect(ox, oy + 22, TILE, 6)
   context.fillStyle = WALLC.base
-  context.fillRect(ox, oy + 14, TILE, 2)
+  context.fillRect(ox, oy + 28, TILE, 4)
   context.fillStyle = WALLC.cap
-  context.fillRect(ox, oy, TILE, 4)
+  context.fillRect(ox, oy, TILE, 8)
+  // One pixel, not two. This is the light catching the top edge of the wall, and a light
+  // *band* would read as a second surface rather than as an edge.
   context.fillStyle = WALLC.capLip
   context.fillRect(ox, oy, TILE, 1)
 }
@@ -161,17 +197,18 @@ function paintWall(context: CanvasRenderingContext2D, tx: number, ty: number): v
 function paintWindow(context: CanvasRenderingContext2D, tx: number, ty: number): void {
   const ox = tx * TILE
   const oy = ty * TILE
-  // Frame, glass, sky band, mullion, sill — the prototype's exact colours and offsets.
+  // Frame, glass, sky band, mullion, sill. Positions and areas re-derived at 32; the mullion
+  // stays one pixel for the same reason the wall's cap lip does.
   context.fillStyle = '#2b313d'
-  context.fillRect(ox + 2, oy + 4, 12, 9)
+  context.fillRect(ox + 4, oy + 8, 24, 18)
   context.fillStyle = '#6f8fb0'
-  context.fillRect(ox + 3, oy + 5, 10, 7)
+  context.fillRect(ox + 6, oy + 10, 20, 14)
   context.fillStyle = '#9dbdd8'
-  context.fillRect(ox + 3, oy + 5, 10, 3)
+  context.fillRect(ox + 6, oy + 10, 20, 6)
   context.fillStyle = '#2b313d'
-  context.fillRect(ox + 8, oy + 5, 1, 7)
+  context.fillRect(ox + 16, oy + 10, 1, 14)
   context.fillStyle = '#8d97ab'
-  context.fillRect(ox + 1, oy + 12, 14, 2)
+  context.fillRect(ox + 2, oy + 24, 28, 4)
 }
 
 /** Build the layer that never changes. Returns a canvas at 1x. */
@@ -294,16 +331,29 @@ export function walkable(grid: number[][], x: number, y: number): boolean {
 export const PROP_KEYS = Object.keys(PROPS)
 export const PROP_INDEX = new Map(PROP_KEYS.map((key, index) => [key, index]))
 
+/**
+ * How many logical pixels one prop grid is authored at.
+ *
+ * Deliberately *not* `TILE`. The props are still the 16×16 art the prototype drew and are
+ * blitted into a 32-pixel tile at 2×, which is a placeholder until they are redrawn at the
+ * new resolution. Committing mechanically doubled grids in the meantime would be several
+ * hundred lines of art authored to be deleted, and it would bury the interesting part of the
+ * redraw's diff in noise a converter produced.
+ *
+ * When the real 32×32 grids land, this becomes `TILE` and the scaling below disappears.
+ */
+export const PROP_SOURCE = 16
+
 /** Pre-render every prop once into a strip, so a frame is a blit rather than a repaint. */
 export function buildPropAtlas(make: () => HTMLCanvasElement): HTMLCanvasElement {
   const canvas = make()
-  canvas.width = TILE * PROP_KEYS.length
-  canvas.height = TILE
+  canvas.width = PROP_SOURCE * PROP_KEYS.length
+  canvas.height = PROP_SOURCE
 
   const context = canvas.getContext('2d')
   if (context === null) return canvas
 
-  PROP_KEYS.forEach((key, index) => paint(context, PROPS[key], index * TILE, 0, ART))
+  PROP_KEYS.forEach((key, index) => paint(context, PROPS[key], index * PROP_SOURCE, 0, ART))
   return canvas
 }
 
@@ -320,29 +370,43 @@ export function blitProp(
   if (index === undefined) return
 
   if (solid) {
-    context.fillStyle = 'rgba(0,0,0,0.22)'
-    context.fillRect(tx * TILE + 2, ty * TILE + TILE - 2, TILE - 4, 2)
+    context.fillStyle = CONTACT_SHADOW
+    context.fillRect(tx * TILE + 4, ty * TILE + TILE - 4, TILE - 8, 4)
   }
-  context.drawImage(atlas, index * TILE, 0, TILE, TILE, tx * TILE, ty * TILE, TILE, TILE)
+  // Source is `PROP_SOURCE` square, destination is `TILE` square. Nearest-neighbour, because
+  // the renderer disables smoothing before it draws anything.
+  context.drawImage(
+    atlas,
+    index * PROP_SOURCE,
+    0,
+    PROP_SOURCE,
+    PROP_SOURCE,
+    tx * TILE,
+    ty * TILE,
+    TILE,
+    TILE,
+  )
 }
 
 /**
- * Choose the integer zoom and how many tiles fit, for a given stage size.
+ * Choose the integer zoom for a given stage size.
  *
- * Integer only, and nearest-neighbour: a fractional zoom resamples the art and it stops being pixel
- * art. Bigger windows get a bigger zoom rather than only more tiles, or people end up looking like
- * ants on a huge floor.
+ * Integer only, and nearest-neighbour: a fractional zoom resamples the art and it stops being
+ * pixel art. Bigger windows get a bigger zoom rather than only more tiles, or people end up
+ * looking like ants on a huge floor.
+ *
+ * Two things changed when the tile doubled. The ladder is {1, 2} rather than {1, 2, 3},
+ * because zoom 1 at 32 pixels a tile is exactly what zoom 2 at 16 was on screen — no display
+ * loses fidelity, the rungs are just numbered differently.
+ *
+ * And the "26×16 tiles must fit" clamp is gone. It existed because the canvas was the whole
+ * floor and a zoom that overflowed the stage had nowhere to put the overflow. The camera
+ * answers that now, so the question here narrows to the one it was always really asking: how
+ * big should a person be on this display.
  */
 export function chooseZoom(availableWidth: number, availableHeight: number): number {
   const width = Math.max(320, availableWidth)
   const height = Math.max(220, availableHeight)
 
-  let zoom = width >= 1500 && height >= 700 ? 3 : width >= 620 ? 2 : 1
-  while (zoom > 1) {
-    const cols = Math.floor(width / (TILE * zoom))
-    const rows = Math.floor(height / (TILE * zoom))
-    if (cols >= 26 && rows >= 16) break
-    zoom -= 1
-  }
-  return zoom
+  return width >= 1280 && height >= 700 ? 2 : 1
 }
