@@ -196,6 +196,7 @@
 .decision__actions button:focus-visible,
 .conversation__decision button:focus-visible,
 .compare__ask:focus-visible,
+.hints__dismiss:focus-visible,
 .person:focus-visible {
   outline: 3px solid var(--text);
   outline-offset: 2px;
@@ -741,6 +742,65 @@
   color: var(--text-muted);
   font-size: 11px;
 }
+
+/* ---- the first-run hints ---------------------------------------------- */
+
+/*
+ * Two sentences over the office, in the corner the conversation does not use, and gone for good
+ * once each has been earned or closed.
+ *
+ * **They sit on the office rather than in the rail**, the same call the chain strip and the
+ * conversation both make: what they describe is out there on the floor, and a tutorial entry in
+ * the panel column would be a permanent tenant asking to be read once.
+ *
+ * **Quiet, deliberately.** Band four of the art direction is chrome that may sit over the
+ * office and may never compete with it, and the one thing that *is* allowed to pull the eye on
+ * the opening frame is the amber over the person waiting. So these are the panel's own ivory,
+ * ink edge and hard offset at the smallest type in the interface — no fill, no accent, and no
+ * arrow pointing anywhere.
+ */
+.hints {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 3;
+  width: min(17rem, calc(100% - 2rem));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.hints__card {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 9px 11px;
+  background: var(--ganglan);
+  border: 1px solid var(--text);
+  box-shadow: var(--hard);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.hints__dismiss {
+  flex: none;
+  margin-left: auto;
+  padding: 2px 7px;
+  background: none;
+  border: 1px solid var(--rule);
+  color: var(--tianlan);
+  font-family: var(--ui);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.hints__dismiss:hover { border-color: var(--tianlan); }
 
 /* ---- the conversation ------------------------------------------------- */
 

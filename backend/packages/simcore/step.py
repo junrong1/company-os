@@ -448,6 +448,7 @@ def new_run(
             lifecycle.default_horizon_tick() if horizon_tick is None else horizon_tick
         ),
     )
+    _seed_authored_work(state)
     _refresh_load(state)
 
     # Anything already available on day one is announced by genesis itself — the catalog and
@@ -484,6 +485,41 @@ def new_run(
         },
     )
     return state, [genesis]
+
+
+def _seed_authored_work(state: State) -> None:
+    """Put the authored day-zero work in flight, so day one is not an empty floor (M6).
+
+    **This emits no event, and that is the load-bearing part.** The fold rebuilds genesis by
+    calling this same `new_run` (`log._apply_genesis`), so the seed is already applied by the
+    time any logged event is replayed. A `WORK_ASSIGNED` alongside it would be worse than
+    redundant: that kind is an *input*, so the replay would re-issue `assign_direct` against
+    an item this function had already made active, and the command would be rejected mid-fold.
+    The genesis event is the record; the seed is part of what genesis means.
+
+    **It is not on the genesis payload either.** It could be, and U6 is where it should go:
+    R7 puts the scenario id and its content hash on genesis, and the seed is scenario data, so
+    recording it before that mechanism exists would mean a payload key and a schema-version
+    bump for a fact no consumer can yet check against anything. The log is not silent about it
+    meanwhile — the first `CHECKPOINT_RAISED` names the person, the item and the effort already
+    burned, with no command anywhere before it to explain them.
+
+    **It goes through `_start_work` rather than setting the fields itself**, so a seeded person
+    reaches their desk by the same path a delegated one does. They are already sitting at it at
+    genesis, so no walk is generated; if a scenario ever seeds someone away from their seat,
+    they walk in rather than teleporting.
+
+    A log written before this seed existed folds to a different day-zero state under an
+    unchanged rules version, because RULES_VERSION digests the tuning table and the multiplier
+    order — not the authored roster or work graph. That is survivable only because U9's
+    DDL_VERSION bump makes the store a documented wipe; there are no older logs to fold.
+    """
+    for seeded in work.SEEDED_ASSIGNMENTS:
+        item = state.items[seeded.item_id]
+        person = state.people[seeded.person_id]
+        item.assignee = person.id
+        item.done_units = seeded.done_units(work.spec(seeded.item_id))
+        _start_work(state, person, item)
 
 
 # =========================================================================

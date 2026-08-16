@@ -133,11 +133,25 @@ def test_the_clock_keeps_running_while_an_item_is_stalled(run: sim.State) -> Non
     assert run.tick == before + 100
 
 
+def _raised_for(events: list[sim.Emitted], item_id: str) -> list[sim.Emitted]:
+    """Every checkpoint raised for one item.
+
+    Filtered by item rather than taking the first raise in the batch. Since M6 a run opens
+    with one authored assignment already at its checkpoint, so the first `CHECKPOINT_RAISED`
+    in any collected stretch belongs to the seeded item, not to the one the test assigned.
+    """
+    return [
+        event
+        for event in events
+        if event.kind.name == "CHECKPOINT_RAISED" and event.payload["item"] == item_id
+    ]
+
+
 def test_a_checkpoint_is_raised_at_its_threshold(run: sim.State) -> None:
     sim.assign_direct(run, "wi_ap_map", "stf_ap")
     events = run_until(run, lambda s: s.items["wi_ap_map"].status == sim.STATUS_BLOCKED)
 
-    raised = [e for e in events if e.kind.name == "CHECKPOINT_RAISED"]
+    raised = _raised_for(events, "wi_ap_map")
     assert len(raised) == 1
 
     payload = raised[0].payload
@@ -156,7 +170,7 @@ def test_a_raised_checkpoint_carries_the_line_said_only_in_person(run: sim.State
     sim.assign_direct(run, "wi_ap_map", "stf_ap")
     events = run_until(run, lambda s: s.items["wi_ap_map"].status == sim.STATUS_BLOCKED)
 
-    raised = [e for e in events if e.kind.name == "CHECKPOINT_RAISED"]
+    raised = _raised_for(events, "wi_ap_map")
     assert raised[0].payload["tacit"] == work.spec("wi_ap_map").checkpoints[0].tacit
     assert raised[0].payload["tacit"]
 

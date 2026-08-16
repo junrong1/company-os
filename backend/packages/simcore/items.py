@@ -475,6 +475,72 @@ def spec(item_id: str) -> ItemSpec:
 
 
 # =========================================================================
+# What the company was already doing (M6)
+# =========================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class SeededAssignment:
+    """Work already in flight when the CEO walked in.
+
+    Without this the floor is idle until the CEO assigns something, and the first thing on
+    screen is an empty office with nothing asking for a decision — which is the opposite of
+    what the product is claiming to be about. M6 asks for the reverse: a person waiting.
+
+    **Progress is authored in percent of the item's effort, not in units and not in hours.**
+    Percent is the unit checkpoints are already authored in (`Checkpoint.at_percent`), so
+    authoring a seed *at* a checkpoint's own percent is what makes the opening stop
+    structural rather than arithmetic that happens to land. Hours would not: the shipped seed's
+    checkpoint sits at 45% of twenty-two hours, which is 9.9, so an hours figure would have to
+    be rounded by the author — and rounding it the wrong way is a scenario that silently opens
+    on an idle floor.
+    """
+
+    item_id: str
+    person_id: str
+    #: Percent of the item's total effort already burned.
+    done_percent: int
+
+    def done_units(self, item: ItemSpec) -> int:
+        """The seeded progress in effort units, rounded *up*.
+
+        Up rather than down, so `checkpoint_reached` holds at a seed authored at the
+        checkpoint's own percent whatever the effort figure is. `checkpoint_reached`
+        cross-multiplies (`done * 100 >= at * total`), so a floor division would leave a seed
+        one unit short of its own threshold for every item whose effort does not divide by a
+        hundred — and the symptom would be an opening that works for some scenarios and
+        quietly idles for others.
+        """
+        return (self.done_percent * item.effort_units + 99) // 100
+
+
+#: The one assignment genesis applies, so a director is holding an unsettled decision from
+#: the first tick rather than the floor sitting idle (M6).
+#:
+#: **Why this item and this person.** `wi_hiring` wants Sam, the recruiter, and Ruth is the
+#: People manager who carries it herself — the smallest of the four lines, where a manager
+#: doing the work is the plausible day-zero state rather than an oddity. Its checkpoint is
+#: also the cheapest of the nine to answer cold: "the job post does not match what the hiring
+#: manager wants — which one is right?" costs no cash, changes no policy, and is obviously the
+#: CEO's call, which is what an opening decision has to be. And its tacit line reverses the
+#: obvious answer, so the first decision the CEO takes is one where walking over paid.
+#:
+#: **Why 45.** That is `wi_hiring`'s own checkpoint percent. Seeding at the threshold means
+#: the first `step()` raises the checkpoint, so the beam is lit on the first frame the client
+#: draws rather than a minute of sim-time later.
+#:
+#: **Nobody's morale is spent on this.** It is not an assignment the CEO made, so it carries
+#: neither the bypass penalty nor a hand-off walk; and Ruth's line at 45% of `wi_hiring` sits
+#: at 838 permille — under the load ceiling, so the opening is not a degraded office either.
+#:
+#: This is authored data, in the same module as the items it refers to, so U6 relocates it
+#: into the scenario file as a data move: nothing here is derived and nothing computes it.
+SEEDED_ASSIGNMENTS: tuple[SeededAssignment, ...] = (
+    SeededAssignment(item_id="wi_hiring", person_id="dir_hr", done_percent=45),
+)
+
+
+# =========================================================================
 # Recurring-draw effects, and the copy generated from them (R59)
 # =========================================================================
 #

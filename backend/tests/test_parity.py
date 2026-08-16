@@ -27,6 +27,32 @@ has burned by a given moment are marked `effort_timed`. U7 alters the burn rate 
 capacity and morale, so those are the ones that will move, and the marker makes U7's job
 mechanical: `pytest -m effort_timed`. Nothing here asserts anything about manual hours,
 so U7's manual-hours work needs no exemption.
+
+**Two of them have already changed, and the change is recorded rather than absorbed** (R16).
+M6 opens a run on one authored assignment — `items.SEEDED_ASSIGNMENTS` — so the floor is no
+longer idle at tick zero and one more item is blocked for the whole of the harness's script.
+Exactly two ported assertions move with it, and neither is `effort_timed`:
+
+| harness check | was | is |
+|---|---|---|
+| `everyone starts idle` (100) | every person `idle` | every person except the seeded assignee |
+| `one item waiting in the tray` (123) | `blocked_count == 1` | `{wi_ap_map, wi_hiring}` |
+
+Nothing else moved, and the reason is worth stating because it is what makes the two above
+readable as the whole of the change: the seed lands in Ruth's line, and the harness only ever
+works Priya's and Dana's items. Every `effort_timed` assertion measures a burn rate in a
+department the seed does not touch, so none of them shifted by a single unit.
+
+**And the golden vectors did not move at all.** R16 expects them to, so the absence is recorded
+rather than left looking like a regeneration somebody forgot: `generate_golden.py` was run and
+its output is byte-identical. Four of the five vectors pin arithmetic — walk speed, the clock,
+the CEO's step, avatar palettes — and none reads day-zero state. The fifth, `genesis.json`, is
+the GENESIS *payload*, and the seed is deliberately not on it: the fold rebuilds the seed by
+calling `new_run`, so recording it would be a payload key and a schema-version bump for a fact
+no consumer can check until U6 puts the scenario hash on genesis (R7). What did move is the
+day-zero state hash, which no fixture holds — `items`, `people` and `capacity` sub-hashes, and
+nothing else; `state_shape_ver` and RULES_VERSION are unchanged, because no `to_state()` shape
+and no tuning constant changed.
 """
 
 from __future__ import annotations
@@ -37,6 +63,8 @@ from typing import Any
 
 import pytest
 
+from simcore import capacity as cap
+from simcore import effects
 from simcore import items as work
 from simcore import people as roster
 from simcore import step as sim
@@ -69,7 +97,12 @@ def observed() -> dict[str, Any]:
     state, _ = sim.new_run(run_seed=SEED)
 
     # --- 1. Initial state ------------------------------------------------
-    seen["all_idle"] = all(person.state == sim.STATE_IDLE for person in state.people.values())
+    seen["busy_at_start"] = sorted(
+        person.id for person in state.people.values() if person.state != sim.STATE_IDLE
+    )
+    seen["seeded_items_at_start"] = sorted(
+        item.id for item in state.items.values() if item.status != sim.STATUS_BACKLOG
+    )
     seen["visibility_start"] = state.metrics["visibility"]
     seen["available_at_start"] = [
         item.id for item in work.ITEMS if item.requires == work.Requires()
@@ -101,8 +134,10 @@ def observed() -> dict[str, Any]:
     _advance(state, 10)
     seen["done_before_stall"] = before_stall
     seen["done_after_stall"] = item.done_units
-    seen["blocked_count"] = sum(
-        1 for candidate in state.items.values() if candidate.status == sim.STATUS_BLOCKED
+    seen["blocked_items"] = sorted(
+        candidate.id
+        for candidate in state.items.values()
+        if candidate.status == sim.STATUS_BLOCKED
     )
 
     # --- 4. In-person decisions surface tacit knowledge ------------------
@@ -177,8 +212,26 @@ def observed() -> dict[str, Any]:
 # =========================================================================
 
 
-def test_everyone_starts_idle(observed: dict[str, Any]) -> None:
-    assert observed["all_idle"] is True
+def test_everyone_starts_idle_except_the_authored_assignment(
+    observed: dict[str, Any],
+) -> None:
+    """The harness's `everyone starts idle`, amended by M6 (R16).
+
+    The prototype opened on an empty floor, and this assertion held literally. M6 changes what
+    the product opens on: one director is already carrying the authored day-zero item, so the
+    first thing on screen is a person waiting. The claim worth keeping from the harness is the
+    one this asserts — that *nothing else* is moving, so the seed is one authored assignment
+    and not a floor that starts itself.
+
+    Named for what it now checks. The harness line it descends from keeps its own wording in
+    `HARNESS_CHECKS`; renaming the test rather than quietly widening `all_idle` is what makes
+    the amendment findable from either side.
+    """
+    seeded = [entry.person_id for entry in work.SEEDED_ASSIGNMENTS]
+    assert observed["busy_at_start"] == sorted(seeded)
+    assert observed["seeded_items_at_start"] == sorted(
+        entry.item_id for entry in work.SEEDED_ASSIGNMENTS
+    )
 
 
 def test_visibility_starts_at_6_percent(observed: dict[str, Any]) -> None:
@@ -232,7 +285,18 @@ def test_no_progress_until_you_decide(observed: dict[str, Any]) -> None:
 
 
 def test_one_item_waiting_in_the_tray(observed: dict[str, Any]) -> None:
-    assert observed["blocked_count"] == 1
+    """The harness's one, plus the authored day-zero stop (M6, R16).
+
+    Asserted as the *set* rather than as a count. A count would have gone from 1 to 2 and read
+    as tuning; the set says which two, so a future change that blocks a third item — or that
+    silently loses the seeded one to attrition or a reassignment — fails here naming it.
+
+    The seeded item is still blocked at this point in the harness's script because nobody
+    resolves it: it is Ruth's, and the harness only ever touches Priya's and Dana's work.
+    """
+    assert observed["blocked_items"] == sorted(
+        ["wi_ap_map", *(entry.item_id for entry in work.SEEDED_ASSIGNMENTS)]
+    )
 
 
 # =========================================================================
@@ -364,6 +428,93 @@ def test_every_person_got_a_distinct_desk(observed: dict[str, Any]) -> None:
 
 
 # =========================================================================
+# Day zero is not an empty floor  (M6)
+# =========================================================================
+#
+# The prototype opened on an idle office. M6 does not, and these are the assertions that hold
+# the difference in place — including the authoring invariants, because M6 is a property of
+# *data* now and a future edit to that data is the way it would be lost.
+
+
+def test_a_new_run_reaches_an_unresolved_checkpoint_with_no_command() -> None:
+    """Covers M6. One tick, no command, a director holding a decision."""
+    state, emitted = sim.new_run(run_seed=SEED)
+
+    # Genesis says nothing about the seed itself: the fold rebuilds it by calling `new_run`,
+    # and an extra WORK_ASSIGNED would be re-applied as an input against an already-active
+    # item. So this is the whole of what creation emits.
+    assert [event.kind.name for event in emitted] == ["GENESIS"]
+
+    produced = sim.step(state)
+    raised = [event for event in produced if event.kind.name == "CHECKPOINT_RAISED"]
+    assert len(raised) == 1, [event.kind.name for event in produced]
+
+    payload = raised[0].payload
+    assert payload["tick"] == 1, "the first frame, not the first sim-minutes"
+    assert roster.spec(payload["person"]).rank == "director"
+    assert state.items[payload["item"]].status == sim.STATUS_BLOCKED
+    assert state.items[payload["item"]].resolved == [False]
+    assert state.people[payload["person"]].state == sim.STATE_BLOCKED
+
+
+def test_the_opening_stop_is_structural_rather_than_arithmetic() -> None:
+    """Each seed is authored at or past its item's first checkpoint.
+
+    This is what makes the opening survive an edit to the item it seeds. Author the progress a
+    percent below the checkpoint and the run still reaches it — a few hundred ticks later, with
+    an empty floor on screen until it does — so the failure would be invisible to every other
+    assertion here.
+    """
+    assert work.SEEDED_ASSIGNMENTS, "M6 needs at least one authored assignment"
+
+    for seeded in work.SEEDED_ASSIGNMENTS:
+        spec = work.spec(seeded.item_id)
+        assert spec.checkpoints, f"{seeded.item_id} has nothing to stop at"
+        assert seeded.done_percent >= spec.checkpoints[0].at_percent
+        assert work.checkpoint_reached(
+            seeded.done_units(spec), spec.effort_units, spec.checkpoints[0].at_percent
+        )
+        # And not past the *last* one, which would open on a run whose seeded work is nearly
+        # finished and whose decision supply is one short.
+        assert seeded.done_percent < 100
+
+
+def test_the_opening_costs_nothing_the_ceo_did_not_choose() -> None:
+    """The seed is not a command, so it carries no command's price.
+
+    A bypass penalty would open every run three morale down, and a hand-off walk would open it
+    with a director crossing the floor — both of which would read as something having already
+    happened to the company rather than as work it was already doing.
+    """
+    state, _ = sim.new_run(run_seed=SEED)
+
+    assert state.metrics == effects.initial_metrics()
+    for seeded in work.SEEDED_ASSIGNMENTS:
+        person = state.people[seeded.person_id]
+        assert person.bypassed_director is False
+        assert person.state == sim.STATE_WORKING
+        assert person.pos == person.seat
+        assert person.path == ()
+        # Unlocked, or the CEO opens on an item the DAG draws as unavailable and the kernel
+        # would refuse to reassign.
+        assert sim.is_unlocked(state, seeded.item_id)
+
+
+def test_the_opening_is_not_an_overloaded_office() -> None:
+    """The seeded line opens under its ceiling.
+
+    Over it, the first thing the CEO sees is a department already degrading throughput and
+    losing morale for a reason they had no part in — which turns the opening from an invitation
+    into a mess to clean up.
+    """
+    state, _ = sim.new_run(run_seed=SEED)
+
+    for seeded in work.SEEDED_ASSIGNMENTS:
+        line = state.line_of_assignee(seeded.person_id)
+        assert state.capacity[line].load_permille < cap.LOAD_CEILING
+
+
+# =========================================================================
 # Traceability
 # =========================================================================
 
@@ -376,7 +527,9 @@ def test_every_person_got_a_distinct_desk(observed: dict[str, Any]) -> None:
 #: is added to this module. This says which harness line each test descends from, so the
 #: parity claim is auditable against the source it claims parity with.
 HARNESS_CHECKS: tuple[tuple[int, str, str | None], ...] = (
-    (100, "everyone starts idle", "test_everyone_starts_idle"),
+    # Amended by M6: the floor no longer starts empty, so the ported check is now "everyone
+    # except the one authored assignee". See the test's own docstring, and R16.
+    (100, "everyone starts idle", "test_everyone_starts_idle_except_the_authored_assignment"),
     (101, "visibility starts at 6%", "test_visibility_starts_at_6_percent"),
     (102, "5 directives available at start", "test_five_directives_available_at_start"),
     (104, "3 directives locked at start", "test_three_directives_locked_at_start"),
