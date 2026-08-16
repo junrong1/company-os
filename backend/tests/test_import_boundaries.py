@@ -34,6 +34,10 @@ TRANSPORT_MODULES = frozenset(
 )
 STORE_MODULES = frozenset({"sqlalchemy", "psycopg", "psycopg2", "sqlite3", "asyncpg"})
 
+# `modelgw` (U8) is first-party, so neither category above would catch it — and it
+# is where the only provider transport in the tree lives.
+PROVIDER_MODULES = frozenset({"modelgw"})
+
 
 def _python_files(root: Path) -> list[Path]:
     return sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
@@ -77,6 +81,24 @@ def test_simcore_imports_no_service_transport_or_store(path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("path", _python_files(PACKAGES / "simcore"), ids=lambda p: p.name)
+def test_simcore_does_not_import_the_model_gateway(path: Path) -> None:
+    """R5 again, for the one package the two categories above cannot see.
+
+    `modelgw` is first-party, so it is neither a transport module nor a store module
+    by name — but it holds an HTTP client, a provider key and a network timeout. Inside
+    the fold, any of the three would be a step whose output depended on what a
+    provider said, which is the one thing strict replay cannot reproduce. The bench
+    reaches the kernel through the pending-input contract (U10), never by import.
+    """
+    reached = _imported_roots(path) & PROVIDER_MODULES
+
+    assert not reached, (
+        f"{path.name} imports {sorted(reached)}. R5: a model call inside the fold is a "
+        "step that cannot replay; the bench answers through the pending-input contract."
+    )
+
+
 def test_importing_simcore_pulls_in_nothing_forbidden() -> None:
     """The runtime half: what actually lands in sys.modules on import.
 
@@ -95,7 +117,7 @@ for info in pkgutil.iter_modules(simcore.__path__):
     importlib.import_module(f"simcore.{info.name}")
 
 forbidden = {"fastapi", "starlette", "uvicorn", "grpc", "grpc_tools", "sqlalchemy",
-             "psycopg", "httpx", "kernel", "gateway", "domain", "agents", "report"}
+             "psycopg", "httpx", "modelgw", "kernel", "gateway", "domain", "agents", "report"}
 present = sorted(forbidden & {name.split(".")[0] for name in sys.modules})
 print(",".join(present))
 """
