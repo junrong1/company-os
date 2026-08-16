@@ -1,9 +1,11 @@
 """The gateway: the client's only contact surface.
 
-Driven through the single-process composition, which is a production path (R16) rather than a test
-harness — the same application objects the compose topology uses, wired without gRPC. What that
-does not cover is stated in `single_process.py`: the Postgres-only hazards and gRPC serialisation,
-which belong to the compose path and the contract tests.
+Driven through `single_process.compose()`, which is *the* production composition rather than a test
+harness — it is what the `backend` container runs, so these tests exercise the wiring the one
+command ships and not a second topology built for them. What a run here does not cover is stated in
+`single_process.py`: the Postgres-only hazards, because the store defaults to SQLite. Those belong
+to the store suite's two dialects and to the compose path, which points this same launcher at
+Postgres.
 """
 
 from __future__ import annotations
@@ -718,14 +720,16 @@ def test_the_gateway_reports_an_in_process_kernel(api) -> None:
 
     assert kernel_dep["name"] == "kernel"
     assert kernel_dep["required"] is False
-    assert "single-process" in kernel_dep["detail"]
+    assert "in-process kernel" in kernel_dep["detail"]
 
 
 def test_the_gateway_does_not_import_the_kernel() -> None:
-    """R4: the gateway and the kernel meet at a proto contract.
+    """R4: the gateway does not reach into the kernel.
 
-    The single-process composition lives outside both services, because composing them is
-    neither service's job.
+    Still true, and still worth asserting now that both live in one process: the boundary was
+    never the gRPC hop, it was the import rule, and the collapse deleted the hop rather than
+    the rule. The composition lives outside both services because composing them is neither
+    service's job.
     """
     import ast
     import pathlib
@@ -923,6 +927,60 @@ def test_a_restart_resumes_the_clock_of_a_running_run(tmp_path, monkeypatch) -> 
             assert second.runs["run-paused"].rate == 0
             assert second.runs["run-resumed"].task is not None
         finally:
+            await second.stop()
+
+    asyncio.run(restart())
+
+
+def test_the_launcher_starts_the_runtimes_background_work_on_startup(tmp_path, monkeypatch) -> None:
+    """`resume_all` and the lease heartbeat have to run because the *app* started.
+
+    Every other test here calls `resume_all` itself, which is why nothing caught the launcher
+    registering it on a hook that never fires: `create_service_app` builds each app with an
+    explicit `lifespan=`, and Starlette runs the `on_startup` list only under its default one.
+    So a run was resumed by every test and by nothing in production, the lease was never
+    renewed past its thirty-second TTL, and neither failure raised anything.
+
+    Driven through `main()` with the server stubbed out, rather than by calling the wrapper
+    directly: the assertion worth having is that the launcher's own entrypoint installs it, so
+    deleting the one line that does would fail here.
+    """
+    monkeypatch.setenv("COMPANY_OS_STORE_URL", f"sqlite:///{tmp_path}/lifespan.sqlite3")
+
+    import uvicorn
+
+    import single_process
+    from kernel import lease as lease_module
+
+    async def restart() -> None:
+        first, _ = single_process.compose()
+        first.create_run("run-lifespan", SEED, horizon_tick=simtime.TICKS_PER_SIM_DAY * 5)
+        await first.stop()
+
+        # The app is a module-level singleton, so the wrapper it is about to be given has to
+        # come back off afterwards or every later test inherits a second runtime's startup.
+        original = gateway_main.app.router.lifespan_context
+        served: dict = {}
+        monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: served.update(app=app))
+
+        single_process.main()
+
+        app = served["app"]
+        assert app is gateway_main.app
+        second = gateway_main._kernel.runtime
+        try:
+            async with app.router.lifespan_context(app):
+                assert "run-lifespan" in second.runs, "startup did not resume the run"
+                assert second.runs["run-lifespan"].task is not None, "its clock is not running"
+                assert second._heartbeat is not None, "the lease heartbeat never started"
+
+            # And the teardown is the one that releases the lease, so a restart takes it back
+            # immediately rather than waiting out the thirty-second TTL. A further acquisition
+            # succeeding in milliseconds is only possible if `stop` ran.
+            with second.store.engine.begin() as connection:
+                lease_module.acquire(connection)
+        finally:
+            gateway_main.app.router.lifespan_context = original
             await second.stop()
 
     asyncio.run(restart())

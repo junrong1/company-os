@@ -8,59 +8,53 @@ because in person they tell you things the tray never shows.
 Built as a demo surface for the `100_avater` idea (virtual office → hearing →
 work-knowledge graph), but it runs standalone.
 
-Phase 1 is rebuilding this as an event-sourced kernel plus a service split — see
-`docs/plans/2026-08-13-001-feat-company-os-phase-1-plan.md`. Until the ported
-renderer reaches visual parity, **`company-os.html` remains the demo artifact**
-and the one path that needs no toolchain at all.
+The system is an event-sourced kernel with a client over it; what is built, what is
+planned and why is under [`docs/plans/`](docs/plans/), and the domain vocabulary is
+in [`CONTEXT.md`](CONTEXT.md).
+
+Licensed under **Apache-2.0**; the full text is in [`LICENSE`](LICENSE).
 
 ---
 
-## Run the prototype
-
-Open the file. There is no build step and no dependencies.
+## Run it
 
 ```bash
-open company-os.html          # macOS
+docker compose up
 ```
 
-The page is entirely self-contained — inline CSS, inline JS, pixel art generated
-at runtime, zero network requests — so `file://` works. If you would rather serve
-it over HTTP:
+Then open <http://127.0.0.1:8790>. That is the whole path: no profile, no
+provisioning step, no environment file. The store creates its own schema and its
+read-only reporting role on first boot, and the client is up with it.
 
-```bash
-./serve.sh                    # → http://localhost:8791/company-os.html
-./serve.sh 9000               # a different port
-```
+Cold containers to all three healthy, images already built: **11.6s** on the
+reference machine — see *Measured*, below, for the second boot and the machine. The
+image build is separate, and on a network that intercepts TLS it has a caveat that
+now blocks this command; see *Known environment caveat*.
 
-**Controls.** `WASD` / arrow keys to walk, click the floor to walk there, walk up
-to someone to talk, `Space` pauses. `×1` / `×3` change the clock speed.
+**Three containers.** `postgres` holds the append-only log; `backend` runs the
+single-process launcher, which is the kernel, the clock, the only writer, and the
+REST and WebSocket surface the client talks to; `web` is nginx serving the built
+client and proxying `/api/` and `/ws` to the backend. There were seven, five of
+them backend services meeting over gRPC, and the split cost a container and a hop
+per service and bought nothing on a machine with one operator.
 
----
+**There is no profile, and that is the point.** `web` used to declare
+`profiles: ['demo']`, and Compose starts a profiled service only when its profile
+is named — so the one command everybody tries brought up six backend services and
+no client, which looks like a crashed container and is actually a service that was
+never selected. `COMPOSE_PROFILES=demo` and `COMPOSE_PROFILES=dev` both still
+resolve to the same three services, so an old shell alias is harmless.
 
-## Run the Phase 1 system
+**What this gives you.** The client renders a run: the office, the HUD, the
+decision tray, the DAG, the chain strip, and the conversation panel that opens
+whenever the CEO stands next to someone. WASD or the arrow keys walk the CEO
+around the floor.
 
-```bash
-COMPOSE_PROFILES=demo docker compose up    # seven services, client included
-```
-
-Then open <http://127.0.0.1:8790>. Nothing needs provisioning first; the store
-initialises itself and the read-only reporting role on first boot.
-
-**The profile is required, not decorative.** `web` declares `profiles: ['demo']`,
-and Compose starts a profiled service only when its profile is named — so a bare
-`docker compose up` brings up the six backend services and no client, which looks
-like a crashed container and is actually a service that was never selected.
-
-**What this gives you today.** The seven services start, each answers a structured
-status endpoint, and the client renders a run: the office, the HUD, the decision
-tray, the DAG, the chain strip, and the conversation panel that opens whenever the
-CEO stands next to someone. WASD or the arrow keys walk the CEO around the floor.
-
-**The client can start its own run.** Open the page and press *Start a run*; the id
-it creates goes into the address bar, so a reload re-attaches to that run rather
-than starting a second one. Opening `?run=<id>` directly — for example
+**The client starts its own run.** Open the page and press *Start a run*; the id it
+creates goes into the address bar, so a reload re-attaches to that run rather than
+starting a second one. Opening `?run=<id>` directly — for example
 <http://127.0.0.1:8790/?run=demo> — attaches to an existing run instead. When the
-gateway cannot be reached, the page falls back to its status report, which is the
+backend cannot be reached, the page falls back to its status report, which is the
 useful thing to see when there is nothing to render.
 
 **Staff do not move on screen, deliberately.** The kernel walks them — a director really
@@ -69,12 +63,21 @@ path, so the client draws everyone at their seat and only the CEO moves. Left th
 for this phase: the question this phase answers is whether the in-person loop is worth
 playing, and a static floor answers it. See `docs/2026-08-14-phase-1-coverage-audit.md`.
 
-**Compose cannot reach the kernel yet, and that is the remaining gap.** The gateway
-talks to a `KernelClient`, and only one implementation exists — the in-process one
-the single-process launcher installs. There is no gRPC client, so under `docker
-compose up` every command and stream route answers 503 and explains why. The kernel
-serves gRPC (`services/kernel/grpc_server.py`); nothing dials it. Until that leg is
-built, **use single-process mode below** for anything beyond a health check.
+### A schema change is a wipe, not a migration
+
+The store records the DDL version it was created at, and the backend refuses to
+start against a version it does not understand rather than appending to a schema
+it cannot read. It names both versions and the remedy, and the remedy is a wipe:
+
+```bash
+docker compose down -v && docker compose up
+```
+
+There is no migration mechanism and there is not going to be one at this stage. A
+run is a disposable artifact — its value is the hour you spend playing it, not the
+month you keep it — and a forward migration for every schema change would be a
+standing cost paid to preserve something nobody is preserving. So an existing
+volume is dropped across a schema change, and `-v` is the flag that does it.
 
 ### Create a run
 
@@ -97,75 +100,32 @@ ask for that run again.
 The clock starts with the run, and a restart picks it back up — rate is run state
 (R18), so a running run resumes running and a paused one stays paused.
 
-### The two profiles
-
-| Profile | Command | Services | Use |
-|---|---|---|---|
-| `demo` | `COMPOSE_PROFILES=demo docker compose up` | 7, including `web` | Nothing on the host but Docker |
-| `dev` | `COMPOSE_PROFILES=dev docker compose up` | 6, no `web` | Client work; run Vite on the host |
-| *(none)* | `docker compose up` | 6, no `web` | Same six as `dev`; `web` is never selected |
-
-There is no default profile. `web` is the only profiled service, so naming a
-profile is what decides whether a client comes up — omitting one is the same as
-asking for `dev`.
-
-Under `dev`, start the client yourself:
-
-```bash
-cd frontend && npm install && npm run dev    # → http://127.0.0.1:5173
-```
-
-The client addresses the gateway at `/api` and `/ws` in **both** profiles — nginx
-proxies those prefixes under `demo`, the Vite dev server proxies them under `dev`.
-Keeping the client's own paths byte-identical across both is what makes "it works
-in dev" mean something for the demo.
-
 ### Ports
 
 Only two ports reach the host, and only on loopback.
 
 | Service | Port | Published |
 |---|---|---|
-| `web` | 8790 | `127.0.0.1` (demo profile) |
-| `gateway` | 8800 | `127.0.0.1` |
-| `kernel` | 8801 | compose network only |
-| `domain` | 8802 | compose network only |
-| `agents` | 8803 | compose network only |
-| `report` | 8804 | compose network only |
+| `web` | 8790 | `127.0.0.1` |
+| `backend` | 8800 | `127.0.0.1` |
 | `postgres` | 5432 | compose network only |
 
-Inside a container every service binds all interfaces; outside one it binds
+The client reaches the backend through nginx on 8790, not through 8800. The 8800
+mapping is there for `curl` and for the Vite dev server; the store is deliberately
+unpublished, and the separate `docker-compose.test.yml` is how the store suite
+gets at it.
+
+Inside a container the launcher binds all interfaces; outside one it binds
 loopback. That asymmetry is R34 and it is decided in code, in
 `packages/servicekit/runtime.py`, because a loopback bind inside a container is
 unreachable from sibling containers and from its own published port — which looks
 like a broken service and is actually a broken bind.
 
-### Without Docker
+### Without Docker — the contributor path
 
-Any single service runs directly. `uv` selects the pinned interpreter; the
-`python3` on PATH is 3.9 and cannot install these dependencies.
-
-```bash
-cd backend
-uv run python -m gateway.main      # or kernel.main, domain.main, agents.main, report.main
-```
-
-The store defaults to SQLite at `backend/var/company-os.sqlite3` (git-ignored).
-Point any service at the compose store instead with one variable:
-
-```bash
-COMPANY_OS_STORE_URL=postgresql+psycopg://companyos:companyos@127.0.0.1:5432/companyos \
-  uv run python -m kernel.main
-```
-
-Note that reaching the compose store from the host needs a published port, which
-this compose file deliberately does not provide.
-
-### Single-process mode (the working path today)
-
-Composes the kernel runtime and the gateway app in **one process** — the same
-application objects the compose topology uses, wired without gRPC. Since the gRPC
-client leg is unbuilt, this is currently the only way to drive a simulation.
+The same launcher the `backend` container runs, run directly. `uv` selects the
+pinned interpreter; the `python3` on PATH is 3.9 and cannot install these
+dependencies.
 
 ```bash
 cd backend
@@ -173,15 +133,43 @@ uv run python single_process.py                                # → http://127.
 COMPANY_OS_GATEWAY_PORT=8810 uv run python single_process.py    # if compose holds 8800
 ```
 
-Same routes, same port, same path prefix as the compose gateway, so the client's
-proxy configuration is byte-identical across both topologies. Point the client at it
-with `cd frontend && npm run dev`, then open `?run=<id>`.
+This is not a second topology — it is the same composition, invoked without Docker,
+which is why it stays honest about what compose runs. The store defaults to SQLite
+at `backend/var/company-os.sqlite3` (git-ignored), so the whole loop plays with no
+container at all. Point it at Postgres with one variable:
 
-Two things this mode cannot cover, and a green run here is not evidence for either:
-the Postgres-only hazards (JSONB key ordering under the state hash, sequence and
-transaction-control differences), because it defaults to SQLite; and gRPC
-serialisation, because it never encodes a message. Those belong to the compose path
-and the contract tests.
+```bash
+COMPANY_OS_STORE_URL=postgresql+psycopg://companyos:companyos@127.0.0.1:55432/companyos \
+  uv run python single_process.py
+```
+
+Reaching the compose store from the host needs a published port, which
+`docker-compose.yml` deliberately does not provide — `docker-compose.test.yml`
+publishes it on 55432 for exactly this and for the store suite. And exactly one
+kernel may hold the store: the writer lease refuses the second and names the
+holder, so pointing this at a store a running stack owns fails closed rather than
+interleaving two writers.
+
+The one thing a default SQLite run does not cover is the Postgres-only hazards —
+JSONB key ordering under the state hash, and the sequence and transaction-control
+differences. Those are covered by the store suite's two dialects and by the compose
+path, which points this same launcher at Postgres.
+
+For client work, run Vite against it:
+
+```bash
+cd frontend && npm install && npm run dev    # → http://127.0.0.1:5173
+```
+
+The client addresses `/api` and `/ws` in **both** setups — nginx proxies those
+prefixes under compose, the Vite dev server proxies them in development. Keeping
+the client's own paths byte-identical across both is what makes "it works in dev"
+mean something.
+
+Individual services still start on their own (`uv run python -m kernel.main`, or
+`gateway`, `domain`, `agents`, `report`), which is how their status endpoints are
+read in isolation. A bare `gateway.main` serves the routes with no kernel behind
+them and says so on `/status`; the launcher is what puts one there.
 
 ### Diagnosing
 
@@ -193,9 +181,29 @@ docker compose logs -f                 # single-line JSON, one aggregator
 `docker compose logs` being the aggregator is a decision, not an omission: one
 machine, one operator, no log pipeline. The status payload is built to be the
 thing you paste into an issue — service, build, versions, store, and what each
-service can and cannot reach.
+surface can and cannot reach.
 
-Two health definitions are deliberately asymmetric:
+Three startup refusals are worth recognising by their message rather than by their
+stack trace, because all three are deliberate:
+
+- **`the writer lease is held by …`** — something else owns the log. Exactly one
+  kernel may run against a store; the message names the holder and says when the
+  lease becomes reclaimable. Usually a host-side `single_process.py` pointed at the
+  compose store, or the other way round.
+- **`store DDL version is N; this kernel understands M`** — the schema is from a
+  different build. The remedy is the wipe above, not a migration.
+- **`no kernel client is configured`** — a `gateway.main` started on its own. The
+  launcher is what installs one.
+
+The first two currently arrive as a Python traceback with the sentence at the
+bottom, which is the right sentence in the wrong wrapper: the kernel service
+entrypoint handles both and prints the reason alone, and the launcher does not yet.
+The container exits non-zero either way, and the capped restart policy stops it
+after three attempts rather than looping.
+
+Two health definitions are deliberately asymmetric, and both survive the collapse
+into one container because they are properties of the surfaces rather than of the
+processes:
 
 - **The kernel without a store is unhealthy.** It cannot append, which is its job.
   It reports 503, keeps retrying, and never exits — exiting would make an outage
@@ -208,20 +216,49 @@ Two health definitions are deliberately asymmetric:
 
 ---
 
+## The prototype
+
+`company-os.html` is the **prototype**: the whole original application in one file,
+kept because it is where the mechanics were designed and because it needs no
+toolchain at all. It is not the demo artifact — `docker compose up` is — and it is
+not what the test suites below describe. Nothing persists in it, it shares no code
+with the system, and a change made here does not reach the product.
+
+```bash
+open company-os.html          # macOS
+```
+
+The page is entirely self-contained — inline CSS, inline JS, pixel art generated
+at runtime, zero network requests — so `file://` works. If you would rather serve
+it over HTTP:
+
+```bash
+./serve.sh                    # → http://localhost:8791/company-os.html
+./serve.sh 9000               # a different port
+```
+
+**Controls.** `WASD` / arrow keys to walk, click the floor to walk there, walk up
+to someone to talk, `Space` pauses. `×1` / `×3` change the clock speed.
+
+---
+
 ## Layout
 
 ```
-company-os.html               the prototype: the whole application, one file
+LICENSE                       Apache-2.0
+company-os.html               the prototype: the whole original application, one file
 test/                         the prototype's harness (29 checks) and sprite validator
 serve.sh                      optional local HTTP server for the prototype
 
 backend/
   pyproject.toml              one project, one lockfile, every version pinned
   .python-version             3.12
+  single_process.py           the launcher: what the `backend` container runs
+  Dockerfile                  one target, one command — the launcher
   packages/
     simcore/                  the kernel library — no service, transport or store
     contracts/                proto stubs and the event envelope (U2)
-    servicekit/               logging, status, bind rules, shared by all services
+    servicekit/               logging, status, bind rules, shared by all surfaces
   services/
     kernel/                   sole log writer, owner of the clock
     gateway/                  REST commands, WebSocket stream
@@ -230,15 +267,22 @@ backend/
     report/                   read-side fold over the log
   tests/
 frontend/
+  nginx.conf                  serves the built client, proxies /api/ and /ws
   src/design/                 the art direction as code: palette, load ramp, label face
   src/net/                    gateway client, event stream, and the run store
   src/render/                 the ported canvas office, lifecycle-managed (U12)
   src/ui/                     shell, HUD, panels (U13)
   src/dag/                    node encoding, layout, DAG view, chain strip (U14)
   tests/
-infra/postgres/init/          the read-only reporting role
-docker-compose.yml            seven services; the kernel pinned to one instance
+infra/postgres/init/          the read-only reporting role, and the suite's database
+docker-compose.yml            three containers, no profile
+docker-compose.test.yml       publishes the store, for the store suite only
 ```
+
+`services/` is still five separate trees and they still may not import each other's
+internals — the boundary is an import rule, not a transport, and
+`tests/test_import_boundaries.py` polices it inside one process exactly as it did
+across five containers. What collapsed is the deployment.
 
 `packages/` and `services/` are import roots rather than installed distributions,
 so `packages/simcore/time.py` imports as `simcore.time`. A flat module named
@@ -322,9 +366,14 @@ reports green while the only build-time guard on that duplicated logic is not ru
 
 The backend suite runs without Docker on purpose. The compose tests read
 `docker compose config`, which merges and validates locally and needs no daemon;
-the kernel, determinism, parity and replay suites are pure Python. Running
-everything through compose would make the suite slow enough that contributors skip
-it, so one smoke job exercises compose end to end instead.
+the kernel, determinism, parity and replay suites are pure Python; and the gateway
+suite drives the real launcher composition, so what the `backend` container runs is
+covered without building it. Running everything through compose would make the suite
+slow enough that contributors skip it, which is why the three scenarios that
+genuinely need a daemon — the cold boot that reaches a client, the second boot that
+reuses the volume, and the second writer that names the lease holder — are recorded
+in the docstrings of the config tests that stand in for them, and belong to a CI
+smoke job rather than to `pytest`.
 
 `test/harness.js` still runs the prototype's real JavaScript against a small DOM
 stub. Its 29 assertions were ported to pytest at U5, before any new mechanic was
@@ -379,18 +428,46 @@ fail only for inputs nobody thought to vector.
 ### Known environment caveat
 
 Building the `web` image needs npm to reach `registry.npmjs.org` from inside the
-container. On a network that intercepts TLS, that build fails with
-`UNABLE_TO_GET_ISSUER_CERT_LOCALLY` even when npm works on the host. The `dev`
-profile is unaffected — it installs on the host and omits `web` entirely. To fix
-the demo build on such a network, pass the intercepting CA into the build (for
-example by copying it in and setting `NODE_EXTRA_CA_CERTS`); it is not baked into
-the Dockerfile because the certificate is specific to one network.
+container. On a network that intercepts TLS — a corporate proxy such as Zscaler —
+that build fails with `UNABLE_TO_GET_ISSUER_CERT_LOCALLY` even though npm works on
+the host, because the container trusts the public roots and not the proxy's.
+
+This used to be survivable by omitting `web`. It is not any more: there is one
+command and it builds all three images, so on such a network `docker compose up`
+fails at the client build and the stranger's path stops there. Two ways through:
+
+- Pass the intercepting CA into the build — copy it in and point
+  `NODE_EXTRA_CA_CERTS` at the updated bundle. It is not baked into the Dockerfile
+  because the certificate belongs to one network and committing it would be
+  committing somebody's proxy.
+- Build the client on the host, where npm already trusts the proxy, and let the
+  image copy `dist/` — `cd frontend && npm ci && npm run build`.
+
+The backend image is unaffected: `uv` reads the host's certificate store through
+the build cache mount and resolves against the lockfile.
 
 ### Measured
 
-Cold containers with images already built, to all six `dev`-profile services
-reporting healthy: **12s** (Apple silicon laptop, Docker 28.5.2). Image build from
-cold is separate and dominated by dependency download.
+Reference machine: Apple silicon laptop, Docker 28.5.2, Compose v2.40.3.
+
+| Step | Time |
+|---|---|
+| `docker compose up`, images built, empty volume, to all three healthy | **11.6s** |
+| the same against an existing volume — schema reused, lease handed over | **11.5s** |
+| `backend` image from a cleared build cache | **17.3s** |
+
+The second boot is not faster, which is the useful finding: the DDL check and the
+lease handover cost nothing measurable, and the eleven seconds are Postgres
+initialising plus the healthcheck intervals.
+
+Then, through nginx on 8790 and nothing else: the page loads, *Start a run* creates
+a run and puts its id in the address bar, the WebSocket opens and delivers `GENESIS`
+followed by `POSITION_ECHO` frames, the office and the HUD draw, and a command
+applies and appends. No console error, no failed request.
+
+The `web` image build is excluded from the table because it cannot complete on this
+machine's network — see the caveat above. On an unintercepted network it is
+dominated by `npm ci`.
 
 ---
 

@@ -1,23 +1,28 @@
-"""Single-process mode: the same application objects, a different topology (R16).
+"""The launcher: the same application objects, one process (R16).
 
-This is the launcher a contributor uses to work on the simulation without Docker. It composes the
-kernel runtime and the gateway app **in one process**, and that composition is the whole file —
-it reimplements nothing, because anything it reimplemented is where drift would start.
+It composes the kernel runtime and the gateway app **in one process**, and that composition is
+the whole file — it reimplements nothing, because anything it reimplemented is where drift would
+start.
+
+**This is no longer a second topology.** It was the mode a contributor used to work on the
+simulation without Docker, while compose ran five backend containers that met over gRPC. The
+`backend` container now runs this file, so there is one composition and two ways to invoke it:
+`docker compose up`, and `uv run python single_process.py` for a contributor with no Docker. The
+gRPC servicer that fronted the old split was deleted with it; the proto stays as the command-kind
+vocabulary, which is what `COMMAND_KINDS` below reads.
 
 **It lives outside both services on purpose.** R4 forbids a service from importing another
-service's internals, and the gateway genuinely must not import the kernel: in compose they meet
-over gRPC. But *something* has to compose them for single-process mode, and that something cannot
-be either of them. So it is here, at the top of the backend tree, next to `pyproject.toml` — a
-launcher, not a service, and outside the directories the import-boundary tests police.
+service's internals, and the gateway still must not import the kernel — the boundary is an
+import rule, not a transport, and collapsing the deployment did not relax it. But *something* has
+to compose them, and that something cannot be either of them. So it is here, at the top of the
+backend tree, next to `pyproject.toml` — a launcher, not a service, and outside the directories
+the import-boundary tests police.
 
-**Two things this mode cannot cover**, and a green run here is not evidence for either:
-
-* the Postgres-only hazards — JSONB key ordering underneath the state hash, and the sequence and
-  transaction-control differences — because it defaults to SQLite;
-* gRPC serialisation, because it wires the kernel in-process and never encodes a message.
-
-Those belong to the compose path and the contract tests. This mode's value is that the kernel,
-determinism, parity and replay suites run fast and need no Docker.
+**What a green run here does not cover**, when it is run on the default store: the Postgres-only
+hazards — JSONB key ordering underneath the state hash, and the sequence and transaction-control
+differences — because the default is SQLite. Those are covered by the same launcher under compose,
+which points it at Postgres, and by the store suite's two dialects. The value of the SQLite default
+is that the kernel, determinism, parity and replay suites run fast and need no Docker.
 
     uv run python single_process.py            # SQLite at var/company-os.sqlite3
     COMPANY_OS_STORE_URL=postgresql+psycopg://... uv run python single_process.py
@@ -68,8 +73,9 @@ COMMAND_KINDS = {
 class InProcessKernel:
     """A `KernelClient` backed by a `KernelRuntime` in this process.
 
-    Every method is the same call the gRPC servicer makes, minus the encode/decode. That is what
-    "composing the same application objects" means concretely.
+    The only implementation there is. There was a second — a gRPC servicer in front of the same
+    runtime — and every method here was the same call it made minus the encode/decode, which is
+    what made the split cost a container and a hop and buy nothing on a machine with one operator.
     """
 
     def __init__(self, runtime: KernelRuntime) -> None:
@@ -233,6 +239,39 @@ def compose() -> tuple[KernelRuntime, InProcessKernel]:
     return runtime, client
 
 
+def _wrap_lifespan(app: Any, runtime: KernelRuntime) -> None:
+    """Start the runtime's background work inside the app's existing lifespan.
+
+    **Not `@app.on_event("startup")`, and the difference is silent.** `create_service_app`
+    constructs every service app with an explicit `lifespan=`, and Starlette runs the
+    `on_startup`/`on_shutdown` lists only under its *default* lifespan — so a handler
+    registered with `on_event` after the fact is never called and never complains. What that
+    cost here was the whole of `start_background`: no lease heartbeat, so the lease became
+    reclaimable thirty seconds in; no `resume_all`, so a restart brought the process up holding
+    the log and advancing nothing; and no `stop`, so the lease was left to expire rather than
+    released. The symptom is a run that is frozen after a restart, which reads as a broken
+    kernel and is a startup hook that never ran.
+
+    Wrapping the context the app already has is what keeps `servicekit`'s own logging and
+    teardown intact: the runtime starts after the service reports started, and stops before it
+    reports stopped.
+    """
+    from contextlib import asynccontextmanager
+
+    inner = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(scoped_app: Any) -> Any:
+        async with inner(scoped_app):
+            await runtime.start_background()
+            try:
+                yield
+            finally:
+                await runtime.stop()
+
+    app.router.lifespan_context = lifespan
+
+
 def main() -> None:
     import uvicorn
     from fastapi import FastAPI
@@ -243,19 +282,12 @@ def main() -> None:
     runtime, _ = compose()
 
     app: FastAPI = gateway_main.app
+    _wrap_lifespan(app, runtime)
 
-    @app.on_event("startup")
-    async def _start() -> None:
-        await runtime.start_background()
-
-    @app.on_event("shutdown")
-    async def _stop() -> None:
-        await runtime.stop()
-
-    # The same routes on the same port and path prefix as the compose gateway, so the client's
-    # proxy configuration is byte-identical across both topologies. The override exists for the one
-    # case that byte-identity cannot cover: a compose stack already holding 8800, which is exactly
-    # when a contributor reaches for this mode to work on the simulation.
+    # The same routes on the same port and path prefix whether this runs in the `backend`
+    # container or on a laptop, so the client's proxy configuration is byte-identical either way.
+    # The override exists for the one case byte-identity cannot cover: a compose stack already
+    # holding 8800, which is exactly when a contributor reaches for the host invocation.
     import os
 
     port = int(os.environ.get("COMPANY_OS_GATEWAY_PORT", "8800"))

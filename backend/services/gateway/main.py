@@ -5,11 +5,13 @@ contributor already has open when something goes wrong, so it has to stay up and
 is unreachable". A gateway that failed its own health alongside the kernel would turn one outage
 into two and explain neither.
 
-**The gateway never imports the kernel.** R4: services meet at a proto contract. It talks to a
-`KernelClient`, and there are two real implementations — gRPC across the compose network, and an
-in-process one used by the documented single-process mode. The single-process composition lives
-in `backend/single_process.py`, outside both services, because composing them is neither
-service's job.
+**The gateway never imports the kernel.** R4: services do not reach into each other. It talks to
+a `KernelClient`, and there is one implementation — the in-process one the launcher installs. There
+were two, and the other was a gRPC channel across the compose network; the five backend containers
+became one, so the channel went with them. The boundary did not: it is an import rule, policed by
+`tests/test_import_boundaries.py`, and it holds inside one process exactly as it held across two.
+The composition lives in `backend/single_process.py`, outside both services, because composing them
+is neither service's job.
 
 Exposure follows R34: bind every interface inside the container, publish only on host loopback.
 """
@@ -34,13 +36,14 @@ log = svclog.get_logger("gateway")
 
 SERVICE = "gateway"
 
-#: Set by the single-process launcher, or left None to use gRPC.
+#: Installed by the launcher. None means nothing composed this app, which is a
+#: misconfiguration rather than a topology.
 _kernel: KernelClient | None = None
 _ledger = CommandLedger()
 
 
 def use_kernel(client: KernelClient) -> None:
-    """Install a kernel client. Called by the single-process launcher (R16)."""
+    """Install a kernel client. Called by the launcher (R16), in every topology."""
     global _kernel
     _kernel = client
 
@@ -50,8 +53,10 @@ def kernel() -> KernelClient:
         raise HTTPException(
             status_code=503,
             detail=(
-                "no kernel client is configured. The gateway reaches the kernel over gRPC in "
-                "compose, or is handed an in-process client by the single-process launcher."
+                "no kernel client is configured. This app is served by "
+                "`backend/single_process.py`, which installs one; running "
+                "`python -m gateway.main` directly starts the routes without a kernel behind "
+                "them, which is useful for reading /status and for nothing else."
             ),
         )
     return _kernel
@@ -59,7 +64,9 @@ def kernel() -> KernelClient:
 
 def _probe_kernel() -> tuple[bool, str]:
     if _kernel is not None:
-        return True, "in-process kernel (single-process mode)"
+        return True, "in-process kernel"
+    # No client installed. The peer probe is what a bare `python -m gateway.main` reports, and
+    # it is honest there: it says nothing is answering rather than claiming a healthy kernel.
     return probe_http(peer_url("kernel"))
 
 

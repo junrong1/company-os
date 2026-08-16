@@ -59,16 +59,24 @@ from the tray and the item map (commit `d164457`), so R20 works and the conversa
 greets a person holding a decision as "free right now". That is a patch over this gap, not a fix
 for it.
 
-### 2. The compose stack cannot work — no gRPC client leg (R11 in practice)
+### 2. The compose stack cannot work — no gRPC client leg (R11 in practice) — closed
 
-**Verified.** `services/kernel/grpc_server.py` exists; nothing anywhere constructs a channel
-(`insecure_channel` / `secure_channel` appear nowhere outside the venv). `gateway_main.use_kernel`
-has exactly one caller, `single_process.py:226`.
+**Closed by the MVP plan's U1, and not by building the missing leg.** The seven-service stack
+became three: `postgres`, `backend`, `web`, with `backend` running the same single-process
+launcher, so `use_kernel` has a production caller in every topology and the channel nobody
+constructed is a channel nobody needs. `services/kernel/grpc_server.py` was deleted with the
+split it served — it was the last consumer of it — and `docker compose up`, with no profile,
+now reaches a client that creates a run and receives events. The proto stays as the command-kind
+vocabulary; the transport is gone.
 
-Under `docker compose up` the gateway therefore starts with no kernel client and answers 503 to
-every route, including `/status`'s kernel probe. Single-process mode is the only working topology.
+**Verified at the time of the audit.** `services/kernel/grpc_server.py` existed; nothing anywhere
+constructed a channel (`insecure_channel` / `secure_channel` appeared nowhere outside the venv).
+`gateway_main.use_kernel` had exactly one caller, `single_process.py`.
 
-Already recorded as deferred in the Phase 2 brainstorm; recorded here because "deferred" and
+Under `docker compose up` the gateway therefore started with no kernel client and answered 503 to
+every route, including `/status`'s kernel probe. Single-process mode was the only working topology.
+
+Was already recorded as deferred in the Phase 2 brainstorm; recorded here because "deferred" and
 "the documented demo path does not run" are different facts.
 
 ### 3. The report is built and unreachable (R52, R53)
