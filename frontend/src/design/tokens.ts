@@ -71,6 +71,11 @@ export const PAL = {
   beamEdge: '#1c2938', // 鸽蓝 — the outline that makes the beam legible on ivory
   tacit: '#6b5bb5', // 紫棠 — knowledge only a conversation yields
 
+  // Warmth. Office-side only: both are too pale to carry a label, which is the point of them
+  // — they are what daylight and a social corner are made of, not what a state is.
+  dantaohong: '#f6cec1', // 淡桃红 — sunlight, warmth, soft emphasis
+  chutaofenhong: '#f6dcce', // 初桃粉红 — meeting and collaboration regions
+
   // Department identities, per VISUAL_DESIGN.md §2. Chrome-strength, because these are the
   // 3-pixel stripes in the panels — the office's own floors are lighter and live in
   // `render/palettes.ts`.

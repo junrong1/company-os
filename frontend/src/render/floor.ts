@@ -20,7 +20,15 @@
 
 import { PAL, withAlpha } from '../design/tokens'
 import { ART, PROPS } from './sprites'
-import { FLOORS, WALLC } from './palettes'
+import {
+  DAYLIGHT,
+  DAYLIGHT_REACH,
+  DAYLIGHT_STRENGTH,
+  FLOORS,
+  type FloorStyle,
+  GLASS,
+  WALLC,
+} from './palettes'
 
 /**
  * The shadow a thing standing on the floor casts.
@@ -78,16 +86,25 @@ export interface FloorData {
   windows: Array<[number, number]>
 }
 
-/** Which floor style each room id uses. Recorded at genesis by the kernel's room plan. */
+/**
+ * Which floor style each room id uses. Recorded at genesis by the kernel's room plan.
+ *
+ * `cs` and `people` are here because `ROOM_FLOOR` in the token module already knew about
+ * them and this map did not, so those two rooms fell through to slate and lost their
+ * department while the panels beside them kept it. One roster, two answers.
+ */
 export const ROOM_FLOORS: Record<string, string> = {
   exec: 'wood',
+  executive: 'wood',
+  lounge: 'wood',
   sales: 'blue',
   accounting: 'green',
   meeting: 'slate',
-  hr: 'violet',
-  support: 'amber',
   admin: 'slate',
-  lounge: 'wood',
+  hr: 'violet',
+  people: 'violet',
+  support: 'amber',
+  cs: 'amber',
 }
 
 /** Paint one pixel-art grid into a context at (ox, oy). */
@@ -123,7 +140,7 @@ function paintFloorTile(
   context: CanvasRenderingContext2D,
   tx: number,
   ty: number,
-  palette: { a: string; b: string; c: string; seam: string },
+  palette: FloorStyle,
   wood: boolean,
 ): void {
   const ox = tx * TILE
@@ -177,6 +194,66 @@ function paintFloorTile(
   context.fillRect(ox, oy, 1, TILE)
 }
 
+/**
+ * A course of the department's colour running around the inside of the room's edge.
+ *
+ * Two pixels wide. The department used to be the whole floor, and this is what carries it
+ * instead — enough to say whose room this is from across the office, not enough to compete
+ * with the people standing in it.
+ */
+function paintBorderCourse(
+  context: CanvasRenderingContext2D,
+  box: readonly [number, number, number, number],
+  palette: FloorStyle,
+): void {
+  const [x1, y1, x2, y2] = box
+  const left = x1 * TILE
+  const top = y1 * TILE
+  const width = (x2 - x1 + 1) * TILE
+  const height = (y2 - y1 + 1) * TILE
+
+  context.fillStyle = palette.trim
+  context.fillRect(left, top, width, 2)
+  context.fillRect(left, top + height - 2, width, 2)
+  context.fillRect(left, top, 2, height)
+  context.fillRect(left + width - 2, top, 2, height)
+}
+
+/**
+ * A rug, inset one tile from the room's walls.
+ *
+ * Two things at once. It is where the department's colour lives now, and it is what keeps
+ * the walkable middle of the room readable — the art direction asks for a clear centre with
+ * the dense detail pushed to the edges, and a rug is a shape that says "this is the middle"
+ * without putting anything in it.
+ *
+ * Skipped in a room too small to inset, and in a corridor, which has no rug because nobody
+ * sits in one.
+ */
+function paintRug(
+  context: CanvasRenderingContext2D,
+  box: readonly [number, number, number, number],
+  palette: FloorStyle,
+): void {
+  if (palette.rug === null) return
+
+  const [x1, y1, x2, y2] = box
+  if (x2 - x1 < 3 || y2 - y1 < 3) return
+
+  const left = (x1 + 1) * TILE
+  const top = (y1 + 1) * TILE
+  const width = (x2 - x1 - 1) * TILE
+  const height = (y2 - y1 - 1) * TILE
+
+  context.fillStyle = palette.rug
+  context.fillRect(left, top, width, height)
+  context.fillStyle = palette.trim
+  context.fillRect(left, top, width, 1)
+  context.fillRect(left, top + height - 1, width, 1)
+  context.fillRect(left, top, 1, height)
+  context.fillRect(left + width - 1, top, 1, height)
+}
+
 function paintWall(context: CanvasRenderingContext2D, tx: number, ty: number): void {
   const ox = tx * TILE
   const oy = ty * TILE
@@ -194,21 +271,105 @@ function paintWall(context: CanvasRenderingContext2D, tx: number, ty: number): v
   context.fillRect(ox, oy, TILE, 1)
 }
 
+/**
+ * One window, and what is sitting on its sill.
+ *
+ * The dressing is a pure function of the tile coordinate, like `speck` and for the same
+ * reason: a random plant would move every time the static layer was rebuilt, so a resize
+ * would visibly redecorate the office.
+ */
 function paintWindow(context: CanvasRenderingContext2D, tx: number, ty: number): void {
   const ox = tx * TILE
   const oy = ty * TILE
-  // Frame, glass, sky band, mullion, sill. Positions and areas re-derived at 32; the mullion
-  // stays one pixel for the same reason the wall's cap lip does.
-  context.fillStyle = '#2b313d'
-  context.fillRect(ox + 4, oy + 8, 24, 18)
-  context.fillStyle = '#6f8fb0'
-  context.fillRect(ox + 6, oy + 10, 20, 14)
-  context.fillStyle = '#9dbdd8'
-  context.fillRect(ox + 6, oy + 10, 20, 6)
-  context.fillStyle = '#2b313d'
-  context.fillRect(ox + 16, oy + 10, 1, 14)
-  context.fillStyle = '#8d97ab'
-  context.fillRect(ox + 2, oy + 24, 28, 4)
+
+  // Frame, then the pane inside it. The mullion stays one pixel for the same reason the
+  // wall's cap lip does — two would read as a post rather than as a glazing bar.
+  context.fillStyle = GLASS.frame
+  context.fillRect(ox + 3, oy + 6, 26, 21)
+
+  context.fillStyle = GLASS.skyLow
+  context.fillRect(ox + 5, oy + 8, 22, 17)
+  context.fillStyle = GLASS.sky
+  context.fillRect(ox + 5, oy + 8, 22, 9)
+
+  context.fillStyle = GLASS.frame
+  context.fillRect(ox + 15, oy + 8, 1, 17)
+  context.fillRect(ox + 5, oy + 16, 22, 1)
+
+  // One diagonal glint. Without it the pane is a blue rectangle rather than glass.
+  context.fillStyle = GLASS.glint
+  for (let step = 0; step < 5; step += 1) {
+    context.fillRect(ox + 7 + step, oy + 13 - step, 2, 1)
+  }
+
+  // Sill: timber, with its top edge catching the light.
+  context.fillStyle = GLASS.sill
+  context.fillRect(ox + 1, oy + 27, 30, 4)
+  context.fillStyle = GLASS.sillLit
+  context.fillRect(ox + 1, oy + 27, 30, 1)
+
+  paintSillDressing(context, tx, ty, ox, oy)
+}
+
+/** A plant on some sills, books on others, nothing on most. */
+function paintSillDressing(
+  context: CanvasRenderingContext2D,
+  tx: number,
+  ty: number,
+  ox: number,
+  oy: number,
+): void {
+  const choice = speck(tx * TILE, ty * TILE) % 3
+
+  if (choice === 0) {
+    context.fillStyle = GLASS.spine
+    context.fillRect(ox + 20, oy + 21, 3, 6)
+    context.fillRect(ox + 24, oy + 22, 3, 5)
+    context.fillStyle = GLASS.sill
+    context.fillRect(ox + 23, oy + 21, 1, 6)
+    return
+  }
+
+  if (choice === 1) {
+    context.fillStyle = GLASS.spine
+    context.fillRect(ox + 6, oy + 23, 6, 4)
+    context.fillStyle = GLASS.leaf
+    context.fillRect(ox + 7, oy + 19, 4, 4)
+    context.fillRect(ox + 6, oy + 20, 6, 2)
+    context.fillRect(ox + 8, oy + 17, 1, 2)
+  }
+}
+
+/**
+ * A frame around a doorway, so a door reads as an opening rather than as a missing wall.
+ *
+ * Drawn onto the wall tiles either side of the door rather than onto the door tile itself,
+ * which stays walkable floor.
+ */
+function paintDoorFrame(
+  context: CanvasRenderingContext2D,
+  grid: number[][],
+  dx: number,
+  dy: number,
+): void {
+  const ox = dx * TILE
+  const oy = dy * TILE
+  const horizontal = grid[dy]?.[dx - 1] === WALL && grid[dy]?.[dx + 1] === WALL
+
+  context.fillStyle = GLASS.sill
+  if (horizontal) {
+    context.fillRect(ox - 3, oy, 3, TILE)
+    context.fillRect(ox + TILE, oy, 3, TILE)
+    context.fillStyle = GLASS.sillLit
+    context.fillRect(ox - 3, oy, 3, 1)
+    context.fillRect(ox + TILE, oy, 3, 1)
+    return
+  }
+
+  context.fillRect(ox, oy - 3, TILE, 3)
+  context.fillRect(ox, oy + TILE, TILE, 3)
+  context.fillStyle = GLASS.sillLit
+  context.fillRect(ox, oy - 3, TILE, 1)
 }
 
 /** Build the layer that never changes. Returns a canvas at 1x. */
@@ -243,6 +404,8 @@ export function buildStatic(floor: FloorData, make: () => HTMLCanvasElement): HT
       for (let x = x1; x <= x2; x += 1) paintFloorTile(context, x, y, palette, wood)
     }
     paintFloorTile(context, room.door[0], room.door[1], palette, wood)
+    paintBorderCourse(context, room.box, palette)
+    paintRug(context, room.box, palette)
   }
 
   const [hx1, hy1, hx2, hy2] = floor.hall
@@ -250,35 +413,43 @@ export function buildStatic(floor: FloorData, make: () => HTMLCanvasElement): HT
     for (let x = hx1; x <= hx2; x += 1) paintFloorTile(context, x, y, FLOORS.hall, false)
   }
 
-  // Warm pools under the ceiling lamps, then a soft vignette at the edges. Baked, because the
-  // lighting is as static as the floor it falls on.
-  context.globalCompositeOperation = 'lighter'
-  for (const [lx, ly] of floor.lamps) {
-    const cx = lx * TILE + TILE / 2
-    const cy = ly * TILE + TILE / 2
-    const pool = context.createRadialGradient(cx, cy, 2, cx, cy, TILE * 2.6)
-    pool.addColorStop(0, 'rgba(255, 226, 160, 0.16)')
-    pool.addColorStop(0.55, 'rgba(255, 214, 140, 0.06)')
-    pool.addColorStop(1, 'rgba(255, 214, 140, 0)')
-    context.fillStyle = pool
-    context.fillRect(cx - TILE * 3, cy - TILE * 3, TILE * 6, TILE * 6)
-  }
-  context.globalCompositeOperation = 'source-over'
+  for (const room of floor.rooms) paintDoorFrame(context, grid, room.door[0], room.door[1])
 
-  const vignette = context.createRadialGradient(
-    width / 2,
-    height / 2,
-    Math.min(width, height) * 0.34,
-    width / 2,
-    height / 2,
-    width * 0.62,
-  )
-  vignette.addColorStop(0, 'rgba(0,0,0,0)')
-  vignette.addColorStop(1, 'rgba(0,0,0,0.34)')
-  context.fillStyle = vignette
-  context.fillRect(0, 0, width, height)
+  paintDaylight(context, floor)
 
   return canvas
+}
+
+/**
+ * Light falling into the room from the glazing.
+ *
+ * This replaces two things that both had to go. The lamp pools were warm circles on the
+ * floor under ceiling fixtures — an ink-room idea, and on a near-white floor the `lighter`
+ * composite they used blows straight to white and the floor stops existing. And the vignette
+ * was a 34% black radial over the whole office, which is exactly the dark overlay R10
+ * forbids and most of why the product read as a control room.
+ *
+ * What replaces them is directional: light comes from where the windows are, falls off over
+ * a few tiles, and never brightens past the surface it is warming, because it is a warm
+ * colour at a low alpha rather than an additive blend.
+ */
+function paintDaylight(context: CanvasRenderingContext2D, floor: FloorData): void {
+  const reach = TILE * DAYLIGHT_REACH
+
+  for (const [wx, wy] of floor.windows) {
+    const cx = wx * TILE + TILE / 2
+    // Anchored just inside the glass rather than at the tile's centre, so the falloff starts
+    // at the opening instead of inside the wall.
+    const inward = wy === 0 ? 1 : -1
+    const cy = wy * TILE + TILE / 2 + (inward * TILE) / 2
+
+    const light = context.createRadialGradient(cx, cy, TILE / 2, cx, cy, reach)
+    light.addColorStop(0, withAlpha(DAYLIGHT, DAYLIGHT_STRENGTH))
+    light.addColorStop(0.5, withAlpha(DAYLIGHT, DAYLIGHT_STRENGTH * 0.35))
+    light.addColorStop(1, withAlpha(DAYLIGHT, 0))
+    context.fillStyle = light
+    context.fillRect(cx - reach, cy - reach, reach * 2, reach * 2)
+  }
 }
 
 /** Rebuild the walkability grid the kernel used, from the recorded geometry. */

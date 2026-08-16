@@ -12,11 +12,14 @@ import {
   buildGrid,
   buildPropAtlas,
   buildStatic,
+  ROOM_FLOORS,
   chooseZoom,
   speck,
   walkable,
 } from '../src/render/floor'
 import { drawActor } from '../src/render/actors'
+import { FLOORS, GLASS, WALLC } from '../src/render/palettes'
+import { PAL, RESERVED_BEAM, ROOM_FLOOR, relativeLuminance } from '../src/design/tokens'
 
 /**
  * The office's geometry, pinned.
@@ -87,6 +90,72 @@ function signature(grid: number[][]): string {
 /** jsdom has no canvas, and these assertions are about sizes rather than pixels. */
 function fakeCanvas(): HTMLCanvasElement {
   return { width: 0, height: 0, getContext: () => null } as unknown as HTMLCanvasElement
+}
+
+interface Fill {
+  x: number
+  y: number
+  width: number
+  height: number
+  fill: string
+}
+
+interface Gradient {
+  stops: { offset: number; colour: string }[]
+  addColorStop: (offset: number, colour: string) => void
+}
+
+/**
+ * A recording 2D context for the baked layer.
+ *
+ * Records fills, gradients and composite-operation changes, because those are the three
+ * things the daylight shell's properties are about: what colour went down, how the light
+ * falls off, and whether anything reached for the `lighter` blend that a near-white floor
+ * cannot survive.
+ */
+class LayerRecorder {
+  fillStyle: string | Gradient = ''
+  globalCompositeOperation = 'source-over'
+  readonly fills: Fill[] = []
+  readonly gradients: Gradient[] = []
+  readonly composites: string[] = []
+
+  fillRect(x: number, y: number, width: number, height: number): void {
+    if (typeof this.fillStyle === 'string') {
+      this.fills.push({ x, y, width, height, fill: this.fillStyle })
+    }
+    this.composites.push(this.globalCompositeOperation)
+  }
+
+  createRadialGradient(): Gradient {
+    const stops: { offset: number; colour: string }[] = []
+    const gradient: Gradient = {
+      stops,
+      addColorStop: (offset, colour) => {
+        stops.push({ offset, colour })
+      },
+    }
+    this.gradients.push(gradient)
+    return gradient
+  }
+
+  colours(): Set<string> {
+    return new Set(this.fills.map((fill) => fill.fill))
+  }
+}
+
+function bake(floor: FloorData = FIXTURE): LayerRecorder {
+  const recorder = new LayerRecorder()
+  buildStatic(
+    floor,
+    () =>
+      ({
+        width: 0,
+        height: 0,
+        getContext: () => recorder,
+      }) as unknown as HTMLCanvasElement,
+  )
+  return recorder
 }
 
 /** Records where a sprite was drawn, which is the only thing the anchor test asks about. */
@@ -267,5 +336,167 @@ describe('choosing a zoom', () => {
       expect(zoom, `${width}`).toBeGreaterThanOrEqual(previous)
       previous = zoom
     }
+  })
+})
+
+// =========================================================================
+// The daylight shell (U5)
+// =========================================================================
+
+describe('the baked layer', () => {
+  it('lays down nothing darker than the floor it is lighting', () => {
+    // The vignette was a 34% black radial over the whole office and it is the single thing
+    // that most made this product read as a control room. Stated as a property rather than
+    // as "the vignette was deleted", because the failure mode is it coming back as something
+    // else — an edge shade, an ambient occlusion pass, a "subtle" overlay.
+    const layer = bake()
+
+    for (const colour of layer.colours()) {
+      expect(
+        relativeLuminance(colour),
+        `${colour} is darker than the darkest thing the shell may paint`,
+      ).toBeGreaterThan(relativeLuminance(PAL.jingyuhui) - 0.001)
+    }
+  })
+
+  it('never reaches for a blend a near-white floor cannot survive', () => {
+    // `lighter` had headroom on ink. On a daylight floor it goes straight to pure white and
+    // the floor stops existing.
+    expect(bake().composites.every((mode) => mode === 'source-over')).toBe(true)
+  })
+
+  it('spends the reserved amber on nothing', () => {
+    expect(bake().colours()).not.toContain(RESERVED_BEAM)
+  })
+
+  it('draws every colour from the office palette rather than inventing one', () => {
+    const known = new Set<string>([
+      ...Object.values(PAL),
+      ...Object.values(WALLC),
+      ...Object.values(GLASS),
+      ...Object.values(FLOORS).flatMap((style) => Object.values(style)),
+    ])
+
+    for (const colour of bake().colours()) {
+      expect(known.has(colour), `${colour} belongs to no palette`).toBe(true)
+    }
+  })
+
+  it('builds a wall out of a cap, a face and a trim line rather than a plinth', () => {
+    const layer = bake()
+    const drawn = layer.colours()
+
+    expect(drawn).toContain(WALLC.face)
+    expect(drawn).toContain(WALLC.cap)
+    expect(drawn).toContain(WALLC.capLip)
+    expect(drawn).toContain(WALLC.base)
+
+    // The skirting is a line, not a foundation: it may not be the tallest band on the wall.
+    const base = layer.fills.filter((fill) => fill.fill === WALLC.base)
+    const cap = layer.fills.filter((fill) => fill.fill === WALLC.cap)
+    expect(base.length).toBeGreaterThan(0)
+    expect(Math.max(...base.map((f) => f.height))).toBeLessThan(
+      Math.max(...cap.map((f) => f.height)),
+    )
+  })
+
+  it('glazes the wall rather than painting over it', () => {
+    // Deliberately not "filter the fills by the window's colours and check each one's tile".
+    // The palette is shared on purpose — 竹绿 is a plant on a sill *and* the accounting
+    // room's border course, 鲸鱼灰 is a window frame *and* administration's — so filtering by
+    // value asks a question the palette cannot answer.
+    //
+    // What is actually being claimed is that nothing the shell bakes escapes the floor, and
+    // windows are the only thing drawn on the outermost tiles, so a pane that overran its
+    // tile would run off the canvas.
+    const layer = bake()
+    const width = FIXTURE.cols * TILE
+    const height = FIXTURE.rows * TILE
+
+    for (const fill of layer.fills) {
+      expect(fill.x, `${fill.fill}`).toBeGreaterThanOrEqual(0)
+      expect(fill.y, `${fill.fill}`).toBeGreaterThanOrEqual(0)
+      expect(fill.x + fill.width, `${fill.fill}`).toBeLessThanOrEqual(width)
+      expect(fill.y + fill.height, `${fill.fill}`).toBeLessThanOrEqual(height)
+    }
+
+    // And a window was drawn at all, so the sweep above is not passing on an empty wall.
+    expect(layer.colours()).toContain(GLASS.sky)
+    expect(layer.colours()).toContain(GLASS.glint)
+  })
+
+  it('gives each room a border course and a rug in its own department', () => {
+    const layer = bake()
+    const sales = FLOORS[ROOM_FLOORS.sales]
+    const accounting = FLOORS[ROOM_FLOORS.accounting]
+
+    expect(layer.colours()).toContain(sales.trim)
+    expect(layer.colours()).toContain(sales.rug)
+    expect(layer.colours()).toContain(accounting.trim)
+    expect(layer.colours()).toContain(accounting.rug)
+
+    // The rug is inset from the walls, which is what keeps the walkable middle readable.
+    const rug = layer.fills.find((fill) => fill.fill === sales.rug)
+    const [x1, y1] = FIXTURE.rooms[0].box
+    expect(rug?.x).toBe((x1 + 1) * TILE)
+    expect(rug?.y).toBe((y1 + 1) * TILE)
+  })
+
+  it('leaves the corridor without a rug, because nobody sits in one', () => {
+    expect(FLOORS.hall.rug).toBeNull()
+  })
+
+  it('keeps every floor light enough to be a ground rather than a state', () => {
+    // The inverse of the chrome's rule. A department stripe in the panels has to clear 3:1
+    // because it is the only thing distinguishing one team from another; a department
+    // *floor* has to do the opposite, or the office is seven coloured caves again.
+    for (const [style, palette] of Object.entries(FLOORS)) {
+      expect(relativeLuminance(palette.a), `${style} base`).toBeGreaterThan(0.6)
+      if (palette.rug !== null) {
+        expect(relativeLuminance(palette.rug), `${style} rug`).toBeGreaterThan(0.5)
+      }
+    }
+  })
+
+  it('knows a floor style for every room the office can build', () => {
+    // `cs` and `people` fell through to slate while the panels beside them kept their
+    // department, which is one roster answered two ways.
+    for (const room of Object.keys(ROOM_FLOOR)) {
+      expect(ROOM_FLOORS[room], room).toBeDefined()
+      expect(FLOORS[ROOM_FLOORS[room]], room).toBeDefined()
+    }
+  })
+
+  it('dresses the same sill the same way every time it is rebuilt', () => {
+    // A random plant would redecorate the office on every resize.
+    expect(bake().fills).toEqual(bake().fills)
+  })
+
+  it('lights the room from the glazing, falling off to nothing', () => {
+    const layer = bake()
+
+    expect(layer.gradients).toHaveLength(FIXTURE.windows.length)
+    for (const gradient of layer.gradients) {
+      const alphas = gradient.stops.map((stop) => Number(/,\s*([\d.]+)\)$/.exec(stop.colour)?.[1]))
+
+      expect(gradient.stops.length).toBeGreaterThanOrEqual(3)
+      // Brightest at the glass, nothing at the far edge, and monotonic in between.
+      expect(alphas[0]).toBeGreaterThan(0)
+      expect(alphas.at(-1)).toBe(0)
+      for (let i = 1; i < alphas.length; i += 1) {
+        expect(alphas[i]).toBeLessThanOrEqual(alphas[i - 1])
+      }
+      // Warm, and never the one warm value that means something else.
+      for (const stop of gradient.stops) {
+        expect(stop.colour).not.toContain(RESERVED_BEAM.slice(1))
+      }
+    }
+  })
+
+  it('builds a floor with no windows at all rather than throwing', () => {
+    const dark: FloorData = { ...FIXTURE, windows: [] }
+    const layer = bake(dark)
+    expect(layer.gradients).toHaveLength(0)
+    expect(layer.fills.length).toBeGreaterThan(0)
   })
 })
