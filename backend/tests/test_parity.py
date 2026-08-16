@@ -658,6 +658,48 @@ def test_golden_walk_vector_matches_the_kernel() -> None:
     for case in vector["walk_duration_ticks"]:
         assert simtime.walk_duration_ticks(int(case["distance"])) == int(case["ticks"])
 
+    track = vector["track"]
+    origin = (int(track["origin"][0]), int(track["origin"][1]))
+    path = [(int(x), int(y)) for x, y in track["path"]]
+    for case in track["cases"]:
+        elapsed = int(case["elapsed"])
+        assert simtime.walk_position_milli(origin, path, elapsed) == (
+            int(case["x_milli"]),
+            int(case["y_milli"]),
+        )
+        assert (elapsed >= int(track["duration_ticks"])) is case["arrived"]
+
+
+def test_the_golden_walk_track_is_the_walk_the_kernel_actually_produces() -> None:
+    """The vector is a recorded event, not a hand-written path.
+
+    A path typed into the fixture would be a second opinion about the floor, and the two would
+    part company the first time the generator changed. This is the check that it is still the
+    kernel's own answer: the same walk, resolved by the same pathfinder over the same geometry.
+    """
+    vector = _load("walk.json")["track"]
+    state, _ = sim.new_run(run_seed=SEED)
+
+    walker = state.people[vector["walker"]]
+    assert [str(coordinate) for coordinate in walker.pos] == vector["origin"], (
+        "the vector's walker no longer starts where it was generated from"
+    )
+
+    destination = (int(vector["path"][-1][0]), int(vector["path"][-1][1]))
+    resolved = find_path(state.floor, walker.pos, destination)
+    assert [[str(x), str(y)] for x, y in resolved] == vector["path"]
+    assert simtime.walk_duration_ticks(len(resolved)) == int(vector["duration_ticks"])
+
+
+def test_the_golden_walk_track_turns_at_least_one_corner() -> None:
+    """Otherwise a port that interpolated only the x axis would pass it."""
+    path = [(int(x), int(y)) for x, y in _load("walk.json")["track"]["path"]]
+    axes = {
+        (path[index][0] - path[index - 1][0], path[index][1] - path[index - 1][1])
+        for index in range(1, len(path))
+    }
+    assert len(axes) > 1, f"the vectored path never changes direction: {path}"
+
 
 def test_golden_walk_vector_covers_values_above_2_53() -> None:
     """The point of the vector: a double-based port fails here rather than in production."""

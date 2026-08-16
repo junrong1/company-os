@@ -161,6 +161,202 @@
       "tiles": "89671672580533502"
     }
   ],
+  "track": {
+    "cases": [
+      {
+        "arrived": false,
+        "elapsed": "0",
+        "x_milli": "21000",
+        "y_milli": "13000"
+      },
+      {
+        "arrived": false,
+        "elapsed": "1",
+        "x_milli": "20923",
+        "y_milli": "13000"
+      },
+      {
+        "arrived": false,
+        "elapsed": "6",
+        "x_milli": "20534",
+        "y_milli": "13000"
+      },
+      {
+        "arrived": false,
+        "elapsed": "7",
+        "x_milli": "20456",
+        "y_milli": "13000"
+      },
+      {
+        "arrived": false,
+        "elapsed": "13",
+        "x_milli": "20000",
+        "y_milli": "12989"
+      },
+      {
+        "arrived": false,
+        "elapsed": "45",
+        "x_milli": "20000",
+        "y_milli": "10500"
+      },
+      {
+        "arrived": false,
+        "elapsed": "89",
+        "x_milli": "20000",
+        "y_milli": "7078"
+      },
+      {
+        "arrived": false,
+        "elapsed": "90",
+        "x_milli": "20000",
+        "y_milli": "7000"
+      },
+      {
+        "arrived": false,
+        "elapsed": "91",
+        "x_milli": "20000",
+        "y_milli": "6923"
+      },
+      {
+        "arrived": false,
+        "elapsed": "102",
+        "x_milli": "20000",
+        "y_milli": "6067"
+      },
+      {
+        "arrived": false,
+        "elapsed": "103",
+        "x_milli": "19989",
+        "y_milli": "6000"
+      },
+      {
+        "arrived": false,
+        "elapsed": "104",
+        "x_milli": "19912",
+        "y_milli": "6000"
+      },
+      {
+        "arrived": false,
+        "elapsed": "115",
+        "x_milli": "19056",
+        "y_milli": "6000"
+      },
+      {
+        "arrived": false,
+        "elapsed": "116",
+        "x_milli": "19000",
+        "y_milli": "5978"
+      },
+      {
+        "arrived": false,
+        "elapsed": "117",
+        "x_milli": "19000",
+        "y_milli": "5900"
+      },
+      {
+        "arrived": false,
+        "elapsed": "154",
+        "x_milli": "19000",
+        "y_milli": "3023"
+      },
+      {
+        "arrived": false,
+        "elapsed": "155",
+        "x_milli": "18945",
+        "y_milli": "3000"
+      },
+      {
+        "arrived": false,
+        "elapsed": "156",
+        "x_milli": "18867",
+        "y_milli": "3000"
+      },
+      {
+        "arrived": false,
+        "elapsed": "167",
+        "x_milli": "18012",
+        "y_milli": "3000"
+      },
+      {
+        "arrived": true,
+        "elapsed": "168",
+        "x_milli": "18000",
+        "y_milli": "3000"
+      },
+      {
+        "arrived": true,
+        "elapsed": "169",
+        "x_milli": "18000",
+        "y_milli": "3000"
+      },
+      {
+        "arrived": true,
+        "elapsed": "9007199254740993",
+        "x_milli": "18000",
+        "y_milli": "3000"
+      }
+    ],
+    "duration_ticks": "168",
+    "origin": [
+      "21",
+      "13"
+    ],
+    "path": [
+      [
+        "20",
+        "13"
+      ],
+      [
+        "20",
+        "12"
+      ],
+      [
+        "20",
+        "11"
+      ],
+      [
+        "20",
+        "10"
+      ],
+      [
+        "20",
+        "9"
+      ],
+      [
+        "20",
+        "8"
+      ],
+      [
+        "20",
+        "7"
+      ],
+      [
+        "20",
+        "6"
+      ],
+      [
+        "19",
+        "6"
+      ],
+      [
+        "19",
+        "5"
+      ],
+      [
+        "19",
+        "4"
+      ],
+      [
+        "19",
+        "3"
+      ],
+      [
+        "18",
+        "3"
+      ]
+    ],
+    "walker": "dir_admin"
+  },
   "walk_duration_ticks": [
     {
       "distance": "0",

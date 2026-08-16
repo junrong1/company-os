@@ -84,6 +84,9 @@ class EventKind(IntEnum):
     # Commands whose outcome must survive a client reconnect (R30).
     COMMAND_REJECTED = 50
 
+    # Movement. One event per resolved walk, never one per tick (R15).
+    STAFF_MOVED = 60
+
 
 # Payload schema version per event type. Adding a kind is additive — existing
 # events keep their kind and version, so replay is unaffected — but it is a
@@ -145,6 +148,10 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     EventKind.ATTRITION: 2,  # U7 — 2: `item_status` for a returned item (U13/U14)
     EventKind.DAILY_COSTS_APPLIED: 1,  # U7
     EventKind.COMMAND_REJECTED: 1,  # U10
+    # A walk: the person, the tiles they will cross, and the tick the crossing started.
+    # Version 1 and expected to stay there — the payload is a path and a tick, and the whole
+    # design claim is that nothing per-tick has to be added to it.
+    EventKind.STAFF_MOVED: 1,  # MVP U3
 }
 
 # --- the classification R11 requires --------------------------------------

@@ -121,4 +121,11 @@ enum EventKind {
 
   // Commands whose outcome must survive a client reconnect (R30).
   COMMAND_REJECTED = 50;
+
+  // One resolved walk: the person, the tiles they will cross and the tick they set
+  // off. Never one event per tick — position is a function of `tick - start_tick`,
+  // so the client interpolates every intermediate position from this one row, and a
+  // per-tick event would make movement the log's dominant write source while
+  // carrying nothing the path does not already say (R15).
+  STAFF_MOVED = 60;
 }

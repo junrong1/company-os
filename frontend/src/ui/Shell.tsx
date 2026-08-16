@@ -46,6 +46,7 @@ import {
   actorsFromStore,
   bitmaskFor,
   inputLeadTicks,
+  posedPeople,
   shouldRestateHeldInput,
   typingTarget,
 } from './stage'
@@ -148,7 +149,7 @@ export function Shell({ runId, makeStream, onStartRun, storage }: ShellProps) {
       // Read straight from the store inside the frame callback. No subscription, because a
       // notification would only tell the loop something its next frame was going to read
       // anyway.
-      actors: () => actorsFromStore(prediction.pose()),
+      actors: (tick) => actorsFromStore(prediction.pose(), tick),
       onFrame: (tick) => {
         // The render clock is the client's estimate of the kernel's tick — smooth, and
         // re-anchored every time the authority speaks. Walking the prediction along it is
@@ -172,7 +173,15 @@ export function Shell({ runId, makeStream, onStartRun, storage }: ShellProps) {
         // meetings, so the person the CEO is talking to can leave a conversation the CEO is
         // standing perfectly still in. Pushed into React only when the answer changes, so a
         // frame loop does not re-render the tree sixty times a second.
-        const next = selectConversation(prediction.pose(), runState().people, nearbyRef.current)
+        //
+        // Posed at the clock's tick rather than read from the store, because the store holds
+        // where a walk *began*. Reading that would price proximity against a desk somebody left
+        // a sim-hour ago, and the conversation would open on a person standing across the room.
+        const next = selectConversation(
+          prediction.pose(),
+          posedPeople(runState().people, tick),
+          nearbyRef.current,
+        )
         if (next !== nearbyRef.current) {
           nearbyRef.current = next
           setNearby(next)

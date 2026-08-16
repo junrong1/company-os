@@ -15,6 +15,7 @@ import json
 
 import pytest
 
+from contracts.envelope import EventKind
 from simcore import effects
 from simcore import hashing
 from simcore import items as work
@@ -538,6 +539,188 @@ def test_the_meeting_happens_only_once(run: sim.State) -> None:
         if run.people["stf_order"].state == sim.STATE_MEETING:
             meetings += 1
     assert meetings == 0
+
+
+# =========================================================================
+# Movement on the wire (M62, R15)
+# =========================================================================
+
+
+def _moves(events: list[sim.Emitted], person_id: str = "") -> list[sim.Emitted]:
+    """Every movement event, optionally for one person.
+
+    Filtered by person rather than taken positionally, following `_raised_for` above: a run
+    opens with an authored assignment in flight, so a collected stretch of a day holds walks
+    the test did not ask for — the seeded assignee going to a meeting, a director walking home.
+    """
+    return [
+        event
+        for event in events
+        if event.kind is EventKind.STAFF_MOVED
+        and (person_id == "" or event.payload["person"] == person_id)
+    ]
+
+
+def test_a_walk_across_the_floor_is_one_event_carrying_the_whole_path(run: sim.State) -> None:
+    """Covers M62. The event the client draws delegation from.
+
+    One event, carrying person, path and start tick — not one per tick. Position is a function
+    of `tick - start_tick`, so the intermediate positions are the client's to derive.
+    """
+    events = sim.assign_via_manager(run, "wi_ap_map")
+
+    moved = _moves(events)
+    assert len(moved) == 1, f"one walk, one event: {[e.kind.name for e in events]}"
+
+    payload = moved[0].payload
+    grace = run.people["dir_admin"]
+    assert payload["person"] == "dir_admin"
+    assert payload["from"] == list(grace.pos)
+    assert payload["path"] == [list(tile) for tile in grace.path]
+    assert payload["start_tick"] == grace.path_start_tick == run.tick
+    assert payload["item"] == "wi_ap_map", "the org chart's progress row reads this"
+    assert payload["then"] == sim.STATE_WALKING, "a hand-off ends in the walk home"
+    assert payload["path"], "the hand-off is physical, so there has to be a path"
+
+
+def test_walking_emits_nothing_per_tick(run: sim.State) -> None:
+    """The reason the path is on the event at all.
+
+    A per-tick position event would be roughly 36 rows per walker per wall second in an
+    append-only log, to say what the path and the start tick already say.
+    """
+    sim.assign_via_manager(run, "wi_ap_map")
+    grace = run.people["dir_admin"]
+    start = grace.pos
+
+    during = run_until(run, lambda s: s.people["dir_admin"].pos != start)
+    assert _moves(during, "dir_admin") == [], "a tick of walking announced itself"
+
+    # And the walker did move, so the silence is not the walk failing to start.
+    assert run.people["dir_admin"].pos != start
+
+
+def test_the_whole_walk_produces_exactly_one_event_per_leg(run: sim.State) -> None:
+    """A hand-off is two legs: over to the desk, then home again.
+
+    Two events for the round trip and nothing in between, which is what a client needs to draw
+    a director crossing the floor twice.
+    """
+    sim.assign_via_manager(run, "wi_ap_map")
+    home = run_until(run, lambda s: s.people["dir_admin"].state == sim.STATE_IDLE)
+
+    walks_home = _moves(home, "dir_admin")
+    assert len(walks_home) == 1
+    assert walks_home[0].payload["then"] == sim.STATE_IDLE
+    assert walks_home[0].payload["item"] == "", "the work was handed over on arrival"
+    assert walks_home[0].payload["path"][-1] == list(run.people["dir_admin"].seat)
+
+
+def test_the_interpolated_position_agrees_with_the_kernel_at_every_tile(run: sim.State) -> None:
+    """The client interpolates; the kernel snaps. They must agree where both have an answer.
+
+    `walk_position_milli` is only ever evaluated on the client, so this is the check that it
+    describes the same walk `_advance_walker` does: on the tick a whole tile is completed the
+    two must name the same tile, and between them the client is allowed to be part-way.
+    """
+    sim.assign_via_manager(run, "wi_ap_map")
+    grace = run.people["dir_admin"]
+    origin, path, started = grace.pos, grace.path, grace.path_start_tick
+
+    milli = simtime.MILLI_TILES_PER_TILE
+    checked = 0
+    for _ in range(simtime.walk_duration_ticks(len(path)) + 2):
+        sim.step(run)
+        elapsed = run.tick - started
+        x_milli, y_milli = simtime.walk_position_milli(origin, path, elapsed)
+
+        if x_milli % milli == 0 and y_milli % milli == 0:
+            # A whole tile: the client is standing exactly where the kernel put the walker.
+            assert (x_milli // milli, y_milli // milli) == grace.pos
+            checked += 1
+        else:
+            # Between tiles: within one tile of the kernel's answer, never further.
+            assert abs(x_milli - grace.pos[0] * milli) <= milli
+            assert abs(y_milli - grace.pos[1] * milli) <= milli
+
+    assert checked > 1, "no tile boundary was reached, so nothing was compared"
+
+
+def test_a_reassigned_walk_emits_a_fresh_path_and_abandons_the_old_one(run: sim.State) -> None:
+    """The walk is interrupted, and the client is told which path to draw instead.
+
+    The interruption that actually happens: the director is half way across the floor carrying
+    work to a specialist when the CEO gives it to the director themselves. The hand-off walk is
+    abandoned mid-floor and a new one home replaces it — so a client holding only the first path
+    would draw the director walking to a desk they never reach.
+    """
+    sim.assign_via_manager(run, "wi_ap_map")
+    grace = run.people["dir_admin"]
+    abandoned = grace.path
+    advance(run, 40)
+    assert grace.state == sim.STATE_WALKING and grace.pos != grace.seat, "sanity: mid-walk"
+
+    events = sim.reassign(run, "wi_ap_map", "dir_admin")
+    moved = _moves(events)
+
+    assert len(moved) == 1, "one walk begins, so one event"
+    payload = moved[0].payload
+    assert payload["person"] == "dir_admin"
+    assert payload["path"] != [list(tile) for tile in abandoned], "the old path is superseded"
+    assert payload["path"] == [list(tile) for tile in grace.path]
+    assert payload["from"] == list(grace.pos), "the new walk starts where the old one stopped"
+    assert payload["start_tick"] == run.tick, "and it starts now, not when the first one did"
+    assert payload["then"] == sim.STATE_WORKING
+    # The specialist the work was walking towards has nothing to wait for any more.
+    assert run.people["stf_ap"].state == sim.STATE_IDLE
+
+
+def test_every_walk_says_what_it_ends_in(run: sim.State) -> None:
+    """`then` is the kernel's answer, so no client has to map the arrival intent itself.
+
+    Asserted over two days of a busy floor rather than per intent, because the value of the
+    field is that it is present on every walk — and over two days the floor produces all four
+    arrivals: a hand-off, the walk home, a meeting and the return to work.
+    """
+    walks = _moves(sim.assign_via_manager(run, "wi_ap_map"))
+    walks += _moves(sim.assign_direct(run, "wi_dup_entry", "stf_order"))
+    walks += _moves(advance(run, simtime.TICKS_PER_SIM_DAY * 2))
+
+    legal = {sim.STATE_IDLE, sim.STATE_WORKING, sim.STATE_MEETING, sim.STATE_WALKING}
+    assert {walk.payload["then"] for walk in walks} == legal, (
+        "two days should exercise every arrival: "
+        f"{[(w.payload['person'], w.payload['then']) for w in walks]}"
+    )
+    assert set(sim.ARRIVE_STATE.values()) == legal, (
+        "the table gained a state the client is not told about"
+    )
+
+
+def test_the_meeting_walk_and_the_walk_back_are_both_announced(run: sim.State) -> None:
+    """Cross-department work walks to the meeting room and back, so both legs are events."""
+    sim.assign_direct(run, "wi_dup_entry", "stf_order")
+    to_meeting = run_until(run, lambda s: s.people["stf_order"].state == sim.STATE_MEETING)
+    assert len(_moves(to_meeting, "stf_order")) == 1
+    assert _moves(to_meeting, "stf_order")[0].payload["then"] == sim.STATE_MEETING
+
+    back = run_until(run, lambda s: s.people["stf_order"].state == sim.STATE_WORKING)
+    assert len(_moves(back, "stf_order")) == 1
+    assert _moves(back, "stf_order")[0].payload["then"] == sim.STATE_WORKING
+
+
+def test_genesis_walks_nobody(run: sim.State) -> None:
+    """The seed puts people at their desks, so day zero holds no movement event.
+
+    `new_run` returns GENESIS alone and the fold rebuilds genesis by calling it, so a movement
+    event here would regenerate nowhere. `_seed_authored_work` refuses rather than dropping it,
+    and this is the check that the refusal is unreachable on the shipped scenario.
+    """
+    _, emitted = sim.new_run(run_seed=SEED)
+    assert [event.kind for event in emitted] == [EventKind.GENESIS]
+
+    for seeded in work.SEEDED_ASSIGNMENTS:
+        person = run.people[seeded.person_id]
+        assert person.pos == person.seat, f"{seeded.person_id} is seeded away from their desk"
 
 
 # =========================================================================

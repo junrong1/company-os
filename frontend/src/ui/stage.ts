@@ -24,8 +24,9 @@ import {
   INPUT_UP,
   ceoStep,
   toTile,
+  walkPose,
 } from '../render/interpolate'
-import { type CeoView, type PositionEcho, runState } from '../net/store'
+import { type CeoView, type PersonView, type PositionEcho, runState } from '../net/store'
 
 /** Which view the stage is rendering. */
 export type Stage = 'office' | 'dag'
@@ -390,6 +391,108 @@ export class CeoPrediction {
 }
 
 /**
+ * Where a person is at `tick`, and what they are doing there.
+ *
+ * The staff half of what `CeoPrediction` does for the player, and it lives here for the same
+ * reason: an interpolated position is *recomputed*, and the store holds only what the wire
+ * stated. `STAFF_MOVED` states a path and the tick it began on (R15); everything between two
+ * tiles is this function's answer, not the store's.
+ *
+ * The tick to pass is the **render clock's** wherever there is one. The store's tick only moves
+ * when an event lands, and a measured run emits on about five ticks in twelve hundred, so
+ * interpolating against it would make every walk lurch a tile at a time. React panels have no
+ * render clock and pass the store's, which is accurate to within the event cadence — good enough
+ * for a word, not for a position.
+ */
+export interface PersonPose {
+  xMilli: number
+  yMilli: number
+  facing: Facing
+  /** The kernel's state string, with a finished walk resolved into what it led to. */
+  state: string
+  moving: boolean
+}
+
+export function personPose(person: PersonView, tick: bigint): PersonPose {
+  if (person.state !== 'walking' || person.path.length === 0) {
+    return {
+      xMilli: person.xMilli,
+      yMilli: person.yMilli,
+      facing: standingFacing(person.facing),
+      // A walk whose path came back empty is over the moment it is announced: the kernel emits
+      // one for a walker already standing on the destination, on purpose, so that a walk's
+      // absence from the log cannot be confused with a dropped event. It still resolves.
+      state:
+        person.state === 'walking' && person.arrivesIn !== '' ? person.arrivesIn : person.state,
+      moving: false,
+    }
+  }
+
+  const elapsed = tick > person.pathStartTick ? tick - person.pathStartTick : 0n
+  const pose = walkPose(
+    [BigInt(person.xMilli) / 1000n, BigInt(person.yMilli) / 1000n],
+    person.path.map(([x, y]) => [BigInt(x), BigInt(y)] as const),
+    elapsed,
+  )
+
+  return {
+    xMilli: Number(pose.xMilli),
+    yMilli: Number(pose.yMilli),
+    // A stopped person is turned to face us; a walking one faces the way they are going. The
+    // kernel's own `facing` is not read here at all: it is the direction of the walker's last
+    // completed step, which is a tile behind what the interpolation is drawing.
+    facing: pose.arrived ? 'down' : (pose.facing ?? standingFacing(person.facing)),
+    // Arrival is in no event, so the walk's own end is what resolves it — `arrivesIn` is the
+    // kernel's word for the state it lands in. Empty only for a resync's snapshot, which
+    // carries the intent rather than the state; keeping the recorded value then is stale by a
+    // label rather than wrong by a position.
+    state: pose.arrived && person.arrivesIn !== '' ? person.arrivesIn : person.state,
+    moving: !pose.arrived,
+  }
+}
+
+/**
+ * Everyone, posed for one tick.
+ *
+ * The walk is spent on the way out — `path` emptied and `arrivesIn` cleared — and that is what
+ * makes posing safe to do twice. The record it produces states a position and a state outright,
+ * so a second pass has nothing left to interpolate from a now-meaningless origin and nothing left
+ * to arrive into.
+ */
+export function posedPeople(
+  people: Record<string, PersonView>,
+  tick: bigint,
+): Record<string, PersonView> {
+  const posed: Record<string, PersonView> = {}
+  for (const [id, person] of Object.entries(people)) {
+    const pose = personPose(person, tick)
+    posed[id] = {
+      ...person,
+      xMilli: pose.xMilli,
+      yMilli: pose.yMilli,
+      facing: pose.facing,
+      state: pose.state,
+      path: [],
+      pathStartTick: 0n,
+      arrivesIn: '',
+    }
+  }
+  return posed
+}
+
+/**
+ * A facing the atlas has a cell for, defaulting to the one with a face on it.
+ *
+ * `up` is deliberately not defaulted to: the up cell is the back of somebody's head, so an
+ * unrecognised value would produce a person with no face rather than an obviously wrong one.
+ */
+function standingFacing(recorded: string): Facing {
+  return (['down', 'up', 'left', 'right'] as const).includes(recorded as Facing)
+    ? (recorded as Facing)
+    : 'down'
+}
+
+/**
  * The actors the renderer draws, read from the store.
  *
  * A plain function rather than a hook: this is called inside a `requestAnimationFrame`
@@ -400,38 +503,45 @@ export class CeoPrediction {
  * sort covers everyone. Drawing them last would put them permanently in front of every desk,
  * including the ones they are standing behind.
  */
-export function actorsFromStore(ceo?: CeoPose): Actor[] {
+export function actorsFromStore(ceo?: CeoPose, tick?: bigint): Actor[] {
   const state = runState()
 
-  // The walk frame is picked from elapsed ticks, and the render clock is the one that has to
-  // drive it — the store's tick only moves when an event lands, which would freeze the cycle
-  // mid-stride between events.
-  const animTicks = Number(state.tick)
+  // The render clock's tick, which is what walks staff between tiles. It falls back to the
+  // store's only for a caller that has no renderer: the store's tick moves only when an event
+  // lands, so a walk driven by it would advance a tile at a time and stall in between.
+  const at = tick ?? state.tick
+  const animTicks = Number(at)
 
   // Who the kernel says is stopped, read off the tray. `person.waiting` is set at genesis and
   // by a resync and by nothing else — no event carries person state — so the beam that tells
   // the CEO somebody needs them would never light during a run (R20).
   const waiting = new Set(state.tray.map((entry) => entry.personId))
 
-  const actors: Actor[] = Object.values(state.people).map((person) => ({
-    id: person.id,
-    xMilli: person.xMilli,
-    yMilli: person.yMilli,
+  const actors: Actor[] = Object.values(state.people).map((person) => {
+    // Where they are *this frame*, interpolated along the path the wire gave us. Before U3 this
+    // read the store's position directly, which no event ever moved — so the office was a
+    // photograph of its own genesis while the kernel walked people across it (M62).
+    //
     // Anyone who has stopped is turned to face us. The kernel leaves `facing` on whatever the
     // last step was, and staff reach their desks walking north, so the whole office sat with
     // its back to the camera — and the `up` cell is the one facing the atlas synthesises by
     // flooding the head with hair, so a stopped person had no face. The floor plan already
     // assumes this: desks are placed one row nearer the viewer than the seat *so that people
-    // face us* (`world.py`). Client-side until the kernel's own default is corrected, which
-    // is a snapshot field and so a golden change.
-    facing: person.state === 'walking' ? (person.facing as Facing) : 'down',
-    moving: person.state === 'walking',
-    animTicks,
-    // The tray alone. `person.waiting` is set at genesis and by a resync and cleared by
-    // nothing, so folding it in here would leave a beam burning over someone whose decision
-    // was taken minutes ago.
-    waiting: waiting.has(person.id),
-  }))
+    // face us* (`world.py`).
+    const pose = personPose(person, at)
+    return {
+      id: person.id,
+      xMilli: pose.xMilli,
+      yMilli: pose.yMilli,
+      facing: pose.facing,
+      moving: pose.moving,
+      animTicks,
+      // The tray alone. `person.waiting` is set at genesis and by a resync and cleared by
+      // nothing, so folding it in here would leave a beam burning over someone whose decision
+      // was taken minutes ago.
+      waiting: waiting.has(person.id),
+    }
+  })
 
   // Nothing to draw before genesis: the floor has not arrived, so a CEO at the store's zeroed
   // default would be a figure standing in a corner of a room that does not exist yet.

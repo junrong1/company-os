@@ -85,6 +85,39 @@ export function assertFixtureIsCurrent(fixture: GenesisFixture): void {
   }
 }
 
+/** One vectored position along the golden walk. Every integer is a string, as the format says. */
+export interface WalkTrackFixture {
+  walker: string
+  origin: [string, string]
+  path: Array<[string, string]>
+  duration_ticks: string
+  cases: Array<{ elapsed: string; x_milli: string; y_milli: string; arrived: boolean }>
+}
+
+/**
+ * The golden walk: a real hand-off path on the shipped floor, and where the kernel says the
+ * walker is at each of a set of ticks.
+ *
+ * Read here as well as in `golden.test.ts` so that the *projection* can be checked against the
+ * kernel's own numbers and not only the arithmetic — the position the renderer receives is what
+ * a person actually sees, and it passes through the store and the actor projection on the way.
+ */
+export function walkTrackFixture(): WalkTrackFixture {
+  const path = join(GOLDEN, 'walk.json')
+  if (!existsSync(path)) {
+    throw new Error(
+      `golden fixture walk.json is missing from ${GOLDEN}. Regenerate it with ` +
+        '`cd backend && uv run python scripts/generate_golden.py`. This is a failure, not a ' +
+        'skip: it is the only build-time guard on interpolation implemented in both languages.',
+    )
+  }
+  const vector = JSON.parse(readFileSync(path, 'utf8')) as { track?: WalkTrackFixture }
+  if (vector.track === undefined) {
+    throw new Error(`golden fixture walk.json carries no walk track. ${REGENERATE}`)
+  }
+  return vector.track
+}
+
 /**
  * The authored work graph, straight off the fixture.
  *
@@ -192,6 +225,43 @@ export function itemFrame(options: {
       cp_index: options.cpIndex ?? 0,
       label: options.label ?? 'Information',
       kind: 'info',
+    },
+  }
+}
+
+/**
+ * One resolved walk, as `STAFF_MOVED` carries it (R15).
+ *
+ * The path is a parameter rather than derived from the floor here: the *arithmetic* is pinned by
+ * `walk.json`'s track, which is generated from a real walk, and a helper that resolved its own
+ * path would be a second pathfinder in the test suite.
+ */
+export function movedFrame(options: {
+  seq: number
+  person: string
+  from: [number, number]
+  path: Array<[number, number]>
+  startTick: number
+  item?: string
+  then?: string
+}): EventFrame {
+  return {
+    kind: 'STAFF_MOVED',
+    seq: String(options.seq),
+    tick: String(options.startTick),
+    schema_ver: 1,
+    rules_ver: 'test',
+    run_id: 'run-1',
+    command_id: '',
+    request_id: '',
+    payload: {
+      tick: options.startTick,
+      person: options.person,
+      from: options.from,
+      path: options.path,
+      start_tick: options.startTick,
+      item: options.item ?? '',
+      then: options.then ?? 'idle',
     },
   }
 }

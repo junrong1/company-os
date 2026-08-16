@@ -22,10 +22,17 @@ import {
   actorsFromStore,
   bitmaskFor,
   inputLeadTicks,
+  personPose,
+  posedPeople,
   shouldRestateHeldInput,
 } from '../src/ui/stage'
 import { useRunStore } from './helpers/store-helpers'
-import { genesisFixture, genesisFrame } from './helpers/frames'
+import {
+  genesisFixture,
+  genesisFrame,
+  movedFrame,
+  walkTrackFixture,
+} from './helpers/frames'
 
 /**
  * The CEO as an actor on the floor.
@@ -140,6 +147,205 @@ describe('the CEO', () => {
     for (const letter of ['a', 'b', 'c']) {
       expect(ATLAS[`${CEO_ID}-${letter}`], letter).toBeDefined()
     }
+  })
+})
+
+// =========================================================================
+// Staff on the floor (M62, R15)
+// =========================================================================
+
+describe('staff in the actor projection', () => {
+  /** The golden walk, as a `STAFF_MOVED` frame the store can take. */
+  function goldenWalk(startTick = 0): {
+    frame: ReturnType<typeof movedFrame>
+    track: ReturnType<typeof walkTrackFixture>
+  } {
+    const track = walkTrackFixture()
+    return {
+      track,
+      frame: movedFrame({
+        seq: 2,
+        person: track.walker,
+        from: [Number(track.origin[0]), Number(track.origin[1])],
+        path: track.path.map(([x, y]) => [Number(x), Number(y)] as [number, number]),
+        startTick,
+        item: 'wi_ap_map',
+        then: 'idle',
+      }),
+    }
+  }
+
+  it('stands everybody at their desk until an event says otherwise', () => {
+    // The state the office was in for the whole of the previous phase: the kernel walked people
+    // around and no event carried it, so the client drew a photograph of genesis (M62).
+    useRunStore.getState().apply(genesisFrame())
+
+    for (const actor of actorsFromStore(undefined, 600n)) {
+      if (actor.id === CEO_ID) continue
+      const seat = (genesisFixture().payload.roster as Record<string, { seat: [number, number] }>)[
+        actor.id
+      ].seat
+      expect([actor.xMilli, actor.yMilli], actor.id).toEqual([seat[0] * 1000, seat[1] * 1000])
+      expect(actor.moving, actor.id).toBe(false)
+    }
+  })
+
+  it('draws a walker at the position the kernel vector gives, at every vectored tick', () => {
+    // The claim the golden vector exists for, made through the whole client path rather than
+    // against the arithmetic alone: the store folds the event, the projection poses it, and the
+    // numbers that reach the renderer are the kernel's own.
+    const { frame, track } = goldenWalk()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(frame)
+
+    for (const item of track.cases) {
+      // Above 2^53 the tick is unrepresentable as a `number`, and the projection hands the
+      // renderer numbers — so the vectored extremes are exercised by `golden.test.ts` against
+      // the arithmetic, and this covers every tick a run can actually reach.
+      if (BigInt(item.elapsed) > 2n ** 53n) continue
+
+      const walker = actorsFromStore(undefined, BigInt(item.elapsed)).find(
+        (actor) => actor.id === track.walker,
+      )
+      expect(walker?.xMilli, `at elapsed ${item.elapsed}`).toBe(Number(item.x_milli))
+      expect(walker?.yMilli, `at elapsed ${item.elapsed}`).toBe(Number(item.y_milli))
+      expect(walker?.moving, `at elapsed ${item.elapsed}`).toBe(!item.arrived)
+    }
+  })
+
+  it('moves between two ticks inside one tile, which is what makes it read as walking', () => {
+    // The point of interpolating at all. The kernel snaps to whole tiles, so a client drawing
+    // the kernel's answer would jump a tile every thirteen ticks and stand still in between.
+    const { frame, track } = goldenWalk()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(frame)
+
+    const at = (tick: bigint) =>
+      actorsFromStore(undefined, tick).find((actor) => actor.id === track.walker)
+
+    const first = at(3n)
+    const second = at(4n)
+    expect([first?.xMilli, first?.yMilli]).not.toEqual([second?.xMilli, second?.yMilli])
+  })
+
+  it('faces the way it is going, and turns to face us on arrival', () => {
+    const { frame, track } = goldenWalk()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(frame)
+
+    const facingAt = (tick: bigint) =>
+      actorsFromStore(undefined, tick).find((actor) => actor.id === track.walker)?.facing
+
+    // The first step of the golden path leaves the walker's desk heading left.
+    expect(facingAt(1n)).toBe('left')
+    // Later it turns a corner, so at least one tick faces along the other axis.
+    const seen = new Set(
+      track.cases
+        .filter((item) => !item.arrived)
+        .map((item) => facingAt(BigInt(item.elapsed))),
+    )
+    expect(seen.size).toBeGreaterThan(1)
+
+    // Stopped: turned to the camera, because the `up` cell is the back of somebody's head.
+    expect(facingAt(BigInt(track.duration_ticks))).toBe('down')
+  })
+
+  it('clamps at the destination rather than walking past it', () => {
+    const { frame, track } = goldenWalk()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(frame)
+
+    const destination = track.path[track.path.length - 1]
+    const long = actorsFromStore(undefined, BigInt(track.duration_ticks) + 5_000n).find(
+      (actor) => actor.id === track.walker,
+    )
+
+    expect([long?.xMilli, long?.yMilli]).toEqual([
+      Number(destination[0]) * 1000,
+      Number(destination[1]) * 1000,
+    ])
+    expect(long?.moving).toBe(false)
+  })
+
+  it('resolves the state the kernel said the walk ends in', () => {
+    // Arrival is in no event — the path and the start tick already say when it happens — so
+    // `then` is what stops a client showing somebody as walking for the rest of the run.
+    const { frame, track } = goldenWalk()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(frame)
+
+    const person = () => useRunStore.getState().people[track.walker]
+    expect(personPose(person(), 40n).state).toBe('walking')
+    expect(personPose(person(), BigInt(track.duration_ticks)).state).toBe('idle')
+  })
+
+  it('keeps what the wire said, and poses only on the way out', () => {
+    // The store holds where a walk *began*; posing is a recomputation and belongs here. The
+    // distinction is what keeps a second fold out of the store.
+    const { frame, track } = goldenWalk()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(frame)
+
+    const stored = useRunStore.getState().people[track.walker]
+    expect([stored.xMilli, stored.yMilli]).toEqual([
+      Number(track.origin[0]) * 1000,
+      Number(track.origin[1]) * 1000,
+    ])
+    expect(stored.path.length).toBe(track.path.length)
+  })
+
+  it('resolves a walk whose path came back empty, rather than walking forever', () => {
+    // The kernel emits a movement event even for a walker already standing on the destination,
+    // so that a walk's absence from the log cannot be confused with a dropped one. It is over
+    // the moment it is announced, and it still has to resolve.
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(
+      movedFrame({
+        seq: 2,
+        person: 'dir_admin',
+        from: [21, 13],
+        path: [],
+        startTick: 0,
+        then: 'working',
+      }),
+    )
+
+    const pose = personPose(useRunStore.getState().people.dir_admin, 0n)
+    expect(pose.state).toBe('working')
+    expect(pose.moving).toBe(false)
+    expect([pose.xMilli, pose.yMilli]).toEqual([21_000, 13_000])
+  })
+
+  it('poses idempotently, so a posed record cannot be interpolated a second time', () => {
+    const { frame, track } = goldenWalk()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(frame)
+
+    const once = posedPeople(useRunStore.getState().people, 40n)
+    const twice = posedPeople(once, 40n)
+
+    expect(twice[track.walker]).toEqual(once[track.walker])
+    expect(once[track.walker].path).toEqual([])
+  })
+
+  it('walks the legs, because the stride is keyed to distance covered', () => {
+    // The cadence comes off distance rather than ticks, so interpolation is what makes the walk
+    // cycle turn over at all: a person whose position never changed would stand with their legs
+    // frozen at frame 0 while reporting themselves as moving.
+    const { frame, track } = goldenWalk()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(frame)
+
+    const stride = new StrideTracker()
+    const frames = new Set<number>()
+    for (let tick = 0n; tick < 60n; tick += 1n) {
+      const walker = actorsFromStore(undefined, tick).find((actor) => actor.id === track.walker)
+      if (walker === undefined) continue
+      stride.advance(walker)
+      frames.add(stride.frame(walker))
+    }
+
+    expect(frames.size).toBeGreaterThan(1)
   })
 })
 

@@ -161,7 +161,15 @@ export interface ItemView {
 
 export interface PersonView {
   id: string
-  /** Milli-tiles, so integer arithmetic matches the kernel's. */
+  /**
+   * Where the wire last *stated* this person is, in milli-tiles.
+   *
+   * Their desk at genesis, their tile at a resync, and the tile a walk set off from. Not where
+   * they are now: a walk in flight is `path` plus `pathStartTick`, and `personPose` in
+   * `ui/stage.ts` resolves the two into a position for a given tick. Held apart for the same
+   * reason the CEO's is — an interpolated position is recomputed, and nothing recomputed
+   * belongs in this module.
+   */
   xMilli: number
   yMilli: number
   facing: string
@@ -169,6 +177,29 @@ export interface PersonView {
   itemId: string
   /** True when this person is waiting on the CEO. The one thing the beam may mean. */
   waiting: boolean
+  /**
+   * The tiles this walk still crosses, as the kernel resolved them (R15).
+   *
+   * Empty when the person is standing. The kernel's own convention: the tile walked *from* is
+   * excluded and the destination included, so `xMilli`/`yMilli` is where tile zero starts.
+   */
+  path: ReadonlyArray<readonly [number, number]>
+  /**
+   * The tick the walk began. Meaningless when `path` is empty.
+   *
+   * A `bigint` because it is a `uint64` tick index and the interpolation subtracts from it, so a
+   * `number` would lose the low bits of a long run silently.
+   */
+  pathStartTick: bigint
+  /**
+   * The state this walk ends in, stated by the kernel rather than mapped here.
+   *
+   * Arrival is in no event — the path and the start tick already say when it happens — so
+   * without this a client would have no way to stop showing somebody as walking. `_walk_to`
+   * reads it from the same table `_arrive` does, which is what keeps the client from owning a
+   * second copy of what an arrival means.
+   */
+  arrivesIn: string
 }
 
 /**
@@ -796,6 +827,59 @@ function applyEvent(set: Setter, get: Getter, frame: EventFrame, seq: bigint): v
     patch.items = withItem(patch.items ?? state.items, itemId, { unlocked: true })
   }
 
+  // --- people -----------------------------------------------------------
+  //
+  // Who is carrying what, folded from the events that say so. `PersonView.itemId` was set by no
+  // event before this, which is why the org chart's progress row was marked and unreachable —
+  // and every branch here is a field the event already carries, read rather than derived.
+  if (frame.kind === 'WORK_ASSIGNED' && itemId !== '') {
+    const assignee = toStr(payload.person)
+    if (assignee !== '') {
+      patch.people = withPerson(patch.people ?? state.people, assignee, { itemId })
+    }
+    // The director has handed it over and is walking home empty-handed, exactly as the kernel's
+    // `_arrive` clears their `item_id` on the same tick.
+    const via = toStr(payload.via)
+    if (payload.handoff_completed === true && via !== '') {
+      patch.people = withPerson(patch.people ?? state.people, via, { itemId: '' })
+    }
+  }
+
+  if (frame.kind === 'WORK_REASSIGNED') {
+    const from = toStr(payload.from)
+    const to = toStr(payload.to)
+    if (from !== '') patch.people = withPerson(patch.people ?? state.people, from, { itemId: '' })
+    if (to !== '') patch.people = withPerson(patch.people ?? state.people, to, { itemId })
+  }
+
+  if (frame.kind === 'WORK_RETURNED_TO_BACKLOG') {
+    const was = toStr(payload.was_assigned_to)
+    if (was !== '') patch.people = withPerson(patch.people ?? state.people, was, { itemId: '' })
+  }
+
+  if (frame.kind === 'STAFF_MOVED') {
+    const walker = toStr(payload.person)
+    const from = readTile(payload.from)
+    if (walker !== '' && from !== null) {
+      // Replaced wholesale rather than merged, which is what makes an interrupted walk stop
+      // being drawn: a reassignment mid-walk emits a fresh path from where the walker stopped,
+      // and holding any part of the old one would leave them heading for a desk they never reach.
+      patch.people = withPerson(patch.people ?? state.people, walker, {
+        // The tile the walk sets off from, which the path deliberately excludes.
+        xMilli: from[0] * 1000,
+        yMilli: from[1] * 1000,
+        path: readPath(payload.path),
+        // `start_tick`, not the envelope's tick. The two are equal today because a walk is
+        // announced on the tick it is resolved; reading the field the payload names for it is
+        // what keeps that from becoming load-bearing.
+        pathStartTick: toBig(payload.start_tick),
+        state: 'walking',
+        itemId: toStr(payload.item),
+        arrivesIn: toStr(payload.then),
+      })
+    }
+  }
+
   if (frame.kind === 'ATTRITION') {
     const returned = toStr(payload.returned_item)
     // Named for what it describes: this event carries `returned_item`, not `item`, so the status
@@ -892,6 +976,13 @@ function applyEvent(set: Setter, get: Getter, frame: EventFrame, seq: bigint): v
     if (isRecord(record)) {
       patch.deliverables = [...state.deliverables, readDeliverable(record)]
     }
+    // And the person who finished it is carrying nothing, as the kernel's `_complete` says by
+    // clearing their `item_id` on this very tick. Without this the org chart's progress row
+    // would read 100% for the rest of the run.
+    const finisher = toStr(payload.person)
+    if (finisher !== '') {
+      patch.people = withPerson(patch.people ?? state.people, finisher, { itemId: '' })
+    }
   }
 
   set(patch)
@@ -942,6 +1033,50 @@ function withItem(
  * effectively every one of those events, waking any subscriber that reads the whole slice for a
  * change that did not happen.
  */
+/**
+ * One person, patched, leaving everyone else's reference intact.
+ *
+ * The sibling of `withItem`, and it exists for the same reason: panels subscribe through
+ * `useShallow` over a projection of this record, so replacing every entry on every event would
+ * re-render the org chart at the event rate.
+ */
+function withPerson(
+  people: Record<string, PersonView>,
+  id: string,
+  patch: Partial<PersonView>,
+): Record<string, PersonView> {
+  const existing = people[id]
+  // Unknown ids are dropped rather than invented. Everyone on the floor arrives at genesis or in
+  // a resync snapshot, so a person this store has never heard of is a frame for another run —
+  // and a half-built `PersonView` with no seat would be drawn standing in a corner.
+  if (existing === undefined) return people
+  return { ...people, [id]: { ...existing, ...patch, id } }
+}
+
+/** One tile off a payload, or `null` when it is not a pair of whole numbers. */
+function readTile(value: unknown): readonly [number, number] | null {
+  if (!Array.isArray(value) || value.length !== 2) return null
+  if (typeof value[0] !== 'number' || typeof value[1] !== 'number') return null
+  return [Math.trunc(value[0]), Math.trunc(value[1])]
+}
+
+/**
+ * A resolved path off a payload, dropping anything that is not a tile.
+ *
+ * Total rather than throwing, like every other reader here: this runs inside the WebSocket
+ * message handler, and a throw would take the stream down over one malformed frame. A path that
+ * loses a tile renders a walk that cuts a corner, which is visible; a dead stream is not.
+ */
+function readPath(value: unknown): ReadonlyArray<readonly [number, number]> {
+  if (!Array.isArray(value)) return []
+  const tiles: Array<readonly [number, number]> = []
+  for (const entry of value) {
+    const tile = readTile(entry)
+    if (tile !== null) tiles.push(tile)
+  }
+  return tiles
+}
+
 function withoutItem(
   comparisons: Record<string, Comparison>,
   itemId: string,
@@ -1119,6 +1254,11 @@ function readGenesis(payload: Record<string, unknown>): Partial<RunStore> {
       state: 'idle',
       itemId: '',
       waiting: false,
+      // Nobody is walking at genesis. `_seed_authored_work` refuses a seed that would put
+      // somebody away from their desk, precisely so that this is true rather than assumed.
+      path: [],
+      pathStartTick: 0n,
+      arrivesIn: '',
     }
   }
 
@@ -1242,12 +1382,29 @@ function readSnapshot(
       const pos = Array.isArray(person.pos) ? person.pos : [0, 0]
       next[id] = {
         id,
+        // A walker's *current* tile, not the tile they set off from — the kernel advances `pos`
+        // as the walk progresses and keeps no record of where it began. That is enough, and it
+        // is why `walkPose` reads its origin only for the first tile: after one tile the path
+        // itself names every position, so a walk resynced mid-stride is joined rather than
+        // restarted, and a walk resynced before its first tile has `pos` as its true origin.
         xMilli: toInt(pos[0]) * 1000,
         yMilli: toInt(pos[1]) * 1000,
         facing: toStr(person.facing, 'up'),
         state: toStr(person.state, 'idle'),
         itemId: toStr(person.item),
         waiting: toStr(person.state) === 'blocked',
+        // The in-flight path, which is what stops a reconnect teleporting everyone to their
+        // desks (R15). `to_state` carries both because the kernel's own resume needs them.
+        path: readPath(person.path),
+        pathStartTick: toBig(person.path_start_tick),
+        // A snapshot carries the arrival *intent* rather than the state it leads to, and
+        // mapping one to the other here would be the second copy of `_arrive` that putting
+        // `then` on the event exists to avoid. Left empty, which `personPose` reads as "keep
+        // what was recorded": the walk still renders and still ends in the right place, and the
+        // only thing stale afterwards is the word for what they are doing — until this person's
+        // next event. That is the same bounded staleness `personActivity` already works around
+        // by finding the held item from `items` rather than trusting the recorded state.
+        arrivesIn: '',
       }
     }
     patch.people = next

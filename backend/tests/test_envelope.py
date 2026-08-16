@@ -172,8 +172,9 @@ def test_the_kind_table_is_pinned() -> None:
     """
     # 26 since Phase 2 added QUESTION_ANSWERED for the ask mechanic.
     # 27 since Phase 3 added OPTIONS_COMPARED for the branch comparison.
-    assert len(KIND_SCHEMA_VERSIONS) == 27
-    assert len(EventKind) == 28  # the 27 above, plus UNSPECIFIED
+    # 28 since the MVP's U3 added STAFF_MOVED, so a walk crosses the wire (R15).
+    assert len(KIND_SCHEMA_VERSIONS) == 28
+    assert len(EventKind) == 29  # the 28 above, plus UNSPECIFIED
 
 
 # --- integers only (R6) ---------------------------------------------------

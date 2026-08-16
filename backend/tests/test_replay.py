@@ -170,6 +170,138 @@ def test_the_fold_reproduces_an_actor_mid_walk() -> None:
     assert restored.path_start_tick == live.path_start_tick
 
 
+def test_replaying_a_log_of_walks_reproduces_the_same_position_track() -> None:
+    """R15: the walk is on the wire, and the wire's copy is a check rather than the source.
+
+    The whole track, tick by tick, from a log whose movement events the fold *regenerates*
+    rather than applies. If the fold read positions off the payloads this would agree by
+    construction and prove nothing; regenerating them means a divergence at any tick fails.
+    """
+    # Either side of the first tile, mid-walk, either side of arrival, and well past it.
+    sampled = (1, 12, 13, 14, 84, 167, 168, 169, 250, 400)
+
+    recorder = Recorder()
+    recorder.record(sim.assign_via_manager(recorder.state, "wi_ap_map"))
+
+    live_track = {}
+    for _ in range(max(sampled)):
+        recorder.advance(1)
+        if recorder.state.tick in sampled:
+            live_track[recorder.state.tick] = recorder.state.people["dir_admin"].pos
+
+    # Folded from a prefix per sampled tick, because a fold refuses a `through_tick` its own
+    # log has already passed — the same guard that catches a run row behind its log.
+    replayed_track = {}
+    for tick in sampled:
+        prefix = [envelope for envelope in recorder.log if envelope.tick <= tick]
+        folded = folder.fold(prefix, at_live_head=False, strict=True, through_tick=tick)
+        replayed_track[tick] = folded.state.people["dir_admin"].pos
+
+    assert replayed_track == live_track
+    assert len(set(live_track.values())) > 5, "sanity: the walk actually moved"
+
+
+def test_strict_replay_detects_a_tampered_walk() -> None:
+    """A movement event is an output, so a wrong path in the log is caught.
+
+    The reason movement is classified as an output rather than as an input: a path the fold
+    applied would make the log the authority on where somebody walked, and an edited path
+    would replay as fact.
+    """
+    recorder = Recorder()
+    recorder.record(sim.assign_via_manager(recorder.state, "wi_ap_map"))
+    recorder.advance(200)
+
+    tampered = []
+    for envelope in recorder.log:
+        if envelope.kind is EventKind.STAFF_MOVED:
+            payload = envelope.decoded_payload()
+            payload["path"] = payload["path"][:-1]
+            envelope = build(
+                seq=envelope.seq,
+                tick=envelope.tick,
+                kind=envelope.kind,
+                rules_ver=envelope.rules_ver,
+                payload=payload,
+                run_id=envelope.run_id,
+            )
+        tampered.append(envelope)
+
+    with pytest.raises(folder.ReplayDiverged) as excinfo:
+        folder.fold(tampered, at_live_head=False, strict=True, through_tick=recorder.state.tick)
+
+    assert "STAFF_MOVED" in str(excinfo.value)
+
+
+def test_strict_replay_detects_a_walk_missing_from_the_log() -> None:
+    recorder = Recorder()
+    recorder.record(sim.assign_via_manager(recorder.state, "wi_ap_map"))
+    recorder.advance(200)
+
+    pruned = [e for e in recorder.log if e.kind is not EventKind.STAFF_MOVED]
+    assert len(pruned) < len(recorder.log), "sanity: there were walks to drop"
+
+    with pytest.raises(folder.ReplayDiverged, match="STAFF_MOVED"):
+        folder.fold(pruned, at_live_head=False, strict=True, through_tick=recorder.state.tick)
+
+
+def test_strict_replay_detects_a_walk_the_step_never_produced() -> None:
+    """The half of the old count check that a two-producer tick made non-obvious.
+
+    A command's walk is appended after the step's outputs at the same tick, so the step's own
+    comparison cannot insist on an exhausted list — a remainder is the normal case in between.
+    Something has to insist afterwards, or an output event nothing regenerated would replay
+    clean and the log would be trusted about a walk that never happened.
+    """
+    recorder = Recorder()
+    recorder.record(sim.assign_via_manager(recorder.state, "wi_ap_map"))
+    recorder.advance(200)
+
+    walk = next(e for e in recorder.log if e.kind is EventKind.STAFF_MOVED)
+    padded = [*recorder.log, build(
+        seq=recorder.log[-1].seq + 1,
+        tick=walk.tick,
+        kind=walk.kind,
+        rules_ver=walk.rules_ver,
+        payload=walk.decoded_payload(),
+        run_id=walk.run_id,
+    )]
+
+    with pytest.raises(folder.ReplayDiverged, match="did not produce"):
+        folder.fold(padded, at_live_head=False, strict=True, through_tick=recorder.state.tick)
+
+
+def test_a_walk_a_command_derived_is_compared_as_strictly_as_the_steps_own() -> None:
+    """The first output event a *command* produces, so the fold had to learn to compare it.
+
+    Isolated to the command's own tick: the assignment and its walk are the only things at tick
+    zero, so a divergence here cannot be a step's.
+    """
+    recorder = Recorder()
+    recorder.record(sim.assign_via_manager(recorder.state, "wi_ap_map"))
+    recorder.advance(1)
+
+    at_zero = [e for e in recorder.log if e.tick == 0 and e.kind is EventKind.STAFF_MOVED]
+    assert len(at_zero) == 1, "the walk is appended at the tick the command was applied"
+
+    tampered = [
+        build(
+            seq=e.seq,
+            tick=e.tick,
+            kind=e.kind,
+            rules_ver=e.rules_ver,
+            payload={**e.decoded_payload(), "start_tick": 99},
+            run_id=e.run_id,
+        )
+        if e is at_zero[0]
+        else e
+        for e in recorder.log
+    ]
+
+    with pytest.raises(folder.ReplayDiverged, match="STAFF_MOVED"):
+        folder.fold(tampered, at_live_head=False, strict=True, through_tick=recorder.state.tick)
+
+
 def test_the_fold_reproduces_the_ceos_input_derived_position() -> None:
     """R12: the CEO resumes where their logged input put them, not at spawn."""
     recorder = Recorder()
@@ -418,6 +550,33 @@ def test_a_snapshot_preserves_an_actor_mid_walk() -> None:
     assert back.path == live.path
     assert back.path_start_tick == live.path_start_tick
     assert back.arrive == live.arrive
+
+
+def test_the_resync_snapshot_carries_an_in_flight_path() -> None:
+    """R15's other half: a client attaching mid-walk must join the walk, not skip to the desk.
+
+    The frame the gateway sends on a resync is `sim.snapshot(state)` — the same projection the
+    state hash is taken over — so this asserts against that shape rather than against a
+    client-shaped one. Without the path and its start tick a reconnecting client would have only
+    the walker's current tile, and every walk in progress would freeze there until the walker's
+    next event.
+    """
+    recorder = Recorder()
+    recorder.record(sim.assign_via_manager(recorder.state, "wi_ap_map"))
+    recorder.advance(80)  # mid-walk: the walk takes 168 ticks
+
+    wire = sim.snapshot(recorder.state)
+    grace = wire["people"]["dir_admin"]
+
+    assert grace["state"] == sim.STATE_WALKING
+    assert grace["path"] == [list(tile) for tile in recorder.state.people["dir_admin"].path]
+    assert grace["path_start_tick"] == recorder.state.people["dir_admin"].path_start_tick
+    assert grace["pos"] != grace["path"][-1], "sanity: the walk has not finished"
+
+    # And the remaining path plus the start tick locate the walker: the tick the snapshot was
+    # taken at, minus the start, is how far along the client should draw them.
+    elapsed = wire["lifecycle"]["tick"] - grace["path_start_tick"]
+    assert simtime.tiles_progressed(elapsed) < len(grace["path"])
 
 
 def test_editing_a_tuning_constant_invalidates_a_snapshot(monkeypatch) -> None:

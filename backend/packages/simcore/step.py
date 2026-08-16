@@ -141,6 +141,23 @@ STATE_BLOCKED = "blocked"
 STATE_WALKING = "walking"
 STATE_MEETING = "meeting"
 
+#: What each arrival intent leaves the walker in once the path runs out.
+#:
+#: A table rather than a chain of branches inside `_arrive`, because the movement event has to
+#: carry the same answer: a client is *told* what a walk ends in rather than mapping the intent
+#: itself, and a second copy of this mapping in TypeScript would be duplicated logic with
+#: nothing comparing the two halves. `_arrive` reads it, so there is one place to change.
+ARRIVE_STATE: dict[str, str] = {
+    ARRIVE_NONE: STATE_IDLE,
+    ARRIVE_START_WORK: STATE_WORKING,
+    ARRIVE_RESUME_WORK: STATE_WORKING,
+    ARRIVE_ENTER_MEETING: STATE_MEETING,
+    ARRIVE_SIT_IDLE: STATE_IDLE,
+    # A hand-off does not end in standing: the director hands the work across and sets off
+    # home in the same tick, which is a walk of its own and an event of its own.
+    ARRIVE_HANDOFF: STATE_WALKING,
+}
+
 STATUS_BACKLOG = "backlog"
 STATUS_ASSIGNED = "assigned"
 STATUS_ACTIVE = "active"
@@ -506,8 +523,17 @@ def _seed_authored_work(state: State) -> None:
 
     **It goes through `_start_work` rather than setting the fields itself**, so a seeded person
     reaches their desk by the same path a delegated one does. They are already sitting at it at
-    genesis, so no walk is generated; if a scenario ever seeds someone away from their seat,
-    they walk in rather than teleporting.
+    genesis, so no walk is generated.
+
+    **A seed that would walk refuses rather than dropping the walk.** Since movement went on the
+    wire (R15), `_start_work` emits an event for anyone not already at their desk, and genesis has
+    nowhere to put one: `new_run` returns GENESIS alone, and the fold rebuilds this state by
+    *calling* `new_run` rather than by replaying events. So a movement event produced here would
+    either be swallowed — the client never sees the walk and the person teleports on their first
+    step — or appended, which puts an output event at tick zero that no `step()` regenerates and
+    makes strict replay diverge on it. Neither happens today. The refusal is for the unit that
+    seeds somebody away from their desk (U6): what that needs is for genesis to carry the walk,
+    which is a change to the fold rather than a change here.
 
     A log written before this seed existed folds to a different day-zero state under an
     unchanged rules version, because RULES_VERSION digests the tuning table and the multiplier
@@ -519,7 +545,15 @@ def _seed_authored_work(state: State) -> None:
         person = state.people[seeded.person_id]
         item.assignee = person.id
         item.done_units = seeded.done_units(work.spec(seeded.item_id))
-        _start_work(state, person, item)
+        if _start_work(state, person, item):
+            raise ValueError(
+                f"the seeded assignment of {seeded.item_id} puts {seeded.person_id} at "
+                f"{person.pos} rather than at their desk {person.seat}, so genesis would have "
+                "to carry a movement event — and it cannot, because the fold rebuilds genesis "
+                "by calling new_run, so an output event at tick zero regenerates nowhere and "
+                "strict replay diverges on it. Seed people at their desks, or teach the fold "
+                "to compare genesis' own outputs."
+            )
 
 
 # =========================================================================
@@ -1072,7 +1106,7 @@ def _advance_work(state: State, person: PersonRuntime) -> list[Emitted]:
         person.met_ticks += 1
         if person.met_ticks >= work.MEETING_SIM_HOURS * simtime.TICKS_PER_SIM_HOUR:
             person.met_ticks = 0
-            _walk_to(state, person, person.seat, ARRIVE_RESUME_WORK)
+            return _walk_to(state, person, person.seat, ARRIVE_RESUME_WORK)
         return []
 
     if person.state != STATE_WORKING or not person.item_id:
@@ -1091,8 +1125,7 @@ def _advance_work(state: State, person: PersonRuntime) -> list[Emitted]:
         item.visited = True
         meeting = state.floor.room("meeting")
         destination = meeting.visit or (meeting.x1 + 1, meeting.y2)
-        _walk_to(state, person, destination, ARRIVE_ENTER_MEETING)
-        return []
+        return _walk_to(state, person, destination, ARRIVE_ENTER_MEETING)
 
     next_cp = next(
         (
@@ -1327,28 +1360,70 @@ def _facing(origin: tuple[int, int], destination: tuple[int, int]) -> str:
 
 def _walk_to(
     state: State, person: PersonRuntime, destination: tuple[int, int], intent: str
-) -> None:
+) -> list[Emitted]:
+    """Resolve a path and announce it. One event per walk, and none per tick (R15).
+
+    The path plus the tick it started on is the whole of the walk: position is a function of
+    `tick - path_start_tick`, as `_advance_walker` above is, so a client holding both derives
+    every intermediate position itself. Emitting per tick instead would put roughly 36 rows per
+    walker per wall second into an append-only log to restate what one row already said — the
+    same arithmetic that collapsed the CEO's movement to one event per keypress.
+
+    **Unconditional, including when the path came back empty.** `find_path` returns nothing for
+    a walker already standing on the destination, and it would be tempting to stay silent for
+    that case. A walk that sometimes emits and sometimes does not is a walk whose absence from
+    the log cannot be told apart from a dropped event, either by the strict replay's count or by
+    a reader; one row on a case that barely arises is the cheaper half of that trade.
+    """
     person.path = tuple(find_path(state.floor, person.pos, destination))
     person.path_start_tick = state.tick
     person.arrive = intent
     person.state = STATE_WALKING
 
+    return [
+        Emitted(
+            kind=EventKind.STAFF_MOVED,
+            payload={
+                "tick": state.tick,
+                "person": person.id,
+                # Where the walk begins. The path excludes the origin — `find_path`'s
+                # convention, because arrival is detected by the path emptying — so without
+                # this the client has nothing to interpolate the first tile *from*, and a
+                # resync's `pos` is where the walker has already got to rather than where
+                # they set off.
+                "from": list(person.pos),
+                "path": [list(tile) for tile in person.path],
+                # The same number as `tick`, and carried anyway because R15 names it. `tick`
+                # is where this event sits in sim-time, which is what every payload here means
+                # by it; `start_tick` is what a client subtracts from the tick it is drawing.
+                # They are equal because a walk is announced on the tick it is resolved, and a
+                # reader deriving one from the other would be depending on that staying true.
+                "start_tick": person.path_start_tick,
+                # What the walker is carrying. The org chart's progress row reads this: a
+                # person's item reaches the client on no other event, so the row was marked
+                # and unreachable before this.
+                "item": person.item_id,
+                # The state the walk ends in, stated by the kernel rather than mapped by the
+                # client from the arrival intent. `_arrive` reads the same table, so "what
+                # does this walk lead to" has one answer rather than one per language — and
+                # without it a client would have no way to stop showing somebody as walking,
+                # because arrival is in no event either.
+                "then": ARRIVE_STATE[intent],
+            },
+        )
+    ]
+
 
 def _arrive(state: State, person: PersonRuntime) -> list[Emitted]:
     intent = person.arrive
     person.arrive = ARRIVE_NONE
-
-    if intent in (ARRIVE_START_WORK, ARRIVE_RESUME_WORK):
-        person.state = STATE_WORKING
-        return []
+    # One table, read here and by the movement event's `then`. The hand-off branch below
+    # re-enters `_walk_to`, which sets `walking` again; the table's answer for that intent is
+    # the same, so the two agree rather than one overwriting the other.
+    person.state = ARRIVE_STATE.get(intent, STATE_IDLE)
 
     if intent == ARRIVE_ENTER_MEETING:
-        person.state = STATE_MEETING
         person.met_ticks = 0
-        return []
-
-    if intent == ARRIVE_SIT_IDLE:
-        person.state = STATE_IDLE
         return []
 
     if intent == ARRIVE_HANDOFF:
@@ -1357,9 +1432,6 @@ def _arrive(state: State, person: PersonRuntime) -> list[Emitted]:
         person.item_id = ""
         item = state.items[item_id]
         staff = state.people[item.assignee]
-
-        # The director walks home; the specialist starts.
-        _walk_to(state, person, person.seat, ARRIVE_SIT_IDLE)
 
         events = [
             Emitted(
@@ -1373,25 +1445,29 @@ def _arrive(state: State, person: PersonRuntime) -> list[Emitted]:
                 },
             )
         ]
-        _start_work(state, staff, item)
+        # The director walks home; the specialist starts. Both may produce a walk, and both
+        # come after the hand-off itself: the assignment is the fact, and the movement is what
+        # the fact caused.
+        events.extend(_walk_to(state, person, person.seat, ARRIVE_SIT_IDLE))
+        events.extend(_start_work(state, staff, item))
         # Stamped after the work starts, not before: at the point the payload was built the
         # item was still `assigned`, and a read-side consumer told that would move its node
         # to a status the item left in the same operation, with no later event to correct it.
         events[0].payload["item_status"] = item.status
         return events
 
-    person.state = STATE_IDLE
     return []
 
 
-def _start_work(state: State, person: PersonRuntime, item: ItemRuntime) -> None:
+def _start_work(state: State, person: PersonRuntime, item: ItemRuntime) -> list[Emitted]:
     person.item_id = item.id
     item.status = STATUS_ACTIVE
 
     if person.pos != person.seat:
-        _walk_to(state, person, person.seat, ARRIVE_START_WORK)
-    else:
-        person.state = STATE_WORKING
+        return _walk_to(state, person, person.seat, ARRIVE_START_WORK)
+
+    person.state = STATE_WORKING
+    return []
 
 
 def _held_bitmask(state: State) -> int:
@@ -1639,7 +1715,7 @@ def assign_via_manager(state: State, item_id: str) -> list[Emitted]:
     item.assignee = staff.id
 
     director.item_id = item_id
-    _walk_to(state, director, staff.seat, ARRIVE_HANDOFF)
+    walked = _walk_to(state, director, staff.seat, ARRIVE_HANDOFF)
     director.arrive_item = item_id
     _refresh_load(state)
 
@@ -1657,7 +1733,11 @@ def assign_via_manager(state: State, item_id: str) -> list[Emitted]:
                 # until they arrive.
                 "item_status": item.status,
             },
-        )
+        ),
+        # The walk the assignment causes, after the assignment itself. This is the event that
+        # makes delegation visible: it is the whole of M62's headline case, and the client draws
+        # the director crossing the floor from it.
+        *walked,
     ]
 
 
@@ -1698,7 +1778,7 @@ def assign_direct(state: State, item_id: str, person_id: str) -> list[Emitted]:
             },
         )
     ]
-    _start_work(state, person, item)
+    events.extend(_start_work(state, person, item))
     _refresh_load(state)
     # Stamped after the work starts: a direct assignment goes straight to active, and the
     # payload has to report where the item ended up rather than where it passed through.
@@ -1746,7 +1826,7 @@ def reassign(state: State, item_id: str, person_id: str) -> list[Emitted]:
             },
         )
     ]
-    _start_work(state, person, item)
+    events.extend(_start_work(state, person, item))
     _refresh_load(state)
     events[0].payload["item_status"] = item.status
     return events

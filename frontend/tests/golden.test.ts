@@ -13,6 +13,7 @@ import {
   tilesProgressed,
   toTile,
   walkDurationTicks,
+  walkPose,
   WALK_TILES_DENOMINATOR,
   WALK_TILES_NUMERATOR,
 } from '../src/render/interpolate'
@@ -48,6 +49,11 @@ function load(name: string): any {
     )
   }
   return JSON.parse(readFileSync(path, 'utf8'))
+}
+
+/** A vectored tile, parsed the only correct way: as a pair of BigInts. */
+function tileOf(pair: [string, string]): readonly [bigint, bigint] {
+  return [BigInt(pair[0]), BigInt(pair[1])]
 }
 
 describe('the fixtures themselves', () => {
@@ -115,6 +121,41 @@ describe('tick-space movement matches the kernel', () => {
     for (const item of walk.walk_duration_ticks) {
       expect(walkDurationTicks(BigInt(item.distance))).toBe(BigInt(item.ticks))
     }
+  })
+
+  it('agrees on where a walker is between tiles, at every vectored tick', () => {
+    // The one piece of movement arithmetic the kernel never evaluates for itself: it snaps a
+    // walker to whole tiles, and the sub-tile position exists only so this client can draw a
+    // walk rather than a sequence of jumps. So this vector is the whole of the guard on it.
+    const track = walk.track
+    const origin = tileOf(track.origin)
+    const path = track.path.map(tileOf)
+
+    for (const item of track.cases) {
+      const pose = walkPose(origin, path, BigInt(item.elapsed))
+      expect(pose.xMilli, `at elapsed ${item.elapsed}`).toBe(BigInt(item.x_milli))
+      expect(pose.yMilli, `at elapsed ${item.elapsed}`).toBe(BigInt(item.y_milli))
+      expect(pose.arrived, `at elapsed ${item.elapsed}`).toBe(item.arrived)
+    }
+  })
+
+  it('arrives exactly when the kernel says the walk is over', () => {
+    const track = walk.track
+    const duration = BigInt(track.duration_ticks)
+    expect(walkDurationTicks(BigInt(track.path.length))).toBe(duration)
+
+    const origin = tileOf(track.origin)
+    const path = track.path.map(tileOf)
+
+    expect(walkPose(origin, path, duration - 1n).arrived).toBe(false)
+    expect(walkPose(origin, path, duration).arrived).toBe(true)
+    // And arrival is a clamp, not an extrapolation: a tick index no run reaches still lands on
+    // the destination rather than somewhere past it.
+    const far = walkPose(origin, path, 2n ** 60n)
+    expect([far.xMilli, far.yMilli]).toEqual([
+      path[path.length - 1][0] * 1000n,
+      path[path.length - 1][1] * 1000n,
+    ])
   })
 
   it('is still exact above 2^53, where a number-based port would not be', () => {

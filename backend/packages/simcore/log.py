@@ -113,6 +113,12 @@ OUTPUT_KINDS = frozenset(
         # validation. Both regenerate, which is what makes a tampered one detectable.
         EventKind.REQUEST_RAISED,
         EventKind.ANSWER_REJECTED,
+        # A walk (R15). Derived: the path is `find_path` over recorded geometry and the start
+        # tick is the tick it was resolved at, so it regenerates exactly — which is what makes
+        # a tampered path detectable rather than merely present. It is also the first output
+        # kind a *command* produces, which is why `_replay` matches a tick's outputs in two
+        # passes; see there.
+        EventKind.STAFF_MOVED,
     }
 )
 
@@ -349,10 +355,36 @@ def _replay(
     Commands are applied when the clock reads the tick they were recorded at, then the tick
     advances — the same order the live path uses, where a command is applied at a tick
     boundary and `step()` runs after it.
+
+    **A tick's outputs have two producers, and the strict comparison accounts for both.** Until
+    movement went on the wire (R15), every output event was the step's, so one count check per
+    tick was enough. A command derives one now — `assign_via_manager` resolves the director's
+    path before it returns — and in the live log those sit *after* the step's at the same tick,
+    because the clock only reaches tick T inside the step that ends there and a command applied
+    at T follows it.
+
+    So `logged_outputs[T]` is matched in that order: the step's regenerated outputs first, then
+    the commands' when the loop comes back round to T, and only then is the tick's list required
+    to be exhausted. Two independent count checks would not work — the step's check runs before
+    the commands at that tick have been applied, so the remainder is expected in between and a
+    divergence afterwards. Partitioning the logged events by producer instead would mean
+    guessing which producer wrote each one, which the log does not record.
     """
+    #: How much of each tick's logged outputs has been matched. Keyed by tick because the two
+    #: passes for one tick happen in different iterations of this loop.
+    matched: dict[int, int] = {}
+
     while state.tick <= final_tick:
+        from_commands: list[sim.Emitted] = []
         for envelope in inputs.get(state.tick, ()):
-            _apply_input(state, envelope)
+            from_commands.extend(_apply_input(state, envelope))
+
+        if strict:
+            logged = logged_outputs.get(state.tick, [])
+            matched[state.tick] = _compare(
+                state.tick, from_commands, logged, matched.get(state.tick, 0)
+            )
+            _expect_exhausted(state.tick, logged, matched[state.tick])
 
         if state.tick == final_tick:
             break
@@ -360,86 +392,101 @@ def _replay(
         produced = sim.step(state)
 
         if strict:
-            _compare(state.tick, produced, logged_outputs.get(state.tick, []))
+            matched[state.tick] = _compare(
+                state.tick,
+                produced,
+                logged_outputs.get(state.tick, []),
+                matched.get(state.tick, 0),
+            )
 
 
-def _apply_input(state: sim.State, envelope: Envelope) -> None:
-    """Re-issue a command exactly as it was originally issued."""
+def _apply_input(state: sim.State, envelope: Envelope) -> list[sim.Emitted]:
+    """Re-issue a command exactly as it was originally issued, and return what it produced.
+
+    The events come back rather than being discarded because a command can now derive an
+    output — a walk — and an output the fold regenerated but never compared would be an output
+    the log could hold a tampered copy of. `_replay` is what compares them.
+    """
     kind = envelope.kind
     payload = envelope.decoded_payload()
 
     if kind is EventKind.CEO_INPUT:
         state.ceo_inputs[int(payload["tick"])] = int(payload["bitmask"])
-        return
+        return []
 
     if kind is EventKind.WORK_ASSIGNED:
         if payload.get("handoff_started"):
-            sim.assign_via_manager(state, payload["item"])
-        else:
-            sim.assign_direct(state, payload["item"], payload["person"])
-        return
+            return sim.assign_via_manager(state, payload["item"])
+        return sim.assign_direct(state, payload["item"], payload["person"])
 
     if kind is EventKind.WORK_REASSIGNED:
-        sim.reassign(state, payload["item"], payload["to"])
-        return
+        return sim.reassign(state, payload["item"], payload["to"])
 
     if kind is EventKind.DECISION_RESOLVED:
-        sim.resolve_checkpoint(
+        return sim.resolve_checkpoint(
             state,
             payload["item"],
             int(payload["cp_index"]),
             int(payload["option_index"]),
             in_person=bool(payload["in_person"]),
         )
-        return
 
     if kind is EventKind.QUESTION_ANSWERED:
         # Re-issued as the command, not folded from the payload. Replaying the *answer* would
         # let a log disagree with the roster it was produced from; replaying the *question*
         # reproduces the Visibility trajectory from the same rule that priced it originally.
-        sim.ask_person(state, payload["person"], str(payload["asked"]))
-        return
+        return sim.ask_person(state, payload["person"], str(payload["asked"]))
 
     if kind is EventKind.RATE_CHANGED:
         # Rate is run state, not simulation state: the replay multiplier is deliberately
         # not stored, so there is nothing here to apply to the fold.
-        return
+        return []
 
     if kind is EventKind.WORK_RETURNED_TO_BACKLOG:
-        sim.return_to_backlog(state, payload["item"])
-        return
+        return sim.return_to_backlog(state, payload["item"])
 
     if kind is EventKind.HIRE_REQUESTED:
-        sim.request_hire(state, payload["director"])
-        return
+        return sim.request_hire(state, payload["director"])
 
     if kind is EventKind.INPUT_RECEIVED:
         # The answer is *in* this event, which is the whole point: replay re-queues the logged
         # answer and never opens the stream (R3). Re-issuing would make the replay depend on
         # what the service would say today rather than on what it said then.
-        sim.receive_answer(
+        return sim.receive_answer(
             state,
             envelope.request_id or payload.get("request_id", ""),
             dict(payload.get("answer", {})),
             at_tick=int(payload["tick"]),
         )
-        return
 
     raise UnknownEventInFold(f"no replay path for input {kind.name} at sequence {envelope.seq}")
 
 
-def _compare(tick: int, produced: list[sim.Emitted], logged: list[Envelope]) -> None:
-    """Check regenerated outputs against the log. The whole point of regenerating them."""
-    produced_outputs = [item for item in produced if is_output(item.kind, item.payload)]
+def _compare(
+    tick: int, produced: list[sim.Emitted], logged: list[Envelope], already_matched: int
+) -> int:
+    """Check regenerated outputs against the log, and say how far through the tick we got.
 
-    if len(produced_outputs) != len(logged):
+    The whole point of regenerating them. `already_matched` is where in this tick's logged
+    outputs to continue from: a tick's outputs come from the step and then from any command
+    applied at that tick, and both are matched against one logged sequence in log order.
+
+    Having more logged than produced is *not* a divergence here — the step's pass runs before
+    the commands at that tick have been applied, so a remainder is the normal case. Only
+    `_expect_exhausted`, called once the tick can produce nothing further, may draw that
+    conclusion.
+    """
+    produced_outputs = [item for item in produced if is_output(item.kind, item.payload)]
+    available = logged[already_matched:]
+
+    if len(produced_outputs) > len(available):
         raise ReplayDiverged(
             f"at tick {tick} the replay produced {len(produced_outputs)} output events "
-            f"({[e.kind.name for e in produced_outputs]}) but the log holds {len(logged)} "
-            f"({[e.kind.name for e in logged]})"
+            f"({[e.kind.name for e in produced_outputs]}) but the log holds only "
+            f"{len(available)} unmatched at that tick ({[e.kind.name for e in available]})"
         )
 
-    for regenerated, recorded in zip(produced_outputs, logged, strict=True):
+    for regenerated, recorded in zip(produced_outputs, available, strict=False):
         if regenerated.kind is not recorded.kind:
             raise ReplayDiverged(
                 f"at tick {tick} the replay produced {regenerated.kind.name} where the log "
@@ -450,6 +497,24 @@ def _compare(tick: int, produced: list[sim.Emitted], logged: list[Envelope]) -> 
                 f"at tick {tick} the payload of {recorded.kind.name} at sequence "
                 f"{recorded.seq} does not match the replay"
             )
+
+    return already_matched + len(produced_outputs)
+
+
+def _expect_exhausted(tick: int, logged: list[Envelope], matched: int) -> None:
+    """Every output the log holds for this tick must have been regenerated by now.
+
+    Split out of `_compare` because a tick's outputs are matched in two passes and only the
+    second one knows it is the last. This is the half of the old count check that caught a
+    *missing* regenerated event, and it has to be asked after the commands at that tick have
+    been re-issued rather than before.
+    """
+    if matched < len(logged):
+        left = [envelope.kind.name for envelope in logged[matched:]]
+        raise ReplayDiverged(
+            f"at tick {tick} the log holds {len(logged) - matched} output events the replay "
+            f"did not produce ({left}), from sequence {logged[matched].seq} onwards"
+        )
 
 
 def _apply_genesis(envelope: Envelope) -> sim.State:

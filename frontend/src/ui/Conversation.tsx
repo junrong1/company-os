@@ -31,6 +31,7 @@ import {
   resolvePayload,
   stoppedCard,
 } from './conversation-model'
+import { posedPeople } from './stage'
 
 /**
  * The empty answer list, as one shared value.
@@ -54,7 +55,10 @@ export function Conversation({ personId, onCommand, onCompare }: ConversationPro
       conversationHeader(
         personId,
         state.genesis?.roster ?? {},
-        state.people,
+        // Posed at the store's tick: the recorded state of somebody whose walk has ended is
+        // `walking`, because arrival is in no event, and the header would say "Walking over"
+        // about a person standing still in front of the CEO.
+        posedPeople(state.people, state.tick),
         state.tray,
         state.items,
       ),
