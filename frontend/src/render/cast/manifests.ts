@@ -1,0 +1,466 @@
+/**
+ * GENERATED — do not edit by hand.
+ *
+ * Built by `scripts/make-manifests.mjs` from the approved casting board in
+ * `docs/assets/company-os-visual-redesign/roster-characters/`. The six colours are read out
+ * of each candidate rather than transcribed, because a hand-typed hex digit is a colour
+ * nobody notices is wrong; the three feature choices are derived from the candidate id, so a
+ * re-run casts the same company rather than redressing it.
+ */
+
+import type { Manifest } from './compose'
+
+/** Three appearances for each of the eleven identities the office can show. */
+export const CAST: Record<string, Manifest[]> = {
+  dir_admin: [
+    {
+      hair: 2,
+      outfit: 4,
+      accessory: 0,
+      skin: {
+        skin: '#b56743',
+        hair: '#3a2728',
+        top: '#3f4b63',
+        legs: '#4b302b',
+        shoes: '#a86745',
+        accent: '#c98662',
+      },
+    },
+    {
+      hair: 7,
+      outfit: 3,
+      accessory: 0,
+      skin: {
+        skin: '#b56743',
+        hair: '#3a2728',
+        top: '#65758b',
+        legs: '#253147',
+        shoes: '#3f4b63',
+        accent: '#a86745',
+      },
+    },
+    {
+      hair: 0,
+      outfit: 6,
+      accessory: 4,
+      skin: {
+        skin: '#d89a52',
+        hair: '#3a2728',
+        top: '#f1c8ae',
+        legs: '#3f4b63',
+        shoes: '#c98662',
+        accent: '#b56743',
+      },
+    },
+  ],
+  dir_cs: [
+    {
+      hair: 3,
+      outfit: 7,
+      accessory: 1,
+      skin: {
+        skin: '#d89a52',
+        hair: '#3a2728',
+        top: '#b56743',
+        legs: '#4b302b',
+        shoes: '#65443a',
+        accent: '#d6a04d',
+      },
+    },
+    {
+      hair: 4,
+      outfit: 2,
+      accessory: 3,
+      skin: {
+        skin: '#d89a52',
+        hair: '#3a2728',
+        top: '#b56743',
+        legs: '#70452f',
+        shoes: '#3f4b63',
+        accent: '#d68b69',
+      },
+    },
+    {
+      hair: 3,
+      outfit: 5,
+      accessory: 4,
+      skin: {
+        skin: '#b56743',
+        hair: '#3a2728',
+        top: '#70452f',
+        legs: '#3f4b63',
+        shoes: '#4b302b',
+        accent: '#d89a52',
+      },
+    },
+  ],
+  dir_hr: [
+    {
+      hair: 3,
+      outfit: 5,
+      accessory: 1,
+      skin: {
+        skin: '#a86745',
+        hair: '#3a2728',
+        top: '#74759b',
+        legs: '#253147',
+        shoes: '#3f4b63',
+        accent: '#d89a52',
+      },
+    },
+    {
+      hair: 6,
+      outfit: 4,
+      accessory: null,
+      skin: {
+        skin: '#d89a52',
+        hair: '#3a2728',
+        top: '#3f4b63',
+        legs: '#4b302b',
+        shoes: '#b56743',
+        accent: '#d68b69',
+      },
+    },
+    {
+      hair: 1,
+      outfit: 3,
+      accessory: 5,
+      skin: {
+        skin: '#d89a52',
+        hair: '#a8adb4',
+        top: '#74759b',
+        legs: '#3f4b63',
+        shoes: '#c98662',
+        accent: '#b56743',
+      },
+    },
+  ],
+  dir_sales: [
+    {
+      hair: 5,
+      outfit: 7,
+      accessory: 5,
+      skin: {
+        skin: '#b56743',
+        hair: '#3a2728',
+        top: '#5a8fb7',
+        legs: '#253147',
+        shoes: '#70452f',
+        accent: '#2376b7',
+      },
+    },
+    {
+      hair: 4,
+      outfit: 2,
+      accessory: 5,
+      skin: {
+        skin: '#d68b69',
+        hair: '#9d7f5f',
+        top: '#253147',
+        legs: '#4b302b',
+        shoes: '#65443a',
+        accent: '#2376b7',
+      },
+    },
+    {
+      hair: 3,
+      outfit: 5,
+      accessory: null,
+      skin: {
+        skin: '#d89a52',
+        hair: '#c98662',
+        top: '#5a8fb7',
+        legs: '#3a2728',
+        shoes: '#8b5d47',
+        accent: '#2376b7',
+      },
+    },
+  ],
+  stf_ap: [
+    {
+      hair: 2,
+      outfit: 0,
+      accessory: 3,
+      skin: {
+        skin: '#d89a52',
+        hair: '#3a2728',
+        top: '#9d7f5f',
+        legs: '#4b302b',
+        shoes: '#a86745',
+        accent: '#d6a04d',
+      },
+    },
+    {
+      hair: 5,
+      outfit: 7,
+      accessory: 1,
+      skin: {
+        skin: '#b56743',
+        hair: '#3a2728',
+        top: '#253147',
+        legs: '#70452f',
+        shoes: '#65443a',
+        accent: '#d89a52',
+      },
+    },
+    {
+      hair: 4,
+      outfit: 2,
+      accessory: null,
+      skin: {
+        skin: '#d89a52',
+        hair: '#3a2728',
+        top: '#9d7f5f',
+        legs: '#3f4b63',
+        shoes: '#65443a',
+        accent: '#d6a04d',
+      },
+    },
+  ],
+  stf_buyer: [
+    {
+      hair: 2,
+      outfit: 0,
+      accessory: 0,
+      skin: {
+        skin: '#d89a52',
+        hair: '#3a2728',
+        top: '#3f4b63',
+        legs: '#4b302b',
+        shoes: '#70452f',
+        accent: '#d6a04d',
+      },
+    },
+    {
+      hair: 3,
+      outfit: 7,
+      accessory: 4,
+      skin: {
+        skin: '#d89a52',
+        hair: '#aa6a4c',
+        top: '#65758b',
+        legs: '#3a2728',
+        shoes: '#70452f',
+        accent: '#b56743',
+      },
+    },
+    {
+      hair: 4,
+      outfit: 2,
+      accessory: 4,
+      skin: {
+        skin: '#70452f',
+        hair: '#a86745',
+        top: '#3a2728',
+        legs: '#3f4b63',
+        shoes: '#65758b',
+        accent: '#b56743',
+      },
+    },
+  ],
+  stf_cs: [
+    {
+      hair: 5,
+      outfit: 7,
+      accessory: null,
+      skin: {
+        skin: '#d89a52',
+        hair: '#4b302b',
+        top: '#d68b69',
+        legs: '#3a2728',
+        shoes: '#fff8e7',
+        accent: '#b56743',
+      },
+    },
+    {
+      hair: 4,
+      outfit: 6,
+      accessory: 1,
+      skin: {
+        skin: '#70452f',
+        hair: '#3a2728',
+        top: '#c85c5c',
+        legs: '#3f4b63',
+        shoes: '#fff8e7',
+        accent: '#d89a52',
+      },
+    },
+    {
+      hair: 3,
+      outfit: 3,
+      accessory: 3,
+      skin: {
+        skin: '#d89a52',
+        hair: '#70452f',
+        top: '#c85c5c',
+        legs: '#3a2728',
+        shoes: '#3f4b63',
+        accent: '#b56743',
+      },
+    },
+  ],
+  stf_field: [
+    {
+      hair: 1,
+      outfit: 1,
+      accessory: 3,
+      skin: {
+        skin: '#d89a52',
+        hair: '#3a2728',
+        top: '#5a8fb7',
+        legs: '#4b302b',
+        shoes: '#70452f',
+        accent: '#2376b7',
+      },
+    },
+    {
+      hair: 6,
+      outfit: 0,
+      accessory: 1,
+      skin: {
+        skin: '#b56743',
+        hair: '#3a2728',
+        top: '#b8c8d6',
+        legs: '#253147',
+        shoes: '#fff8e7',
+        accent: '#2376b7',
+      },
+    },
+    {
+      hair: 3,
+      outfit: 7,
+      accessory: null,
+      skin: {
+        skin: '#d89a52',
+        hair: '#70452f',
+        top: '#57c3c2',
+        legs: '#3f4b63',
+        shoes: '#4b302b',
+        accent: '#2376b7',
+      },
+    },
+  ],
+  stf_order: [
+    {
+      hair: 3,
+      outfit: 3,
+      accessory: 3,
+      skin: {
+        skin: '#d89a52',
+        hair: '#3a2728',
+        top: '#b8c8d6',
+        legs: '#253147',
+        shoes: '#65758b',
+        accent: '#2376b7',
+      },
+    },
+    {
+      hair: 6,
+      outfit: 4,
+      accessory: 3,
+      skin: {
+        skin: '#b56743',
+        hair: '#3a2728',
+        top: '#b8c8d6',
+        legs: '#3f4b63',
+        shoes: '#70452f',
+        accent: '#2376b7',
+      },
+    },
+    {
+      hair: 1,
+      outfit: 5,
+      accessory: 1,
+      skin: {
+        skin: '#b56743',
+        hair: '#70452f',
+        top: '#b8c8d6',
+        legs: '#3f4b63',
+        shoes: '#a8adb4',
+        accent: '#2376b7',
+      },
+    },
+  ],
+  stf_rec: [
+    {
+      hair: 1,
+      outfit: 3,
+      accessory: null,
+      skin: {
+        skin: '#d89a52',
+        hair: '#3a2728',
+        top: '#b8c8d6',
+        legs: '#3f4b63',
+        shoes: '#fff8e7',
+        accent: '#b56743',
+      },
+    },
+    {
+      hair: 0,
+      outfit: 6,
+      accessory: 1,
+      skin: {
+        skin: '#a86745',
+        hair: '#3a2728',
+        top: '#a8adb4',
+        legs: '#253147',
+        shoes: '#4b302b',
+        accent: '#d89a52',
+      },
+    },
+    {
+      hair: 1,
+      outfit: 1,
+      accessory: 3,
+      skin: {
+        skin: '#b56743',
+        hair: '#70452f',
+        top: '#b9a7d7',
+        legs: '#65758b',
+        shoes: '#65443a',
+        accent: '#d6a04d',
+      },
+    },
+  ],
+  you: [
+    {
+      hair: 0,
+      outfit: 2,
+      accessory: 0,
+      skin: {
+        skin: '#b56743',
+        hair: '#3a2728',
+        top: '#2f8c8b',
+        legs: '#253147',
+        shoes: '#f1c8ae',
+        accent: '#57c3c2',
+      },
+    },
+    {
+      hair: 1,
+      outfit: 1,
+      accessory: 0,
+      skin: {
+        skin: '#d89a52',
+        hair: '#70452f',
+        top: '#2f8c8b',
+        legs: '#3f4b63',
+        shoes: '#253147',
+        accent: '#57c3c2',
+      },
+    },
+    {
+      hair: 6,
+      outfit: 0,
+      accessory: 4,
+      skin: {
+        skin: '#a86745',
+        hair: '#3a2728',
+        top: '#2f8c8b',
+        legs: '#70452f',
+        shoes: '#3f4b63',
+        accent: '#57c3c2',
+      },
+    },
+  ],
+}

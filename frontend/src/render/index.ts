@@ -24,10 +24,12 @@ import {
   type Actor,
   type CharacterSheet,
   type Drawable,
+  StrideTracker,
   characterSheet,
   depthSort,
   drawActor,
   drawWaitingBeam,
+  placement,
 } from './actors'
 import { RenderClock } from './clock'
 import {
@@ -43,6 +45,14 @@ export interface RendererOptions {
   canvas: HTMLCanvasElement
   /** The floor, as the kernel recorded it at genesis. */
   floor?: FloorData
+  /**
+   * The run's seed, which is what picks each person's appearance.
+   *
+   * Read here rather than sent anywhere: the kernel never learns which of a person's three
+   * appearances a run chose, so R9a's "affects no simulation state" holds because there is no
+   * channel by which it could, not because nothing writes to one.
+   */
+  runSeed?: number
   /** Where the actors are this frame. Read from the store, not from React state. */
   actors?: () => Actor[]
   /** Injectable so tests can supply a canvas without a DOM. */
@@ -71,6 +81,7 @@ export class Renderer {
 
   private canvas: HTMLCanvasElement
   private floor?: FloorData
+  private runSeed: number
   private actors: () => Actor[]
   private makeCanvas: () => HTMLCanvasElement
   private onFrame?: (tick: bigint, stalled: boolean) => void
@@ -83,6 +94,7 @@ export class Renderer {
   private lastFrameAt = 0
   private listeners: Array<() => void> = []
   private sheets: Map<string, CharacterSheet> | null = null
+  private readonly stride = new StrideTracker()
   private staticLayer: HTMLCanvasElement | null = null
   private propAtlas: HTMLCanvasElement | null = null
   private zoom = 1
@@ -91,6 +103,7 @@ export class Renderer {
   constructor(options: RendererOptions) {
     this.canvas = options.canvas
     this.floor = options.floor
+    this.runSeed = options.runSeed ?? 0
     this.actors = options.actors ?? (() => [])
     this.makeCanvas =
       options.makeCanvas ?? (() => document.createElement('canvas'))
@@ -155,6 +168,7 @@ export class Renderer {
     this.sheets = null
     this.staticLayer = null
     this.propAtlas = null
+    this.stride.clear()
   }
 
   /** Register a listener whose removal `dispose` will handle. */
@@ -244,12 +258,20 @@ export class Renderer {
     // and every run opens with the CEO flashing over nothing.
     const cache = this.floor === undefined ? null : this.sheets
     if (cache !== null) {
-      for (const actor of this.actors()) {
-        const sheet = characterSheet(actor.id, cache, this.makeCanvas)
+      const present = this.actors()
+      this.stride.retain(present.map((actor) => actor.id))
+
+      for (const actor of present) {
+        this.stride.advance(actor)
+        const frame = this.stride.frame(actor)
+        const sheet = characterSheet(actor.id, this.runSeed, cache, this.makeCanvas)
         drawables.push({
-          depth: Math.round((actor.yMilli * TILE) / 1000),
+          // The row their feet are on, not the top of their cell. A 64-pixel figure on a
+          // 32-pixel tile overhangs the tile above it, and sorting by the top would put a
+          // person behind furniture they are standing well in front of.
+          depth: placement(actor).feet,
           draw: (target) => {
-            drawActor(target, actor, sheet)
+            drawActor(target, actor, sheet, frame)
             if (actor.waiting === true) drawWaitingBeam(target, actor)
           },
         })

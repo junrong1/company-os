@@ -16,26 +16,19 @@ function wallMsFor(ticks: bigint): number {
   return Number((ticks * TICKS_PER_WALL_MS_DENOMINATOR) / TICKS_PER_WALL_MS_NUMERATOR) + 1
 }
 import { Renderer, resetSheetCounter, sheetsGenerated } from '../src/render/index'
-import {
-  ART,
-  BODY,
-  CHARACTER_PALETTE,
-  LEGS,
-  LONG_HAIR,
-  PROPS,
-  OUTLINE_GLYPHS,
-  PROP_PALETTE,
-} from '../src/render/sprites'
+import { ART, PROPS, OUTLINE_GLYPHS, PROP_PALETTE } from '../src/render/sprites'
 import {
   DIRS,
   FRAMES,
   SPRITE_HEIGHT,
   SPRITE_WIDTH,
   BEAM_COLOUR,
+  STRIDE_MILLI,
+  StrideTracker,
+  WALK_CYCLE,
   characterSheet,
   depthSort,
   drawWaitingBeam,
-  walkFrame,
 } from '../src/render/actors'
 import {
   type FloorData,
@@ -456,41 +449,6 @@ describe('the ported sprite grids', () => {
     expect(Object.values(ART)).not.toContain(RESERVED_BEAM)
   })
 
-  it('has every body 14 rows of 10 columns, in the character palette', () => {
-    for (const [name, rows] of Object.entries(BODY)) {
-      expect(rows.length, `${name} row count`).toBe(14)
-      for (const [index, row] of rows.entries()) {
-        expect(row.length, `${name} row ${index} width`).toBe(10)
-        for (const glyph of row) {
-          expect(CHARACTER_PALETTE.has(glyph), `${name} row ${index} glyph ${glyph}`).toBe(true)
-        }
-      }
-    }
-  })
-
-  it('has three walk frames of two-row legs', () => {
-    expect(LEGS.length).toBe(3)
-    for (const [frame, rows] of LEGS.entries()) {
-      expect(rows.length, `legs frame ${frame}`).toBe(2)
-      for (const row of rows) {
-        expect(row.length).toBe(10)
-        for (const glyph of row) expect(CHARACTER_PALETTE.has(glyph)).toBe(true)
-      }
-    }
-  })
-
-  it('has every long-hair overlay 14 rows of 10 columns', () => {
-    for (const [name, rows] of Object.entries(LONG_HAIR)) {
-      expect(rows.length, `${name} row count`).toBe(14)
-      for (const row of rows) expect(row.length).toBe(10)
-    }
-  })
-
-  it('composes a 16-row character from 14 body rows and 2 leg rows', () => {
-    const body = Object.values(BODY)[0]
-    expect(body.length + LEGS[0].length).toBe(16)
-  })
-
   it('maps every prop glyph except transparent to a colour', () => {
     for (const glyph of PROP_PALETTE) {
       if (glyph === '.') continue
@@ -504,12 +462,6 @@ describe('the ported sprite grids', () => {
     // grid deleted by accident, which is the only reason to count them.
     expect(Object.keys(PROPS)).toHaveLength(16)
 
-    const total =
-      Object.keys(PROPS).length +
-      Object.keys(BODY).length +
-      LEGS.length +
-      Object.keys(LONG_HAIR).length
-    expect(total).toBe(24)
   })
 })
 
@@ -536,6 +488,11 @@ function recordingCanvas(): { canvas: HTMLCanvasElement; calls: string[] } {
     clearRect: () => calls.push('clearRect'),
     drawImage: (...args: unknown[]) => calls.push(`drawImage:${args.length}`),
     createRadialGradient: () => ({ addColorStop: () => undefined }),
+    createImageData: (width: number, height: number) => {
+      calls.push('createImageData')
+      return { width, height, data: new Uint8ClampedArray(width * height * 4) }
+    },
+    putImageData: () => calls.push('putImageData'),
     save: () => calls.push('save'),
     restore: () => calls.push('restore'),
     scale: (x: number) => calls.push(`scale:${x}`),
@@ -603,19 +560,6 @@ describe('the depth sort', () => {
   })
 })
 
-describe('the walk cycle', () => {
-  it('stands still on frame zero', () => {
-    expect(walkFrame({ ...ACTOR, moving: false, animTicks: 99 })).toBe(0)
-  })
-
-  it('alternates feet rather than repeating one frame', () => {
-    const frames = [0, 7, 14, 21].map((animTicks) =>
-      walkFrame({ ...ACTOR, moving: true, animTicks }),
-    )
-    expect(frames).toEqual([0, 1, 0, 2])
-  })
-})
-
 const ACTOR = {
   id: 'stf_cs',
   xMilli: 10_000,
@@ -630,28 +574,94 @@ describe('character sheets', () => {
     const cache = new Map()
     const make = () => recordingCanvas().canvas
 
-    const first = characterSheet('stf_cs', cache, make)
-    const second = characterSheet('stf_cs', cache, make)
+    const first = characterSheet('stf_cs', 1, cache, make)
+    const second = characterSheet('stf_cs', 1, cache, make)
 
     expect(second).toBe(first)
     expect(cache.size).toBe(1)
   })
 
-  it('sizes a sheet as four facings by three frames', () => {
+  it('sizes a sheet as four facings by four frames', () => {
     const cache = new Map()
-    const sheet = characterSheet('dir_sales', cache, () => recordingCanvas().canvas)
+    const sheet = characterSheet('dir_sales', 1, cache, () => recordingCanvas().canvas)
 
     expect(sheet.canvas.width).toBe(SPRITE_WIDTH * FRAMES)
     expect(sheet.canvas.height).toBe(SPRITE_HEIGHT * DIRS.length)
   })
 
-  it('derives a different palette for different people', () => {
+  it('keys the cache on the appearance, not only on the person', () => {
+    // A resync into a different run picks a different letter for the same id. An id-only key
+    // would serve the previous run's face out of the cache and there would be no symptom
+    // beyond a person quietly not changing.
     const cache = new Map()
     const make = () => recordingCanvas().canvas
-    const a = characterSheet('stf_cs', cache, make).palette
-    const b = characterSheet('dir_sales', cache, make).palette
 
-    expect(JSON.stringify(a)).not.toBe(JSON.stringify(b))
+    characterSheet('dir_sales', 1, cache, make)
+    characterSheet('dir_sales', 2, cache, make)
+    characterSheet('dir_sales', 3, cache, make)
+
+    expect(cache.size).toBeGreaterThan(1)
+  })
+
+  it('writes a sheet in one call rather than one per pixel', () => {
+    // 192×256 is 49,152 pixels. The prototype's paint-per-pixel was affordable at 1,920 and
+    // is not here, and the only way this regresses is quietly.
+    const recording = recordingCanvas()
+    characterSheet('stf_cs', 1, new Map(), () => recording.canvas)
+
+    expect(recording.calls.filter((call) => call === 'putImageData')).toHaveLength(1)
+    expect(recording.calls.filter((call) => call === 'fillRect')).toHaveLength(0)
+  })
+})
+
+describe('the stride', () => {
+  const walking = { ...ACTOR, moving: true }
+
+  it('stands still on frame zero', () => {
+    const stride = new StrideTracker()
+    expect(stride.frame({ ...ACTOR, moving: false })).toBe(0)
+  })
+
+  it('alternates feet as a person covers ground', () => {
+    // Keyed to distance rather than to elapsed ticks, which is what lets the CEO at 144
+    // milli-tiles a tick and staff at about 78 share one rule without either skating.
+    const stride = new StrideTracker()
+    const frames: number[] = []
+
+    let x = walking.xMilli
+    for (let step = 0; step < 8; step += 1) {
+      stride.advance({ ...walking, xMilli: x })
+      frames.push(stride.frame({ ...walking, xMilli: x }))
+      x += STRIDE_MILLI
+    }
+
+    expect(new Set(frames).size).toBeGreaterThan(1)
+    expect(frames).not.toContain(0)
+  })
+
+  it('does not spin the legs through a cycle when somebody is teleported', () => {
+    // A resync, a fork or a seeded spawn moves a person across the floor in one frame. That
+    // is not a walk, and counting it as one runs the whole cycle in a single frame.
+    const stride = new StrideTracker()
+    stride.advance(walking)
+    stride.advance({ ...walking, xMilli: walking.xMilli + 400_000 })
+
+    expect(stride.frame(walking)).toBe(WALK_CYCLE[0])
+  })
+
+  it('forgets anyone who has left the floor', () => {
+    // A Map keyed by id that nothing removes from is the same leak the renderer's lifecycle
+    // exists to prevent, in a different shape.
+    const stride = new StrideTracker()
+    stride.advance(walking)
+    stride.advance({ ...walking, id: 'dir_hr' })
+    expect(stride.size).toBe(0)
+
+    stride.advance({ ...walking, xMilli: walking.xMilli + 100 })
+    expect(stride.size).toBe(1)
+
+    stride.retain([])
+    expect(stride.size).toBe(0)
   })
 })
 

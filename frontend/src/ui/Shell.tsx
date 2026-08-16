@@ -113,6 +113,10 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
     const renderer = new Renderer({
       canvas,
       floor,
+      // Which of each person's three appearances this run shows. Read here and sent nowhere:
+      // the kernel never learns the answer, so a cosmetic choice cannot reach the simulation
+      // because there is no path by which it could.
+      runSeed: runState().genesis?.runSeed ?? 0,
       // Read straight from the store inside the frame callback. No subscription, because a
       // notification would only tell the loop something its next frame was going to read
       // anyway.

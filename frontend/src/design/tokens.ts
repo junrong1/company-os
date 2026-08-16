@@ -56,12 +56,18 @@ export const PAL = {
   yueyingbai: '#2d3d52', // the strongest neutral — glyph structure, decision pressure
   xinghui: '#4a6b85', // 星蓝, deepened — secondary labels and inactive states
   text: '#1c2938', // 鸽蓝 — primary text and strong borders
+  // The other dove blue. `VISUAL_DESIGN.md` §2 gives character outlines and strong structural
+  // edges #253147, and all 33 approved candidates are drawn with it, so it is not a variant
+  // of the text colour — it is the ink the art is drawn in, and the two are separate because
+  // they answer to different documents and one of them is already in shipped pixels.
+  outline: '#253147',
   textMuted: '#475164', // 鲸鱼灰 — secondary text
   textFaint: '#5c677a', // 鲸鱼灰, lifted — small labels, still readable
 
   // Semantic slots.
   tianlan: '#1677b3', // 天蓝 — primary action, selection, focus
   shilv: '#57c3c2', // 石绿 — the CEO's in-world signal, and nothing in the chrome
+  shilv2: '#2f8c8b', // 石绿, deepened — the CEO's clothing, as their candidates carry it
   fenlv: '#83cbac', // 粉绿 — working, active team
   cuilv: '#12775e', // 竹绿, deepened for text — a favourable delta
   zhuhong: '#c8402a', // 朱红, deepened for text — an unfavourable delta

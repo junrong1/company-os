@@ -11,6 +11,22 @@ import { ConversionError, cellsFrom, gridFromPixels } from '../scripts/grid-from
 // @ts-expect-error — same.
 import { extract } from '../scripts/palette-from-candidate.mjs'
 
+import { CAST } from '../src/render/cast/manifests'
+import {
+  appearanceFor,
+  derivedManifest,
+  manifestFor,
+  sheetKey,
+} from '../src/render/cast/appearance'
+import {
+  LIBRARY_SIZES,
+  SHEET_HEIGHT,
+  SHEET_ROWS,
+  SHEET_WIDTH,
+  composeCell,
+  composeSheet,
+  resolve as resolvePalette,
+} from '../src/render/cast/compose'
 import {
   CAST_PALETTE,
   CELL_HEIGHT,
@@ -22,7 +38,7 @@ import {
   VIEWS,
   WALK_CYCLE,
 } from '../src/render/cast/slots'
-import { RESERVED_BEAM } from '../src/design/tokens'
+import { PAL, RESERVED_BEAM } from '../src/design/tokens'
 
 /**
  * The seam between how the cast is authored and how it is committed.
@@ -280,5 +296,244 @@ describe('extracting a palette from a candidate', () => {
       const { hair } = extract(readPng(candidate(`${name}.png`)), name)
       expect(hair, `${name}`).not.toBe('#253147')
     }
+  })
+})
+
+// =========================================================================
+// Composition (U11), casting (U12) and appearance (U13)
+// =========================================================================
+
+describe('composing a person', () => {
+  const someone = manifestFor('dir_sales', 1)
+
+  it('builds a sheet of four facings by four frames', () => {
+    const data = composeSheet(someone)
+    expect(SHEET_WIDTH).toBe(CELL_WIDTH * 4)
+    expect(SHEET_HEIGHT).toBe(CELL_HEIGHT * 4)
+    expect(data).toHaveLength(SHEET_WIDTH * SHEET_HEIGHT * 4)
+  })
+
+  it('leaves every pixel fully opaque or fully absent', () => {
+    // No smoothing anywhere in the pipeline. R13's crispness rule is not something the
+    // renderer switches off at the end — it has to be true of the art the whole way through.
+    const data = composeSheet(someone)
+    for (let i = 3; i < data.length; i += 4) {
+      expect(data[i] === 0 || data[i] === 255, `alpha ${data[i]} at ${i}`).toBe(true)
+    }
+  })
+
+  it('paints only colours the person was cast in', () => {
+    // A sentinel surviving into output means a slot nothing resolved, which would ship as a
+    // person with a bright red arm.
+    const palette = new Set(Object.values(resolvePalette(someone.skin)))
+    const data = composeSheet(someone)
+
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i + 3] === 0) continue
+      const hex = `#${data[i].toString(16).padStart(2, '0')}${data[i + 1]
+        .toString(16)
+        .padStart(2, '0')}${data[i + 2].toString(16).padStart(2, '0')}`
+      expect(palette.has(hex), `${hex} is not in this person's palette`).toBe(true)
+    }
+  })
+
+  it('mirrors the left row from the right rather than authoring it twice', () => {
+    const data = composeSheet(someone)
+    const at = (row: number, x: number, y: number): string =>
+      [0, 1, 2, 3]
+        .map((c) => data[((row * CELL_HEIGHT + y) * SHEET_WIDTH + x) * 4 + c])
+        .join(',')
+
+    const left = SHEET_ROWS.findIndex((row) => row.facing === 'left')
+    const right = SHEET_ROWS.findIndex((row) => row.facing === 'right')
+
+    for (let y = 0; y < CELL_HEIGHT; y += 7) {
+      for (let x = 0; x < CELL_WIDTH; x += 5) {
+        expect(at(left, x, y), `${x},${y}`).toBe(at(right, CELL_WIDTH - 1 - x, y))
+      }
+    }
+  })
+
+  it('layers clothes over the body and hair over the clothes', () => {
+    // The order things sit in front of each other on a real person. Getting it wrong is the
+    // failure that looks nearly right: a shirt over a face reads as a bug, but hair under a
+    // collar just reads as a slightly odd haircut.
+    const bare = { ...someone, outfit: 0, accessory: null }
+    const dressed = { ...bare, outfit: 1 }
+
+    const flatten = (cell: (string | null)[][]): string =>
+      cell.map((row) => row.map((slot) => slot ?? '.').join('')).join('|')
+
+    expect(flatten(composeCell(bare, 'down', 0))).not.toBe(
+      flatten(composeCell(dressed, 'down', 0)),
+    )
+  })
+
+  it('plants every frame’s feet on the same row', () => {
+    // The invariant the tile anchor and the depth sort both read. If one frame's feet were a
+    // pixel high the person would bob against the floor as they walked.
+    for (const view of VIEWS) {
+      for (let frame = 0; frame < 4; frame += 1) {
+        const cell = composeCell(someone, view, frame)
+        const lowest = cell.reduce(
+          (deepest, row, y) => (row.some((slot) => slot !== null) ? y : deepest),
+          -1,
+        )
+        expect(lowest, `${view} frame ${frame}`).toBe(CELL_HEIGHT - 1)
+      }
+    }
+  })
+
+  it('resolves seventeen slots from six colours, deriving rather than inventing', () => {
+    const palette = resolvePalette(someone.skin)
+    expect(palette.skin).toBe(someone.skin.skin)
+    expect(palette.top).toBe(someone.skin.top)
+    // A shade is the same cloth in less light, so it is darker than its base and not equal.
+    expect(palette.topShade).not.toBe(palette.top)
+    expect(palette.outline).toBe(PAL.outline)
+  })
+})
+
+describe('the cast', () => {
+  const ROSTER_IDS = [
+    'you',
+    'dir_sales',
+    'stf_order',
+    'stf_field',
+    'dir_admin',
+    'stf_ap',
+    'stf_buyer',
+    'dir_cs',
+    'stf_cs',
+    'dir_hr',
+    'stf_rec',
+  ]
+
+  it('carries three appearances for each of the eleven identities', () => {
+    expect(Object.keys(CAST).sort()).toEqual([...ROSTER_IDS].sort())
+    for (const [id, appearances] of Object.entries(CAST)) {
+      expect(appearances, id).toHaveLength(3)
+    }
+  })
+
+  it('makes A, B and C of one person differ in at least two features', () => {
+    // The redesign's success criterion: recognisably the same role, materially different
+    // person. One changed accessory is a costume note, not a casting.
+    for (const [id, group] of Object.entries(CAST)) {
+      for (let i = 0; i < group.length; i += 1) {
+        for (let j = i + 1; j < group.length; j += 1) {
+          const a = group[i]
+          const b = group[j]
+          let differences = 0
+          if (a.hair !== b.hair) differences += 1
+          if (a.outfit !== b.outfit) differences += 1
+          if (a.accessory !== b.accessory) differences += 1
+          if (a.skin.skin !== b.skin.skin) differences += 1
+          if (a.skin.top !== b.skin.top) differences += 1
+          expect(differences, `${id} ${i} vs ${j}`).toBeGreaterThanOrEqual(2)
+        }
+      }
+    }
+  })
+
+  it('references only shapes the libraries actually have', () => {
+    for (const [id, group] of Object.entries(CAST)) {
+      for (const manifest of group) {
+        expect(manifest.hair, id).toBeLessThan(LIBRARY_SIZES.hair)
+        expect(manifest.outfit, id).toBeLessThan(LIBRARY_SIZES.outfits)
+        if (manifest.accessory !== null) {
+          expect(manifest.accessory, id).toBeLessThan(LIBRARY_SIZES.accessories)
+        }
+      }
+    }
+  })
+
+  it('casts nobody in the reserved amber', () => {
+    for (const [id, group] of Object.entries(CAST)) {
+      for (const manifest of group) {
+        expect(Object.values(manifest.skin), id).not.toContain(RESERVED_BEAM)
+      }
+    }
+  })
+
+  it('gives the player a top no member of staff wears, in every appearance', () => {
+    const staff = ROSTER_IDS.filter((id) => id !== 'you')
+    for (const ceo of CAST.you) {
+      for (const id of staff) {
+        for (const other of CAST[id]) {
+          expect(other.skin.top, id).not.toBe(ceo.skin.top)
+        }
+      }
+    }
+  })
+})
+
+describe('appearance', () => {
+  it('is stable for one run and varies across runs', () => {
+    for (const seed of [0, 1, 7, 4242, 2 ** 31 - 1]) {
+      expect(appearanceFor(seed, 'dir_sales')).toBe(appearanceFor(seed, 'dir_sales'))
+      expect(appearanceFor(seed, 'dir_sales')).toBeGreaterThanOrEqual(0)
+      expect(appearanceFor(seed, 'dir_sales')).toBeLessThan(3)
+    }
+
+    const across = new Set([0, 1, 2, 3, 4, 5, 6, 7].map((seed) => appearanceFor(seed, 'dir_hr')))
+    expect(across.size).toBeGreaterThan(1)
+  })
+
+  it('chooses per person rather than per run', () => {
+    // Two identities in one run may independently land on different letters. If they moved
+    // together the seed would be picking one cast rather than eleven appearances.
+    const seeds = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    const differ = seeds.some(
+      (seed) => appearanceFor(seed, 'dir_sales') !== appearanceFor(seed, 'stf_cs'),
+    )
+    expect(differ).toBe(true)
+  })
+
+  it('keys the sheet cache on the appearance for a lead and on the id for anyone else', () => {
+    expect(sheetKey('dir_sales', 1)).not.toBe(sheetKey('dir_sales', 2))
+    // A procedural coworker has one look, so their key has nothing to vary on.
+    expect(sheetKey('temp_042', 1)).toBe(sheetKey('temp_042', 2))
+  })
+
+  it('dresses anyone the casting board never met, from the same libraries', () => {
+    // R9: procedural coworkers are not *compatible* with the leads, they are the same rig
+    // wearing a manifest that was derived instead of cast.
+    for (const id of ['temp_001', 'temp_002', 'contractor', 'visitor_9']) {
+      const manifest = derivedManifest(id)
+      expect(manifest.hair).toBeLessThan(LIBRARY_SIZES.hair)
+      expect(manifest.outfit).toBeLessThan(LIBRARY_SIZES.outfits)
+      expect(Object.values(manifest.skin)).not.toContain(RESERVED_BEAM)
+
+      const data = composeSheet(manifest)
+      expect(data).toHaveLength(SHEET_WIDTH * SHEET_HEIGHT * 4)
+    }
+  })
+
+  it('derives the same person from the same id, every time', () => {
+    expect(derivedManifest('temp_001')).toEqual(derivedManifest('temp_001'))
+  })
+
+  it('makes two adjacent ids differ in more than one feature', () => {
+    // The coprime-stride trick. Without it two ids one character apart differ in exactly one
+    // slot and the background reads as a row of near-clones.
+    const a = derivedManifest('temp_001')
+    const b = derivedManifest('temp_002')
+    let differences = 0
+    if (a.hair !== b.hair) differences += 1
+    if (a.outfit !== b.outfit) differences += 1
+    if (a.skin.skin !== b.skin.skin) differences += 1
+    if (a.skin.top !== b.skin.top) differences += 1
+    expect(differences).toBeGreaterThanOrEqual(2)
+  })
+
+  it('never sends an appearance anywhere', () => {
+    // R9a holds because there is no channel, not because nothing currently writes to one.
+    const gateway = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '../src/net/gateway.ts'),
+      'utf8',
+    )
+    expect(gateway).not.toContain('appearance')
+    expect(gateway).not.toContain('manifest')
   })
 })
