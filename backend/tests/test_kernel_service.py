@@ -9,14 +9,21 @@ looks like a simulation bug. So each is asserted directly rather than assumed fr
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import threading
 import time
 
+import anyio.to_thread
 import pytest
 
+from contracts import canonical
 from contracts.envelope import EventKind
+from contracts.grpc import kernel_pb2
 from kernel import lease as lease_module
 from kernel.loop import KernelRuntime, RunLoop
 from kernel.store import LogStore, make_engine
+from simcore import compare as branching
+from simcore import snapshot as snapshotting
 from simcore import step as sim
 from simcore import time as simtime
 
@@ -542,3 +549,441 @@ async def test_the_loop_stops_at_a_terminal_run(runtime) -> None:
     ended_at = run.state.tick
     await asyncio.sleep(0.1)
     assert run.state.tick == ended_at
+
+
+# =========================================================================
+# One lock across the command path and the tick (R13)
+# =========================================================================
+#
+# A torn read is silent by construction, which is why these tests are written the way they are.
+# The failure this unit closes was first seen as an intermittent `SnapshotInvalid` in
+# `test_compare.py` — a test that passes five times out of five in isolation and fails only
+# under suite-level thread contention. Waiting for that window to open by luck makes a test
+# that neither fails reliably before a fix nor proves anything after one, so the window is
+# opened deliberately instead.
+
+
+#: A run long enough that a comparison's branches are cheap. A branch runs to the first
+#: downstream checkpoint or to the run's horizon, whichever comes first, and `wi_ap_map` has
+#: exactly one checkpoint — so the horizon is what sizes every branch. 1200 ticks puts the
+#: comparison at about 30ms instead of 310ms, which is the difference between a two-second test
+#: and a twenty-second one. It changes nothing about the window being tested.
+SHORT_HORIZON_TICKS = 1200
+
+#: The command rate the clock is measured under, and the window it is measured over.
+COMMANDS_PER_SECOND = 40
+LOAD_WINDOW_SECONDS = 2.0
+LOAD_RATE = 3
+
+#: Measured on the build *before* this lock existed — 2026-08-16, macOS/arm64, SQLite store,
+#: one run at rate 3 for a two-second window. Nine samples at 40 cheap commands a second:
+#:
+#:     observed ticks / nominal ticks      902, 902, 902, 902, 906, 906, 906, 906, 907 permille
+#:     run-reported achieved multiplier    1000 permille, every sample
+#:     sim_time_lag_ticks over the window  0, every sample
+#:
+#: And three samples of the same window under back-to-back comparisons, which is the load that
+#: matters because a comparison is the one command that costs more than a quantum:
+#:
+#:     observed ticks / nominal ticks      944, 947, 950 permille
+#:     sim_time_lag_ticks over the window  0, every sample
+#:
+#: The floors sit about 5% under the lower of those. **They can fail, and it was checked rather
+#: than assumed.** Running the comparison handler under the lock instead of against a copy taken
+#: under it — the obvious implementation of R13, and the one this file's design note rejects —
+#: measures 779, 782, 784 permille on the same window. 850 separates the two designs.
+#:
+#: Two things the floors are *not* sensitive to on this machine, stated so nobody reads more
+#: into a pass than is there. Holding the lock across the writer's append measured 878-902,
+#: indistinguishable from shipped, because a local SQLite append is faster than the wake
+#: interval; and a 2ms artificial hold per command measured 902-906, because at rate 3 the tick
+#: loop wants the lock for about 0.05ms in every 50ms and simply does not collide often enough
+#: to notice. What this floor catches is a *long* hold, which is the one that stops the clock.
+#:
+#: The intrinsic ~95 permille shortfall is not the command load. The same window with no
+#: commands at all measured 908-910 permille: it is `int(elapsed * ...)` in `_run_loop`
+#: truncating a fraction of a tick away at every wake, and it is a separate defect from this
+#: one. Reported, not fixed here.
+#:
+#: **U5 measures against this baseline**, per its own scenario: the tick count below is the one
+#: it reuses.
+OBSERVED_PERMILLE_FLOOR = 850
+ACHIEVED_PERMILLE_FLOOR = 950
+LAG_TICKS_BOUND = 120
+
+
+def _blocked_at_a_decision(runtime, horizon: int = SHORT_HORIZON_TICKS):
+    """A run stopped at an open checkpoint, which is what a comparison needs to be legal."""
+    runtime.create_run(RUN, SEED, horizon_tick=horizon)
+    run = runtime.runs[RUN]
+    runtime.apply_command(
+        RUN,
+        kernel_pb2.ASSIGN_WORK,
+        canonical.encode({"item": "wi_ap_map", "person": "stf_ap", "via_manager": False}),
+    )
+    while run.state.items["wi_ap_map"].status != sim.STATUS_BLOCKED:
+        runtime._advance(run, 1)
+    return run
+
+
+def _comparison_payload(run) -> bytes:
+    return canonical.encode(
+        {
+            "item": "wi_ap_map",
+            "cp_index": 0,
+            "person": "stf_ap",
+            "at_tick": run.state.tick,
+            "in_person": True,
+        }
+    )
+
+
+@contextlib.contextmanager
+def _a_tick_landing_inside_the_next_capture(runtime, run, wait: float = 0.15):
+    """Drop one real tick between the two halves of the next `snapshot.capture`.
+
+    `capture` reads the state twice — once to hash it, once to encode it — so a tick landing
+    between those two reads produces a snapshot whose recorded hash describes a state the
+    encoded bytes no longer contain. That is the torn read, and it is worth stating exactly
+    where it surfaces: **`capture` does not raise**, so `_capture_of`'s retry never sees it.
+    It surfaces later, in `snapshot.restore`, as `SnapshotInvalid` — which nothing catches.
+
+    The tick is run through `runtime._advance` on a second thread, which is the deployed
+    topology (the tick loop on an anyio worker, the command on Starlette's). With the lock in
+    place that thread blocks, the wait below times out, and the tick lands a moment later
+    against a state nobody is photographing. Without it the tick lands immediately.
+
+    `to_wire` is patched rather than `capture` itself because the hash has already been taken
+    by the time `to_wire` is called: that is precisely the instant the tear needs.
+    """
+    released = threading.Event()
+    landed = threading.Event()
+    armed = [True]
+    original = snapshotting.to_wire
+
+    def tick_once() -> None:
+        if released.wait(5.0):
+            runtime._advance(run, 1)
+            landed.set()
+
+    def hashed_but_not_yet_encoded(state):
+        if armed[0]:
+            armed[0] = False
+            released.set()
+            landed.wait(wait)
+        return original(state)
+
+    thread = threading.Thread(target=tick_once, name="a-tick-inside-a-capture")
+    thread.start()
+    snapshotting.to_wire = hashed_but_not_yet_encoded
+    try:
+        yield landed
+    finally:
+        snapshotting.to_wire = original
+        released.set()
+        thread.join(timeout=5)
+
+
+async def test_a_command_never_observes_a_partially_advanced_state(runtime) -> None:
+    """Covers M63. The command path and the tick can no longer overlap on run state.
+
+    Issued repeatedly, and with a tick forced into the middle of every one of them — a
+    comparison is the widest window in the system because it walks the whole state twice, so
+    it is the command this is asserted through.
+
+    Before the lock this raised `SnapshotInvalid` on every iteration, with the same sentence
+    the flaking compare test reports: "snapshot for branch at sequence 0 does not reproduce its
+    own state hash". The retry that was the standing mitigation does not close it, because the
+    tear is detected on restore rather than on capture.
+    """
+    run = _blocked_at_a_decision(runtime)
+    tick_at_start = run.state.tick
+
+    for attempt in range(8):
+        with _a_tick_landing_inside_the_next_capture(runtime, run):
+            envelopes = runtime.apply_command(
+                RUN, kernel_pb2.COMPARE_OPTIONS, _comparison_payload(run)
+            )
+        assert len(envelopes) == 1, f"attempt {attempt} produced {len(envelopes)} events"
+
+    # And the ticks really did land, so this is not passing on a stationary run.
+    assert run.state.tick >= tick_at_start + 8
+
+
+async def test_a_capture_concurrent_with_a_tick_is_self_consistent_with_no_retry(
+    runtime, monkeypatch
+) -> None:
+    """The same property with the retry taken away, so the lock is what is being credited.
+
+    `_capture_of` retries a torn capture three times before refusing. Pinned to one attempt,
+    no retry can fire — so a comparison that still succeeds against a tick landing mid-capture
+    succeeded because the capture was never torn, which is the whole claim.
+
+    This is also the scenario's "on every attempt": pinning the attempt count is a stronger
+    statement than counting retries would be, because it removes the recovery rather than
+    observing that it went unused.
+    """
+    monkeypatch.setattr(branching, "CAPTURE_ATTEMPTS", 1)
+    run = _blocked_at_a_decision(runtime)
+
+    for attempt in range(4):
+        with _a_tick_landing_inside_the_next_capture(runtime, run):
+            envelopes = runtime.apply_command(
+                RUN, kernel_pb2.COMPARE_OPTIONS, _comparison_payload(run)
+            )
+        [record] = envelopes
+        # The tick on the event and the tick the branches forked at are the same instant. They
+        # are read under the lock together, so they cannot disagree.
+        assert record.decoded_payload()["tick"] == record.tick, f"attempt {attempt}"
+
+
+async def _clock_under(runtime, run, issue_one, *, paced: bool) -> tuple[int, int, int, int]:
+    """Run one measurement window and return (observed, achieved, lag, commands).
+
+    `issue_one` goes through a worker thread, because that is where Starlette runs the command
+    route: the whole point of the measurement is that two threads contend for one run.
+    """
+    delivered = 0
+
+    def one() -> None:
+        nonlocal delivered
+        issue_one()
+        delivered += 1
+
+    tick_before = run.state.tick
+    requested_before, achieved_before = run.requested_ticks, run.achieved_ticks
+    lag_before = run.lag_ticks
+
+    started = time.monotonic()
+    interval = 1.0 / COMMANDS_PER_SECOND
+    due = started
+    while time.monotonic() - started < LOAD_WINDOW_SECONDS:
+        await anyio.to_thread.run_sync(one)
+        if paced:
+            due += interval
+            remaining = due - time.monotonic()
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+
+    elapsed = time.monotonic() - started
+    requested = run.requested_ticks - requested_before
+    nominal = elapsed * simtime.TICKS_PER_WALL_SECOND_AT_BASE_RATE * LOAD_RATE
+
+    return (
+        int((run.state.tick - tick_before) * 1000 / nominal),
+        int((run.achieved_ticks - achieved_before) * 1000 / requested) if requested else 1000,
+        run.lag_ticks - lag_before,
+        delivered,
+    )
+
+
+async def test_the_clock_keeps_its_multiplier_and_its_lag_under_command_load(runtime) -> None:
+    """Verification for this unit: the tick-lag metric is unchanged under command load.
+
+    Every number asserted here was measured on the build before the lock landed — see
+    `OBSERVED_PERMILLE_FLOOR` above for the samples, the machine, and the wrong design that
+    breaches the floor.
+
+    Two loads, because they fail differently. The paced rate of cheap commands is the plan's
+    "stated command rate" and it is what a person clicking produces. Back-to-back comparisons
+    are what actually moves the figure: a comparison is the only command costing more than a
+    quantum, so it is the only one whose handler could hold the lock long enough to matter.
+
+    Three figures, because the run's own reported multiplier is the least sensitive of them:
+    `_run_loop` only records a shortfall once the clamp binds, so it reads 1000 through a stall
+    of up to three wall seconds at this rate. Observed ticks against nominal is what moves.
+    """
+    runtime.create_run(RUN, SEED, horizon_tick=simtime.TICKS_PER_SIM_DAY * 200)
+    run = runtime.runs[RUN]
+    runtime.apply_command(
+        RUN,
+        kernel_pb2.ASSIGN_WORK,
+        canonical.encode({"item": "wi_ap_map", "person": "stf_ap", "via_manager": False}),
+    )
+    while run.state.items["wi_ap_map"].status != sim.STATUS_BLOCKED:
+        runtime._advance(run, 1)
+
+    runtime.set_rate(RUN, LOAD_RATE)
+    runtime.ensure_loop(RUN)
+    await asyncio.sleep(0.4)  # let the loop reach its steady cadence before measuring
+
+    loads = {
+        f"{COMMANDS_PER_SECOND} cheap commands a second": (
+            lambda: runtime.apply_command(
+                RUN,
+                kernel_pb2.SUBMIT_CEO_INPUT,
+                canonical.encode({"bitmask": 1, "at_tick": run.state.tick + 30}),
+            ),
+            True,
+        ),
+        "back-to-back comparisons": (
+            lambda: runtime.apply_command(
+                RUN, kernel_pb2.COMPARE_OPTIONS, _comparison_payload(run)
+            ),
+            False,
+        ),
+    }
+
+    for description, (issue_one, paced) in loads.items():
+        observed, achieved, lag, delivered = await _clock_under(
+            runtime, run, issue_one, paced=paced
+        )
+
+        assert delivered > 0, f"no load was delivered for {description}"
+        assert observed >= OBSERVED_PERMILLE_FLOOR, (
+            f"under {description} the clock achieved {observed} permille of nominal; the "
+            f"floor is {OBSERVED_PERMILLE_FLOOR} and the measurement before the lock was "
+            "902-907 for the first load and 944-950 for the second"
+        )
+        assert achieved >= ACHIEVED_PERMILLE_FLOOR, (
+            f"under {description} the run reports {achieved} permille achieved; measured 1000"
+        )
+        assert lag <= LAG_TICKS_BOUND, (
+            f"under {description} sim-time lag grew by {lag} ticks; measured 0"
+        )
+
+
+async def test_a_command_rejected_under_the_lock_mutates_nothing_and_releases(runtime) -> None:
+    """A refusal is the path that leaves a lock held, if anything does.
+
+    Both halves matter. Nothing moves, which is what "mutates nothing" means concretely — and
+    the lock comes back, which is what stops one bad command from stopping the clock forever.
+    """
+    from simcore import hashing
+
+    run = _blocked_at_a_decision(runtime)
+    before = hashing.state_hash(sim.snapshot(run.state)).overall
+
+    with pytest.raises(sim.CommandRejected):
+        # Tagged in the past, which `submit_ceo_input` refuses: an input for a tick already
+        # gone cannot be applied without rewriting history.
+        runtime.apply_command(
+            RUN,
+            kernel_pb2.SUBMIT_CEO_INPUT,
+            canonical.encode({"bitmask": 1, "at_tick": 0}),
+        )
+
+    assert hashing.state_hash(sim.snapshot(run.state)).overall == before
+
+    assert not run.lock.locked(), "the lock survived a rejection"
+    # And the run still takes work, which is the consequence that would actually be noticed.
+    runtime._advance(run, 1)
+    assert run.state.tick > 0
+
+
+async def test_a_slow_operation_on_the_answer_side_does_not_stall_the_tick_loop(
+    runtime,
+) -> None:
+    """The lock is held across a state mutation, never across a wait (R13).
+
+    The statement transport does not exist yet — **U10** builds it, and will make this literal:
+    a director's answer arrives over a provider call, and the provider call is the wait. The
+    stand-in here is honest about the only shape that matters, which is that the wait happens
+    off the lock and only the write to state happens on it. If U10 puts its provider call
+    inside the locked region instead, the clock stops for the length of a model round-trip and
+    this test is what should catch it.
+    """
+    runtime.create_run(RUN, SEED, horizon_tick=simtime.TICKS_PER_SIM_DAY * 200)
+    run = runtime.runs[RUN]
+    runtime.set_rate(RUN, LOAD_RATE)
+    runtime.ensure_loop(RUN)
+    await asyncio.sleep(0.2)
+
+    slow_seconds = 0.5
+    lands_at = run.state.tick + 10_000
+
+    def an_answer_that_takes_a_provider_round_trip() -> None:
+        time.sleep(slow_seconds)  # U10: the provider call. Off the lock, deliberately.
+        with run.lock:
+            run.state.queued_answers.setdefault(lands_at, []).append(
+                {"request_id": "u4-stand-in", "answer": {}}
+            )
+
+    tick_before = run.state.tick
+    await anyio.to_thread.run_sync(an_answer_that_takes_a_provider_round_trip)
+    advanced = run.state.tick - tick_before
+
+    # Two thirds of nominal is a generous floor for a machine under test load. A stall would
+    # show as single digits, not as two thirds.
+    nominal = slow_seconds * simtime.TICKS_PER_WALL_SECOND_AT_BASE_RATE * LOAD_RATE
+    assert advanced > nominal * 0.66, (
+        f"the clock advanced {advanced} ticks while a {slow_seconds}s answer was in flight; "
+        f"nominal is {nominal:.0f}"
+    )
+    assert lands_at in run.state.queued_answers, "the answer never landed"
+
+
+async def test_no_store_round_trip_or_wait_happens_inside_the_lock() -> None:
+    """R13, asserted structurally, because the cost of getting it wrong is not local.
+
+    An append inside the locked region serialises the tick loop behind the store; a provider
+    call inside it serialises the tick loop behind a network. Neither shows up as an exception
+    — the clock just runs slow — so this reads the source rather than trusting a convention.
+
+    **U10 and U17 should extend this list rather than work around it.**
+    """
+    import ast
+    import inspect
+
+    from kernel import loop as loop_module
+
+    forbidden = {
+        "submit",  # the store writer: one append round-trip, blocking on a threading.Event
+        "append_tick",
+        "read_events",
+        "execute",  # SQLAlchemy
+        "begin",
+        "run_sync",  # a hop to another thread, which may then block on this same lock
+        "sleep",
+        "wait",
+        "join",
+    }
+
+    tree = ast.parse(inspect.getsource(loop_module))
+    locked_regions = 0
+    offences: list[str] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.With):
+            continue
+        if not any(
+            isinstance(item.context_expr, ast.Attribute) and item.context_expr.attr == "lock"
+            for item in node.items
+        ):
+            continue
+        locked_regions += 1
+        for inner in ast.walk(node):
+            if (
+                isinstance(inner, ast.Call)
+                and isinstance(inner.func, ast.Attribute)
+                and inner.func.attr in forbidden
+            ):
+                offences.append(f"{inner.func.attr}() at loop.py line {inner.lineno}")
+
+    assert locked_regions >= 2, (
+        f"only {locked_regions} locked regions found; the command path and the advance should "
+        "each have one, so this test would otherwise pass vacuously"
+    )
+    assert not offences, "blocking calls inside the run lock: " + ", ".join(offences)
+
+
+async def test_the_per_run_lock_is_reachable_and_orderable_by_run_id(runtime) -> None:
+    """R22's multi-run rule, which **U17** will need: per-run locks taken in run-id order.
+
+    Nothing takes two of them yet. What this pins is that the lock is a per-run attribute
+    rather than a private detail of one method — a lock reachable only from inside
+    `apply_command` would force U17 to introduce a second one, and two locks with no order
+    between them is the deadlock this ordering rule exists to prevent.
+    """
+    runtime.create_run("run-b", SEED)
+    runtime.create_run("run-a", SEED + 1)
+
+    in_run_id_order = sorted(runtime.runs.values(), key=lambda run: run.run_id)
+    assert [run.run_id for run in in_run_id_order] == ["run-a", "run-b"]
+
+    with contextlib.ExitStack() as stack:
+        for run in in_run_id_order:
+            stack.enter_context(run.lock)
+        assert all(run.lock.locked() for run in in_run_id_order)
+
+    assert not any(run.lock.locked() for run in in_run_id_order)

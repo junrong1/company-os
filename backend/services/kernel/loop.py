@@ -1,6 +1,6 @@
 """The tick loop: the kernel's clock, and the only thing that appends.
 
-Five decisions here are load-bearing, and each prevents a failure that is hard to diagnose
+Seven decisions here are load-bearing, and each prevents a failure that is hard to diagnose
 from its symptom.
 
 **One task per active run, and its lifecycle follows the run's persisted rate — not the
@@ -21,6 +21,27 @@ stalls every request and every WebSocket send. Kernel invocation and every long 
 `anyio.to_thread.run_sync`. This keeps the loop responsive; it does not make ticks cheaper,
 because the GIL still serialises pure-Python work.
 
+**One lock per run, and it is a `threading.Lock`** (R13). The command route is a synchronous
+FastAPI route, so Starlette runs it on a worker thread; `_advance` runs on an anyio worker
+thread. Both touch `run.state`, and until this nothing in `backend/` outside tests held a lock
+at all. An `asyncio.Lock` would be the wrong primitive rather than a slower one: it is not
+thread-safe, and its `acquire` is a coroutine that has to be awaited on the event loop — which
+is not where either holder runs, so from a worker thread it would be no lock at all. A plain
+`Lock` rather than an `RLock` because neither path re-enters. It is a per-run *attribute* rather
+than a private detail so that a multi-run operation can take two of them in run-id order (R22),
+which is what U17 will need. And it is taken **per quantum rather than across the batch**: a
+partly advanced batch is a consistent state, while holding across 120 quanta would make a
+command wait for 120 append round-trips.
+
+**Nothing slow happens while that lock is held.** No append, no store round-trip, no wait, and
+— when U10 puts a director's answer on this path — no provider call. The tick loop needs the
+lock dozens of times a batch for about ten microseconds each, and a blocking call inside it does
+not raise, it just makes the clock run slow, which is the failure this file's diagnostics were
+built to explain rather than to cause. The rule has one consequence worth stating: the single
+command that reads the *whole* state runs against a copy taken under the lock rather than under
+the lock itself. `test_no_store_round_trip_or_wait_happens_inside_the_lock` reads this file to
+keep the rule true.
+
 **Catch-up is clamped, and read from a monotonic clock.** Elapsed real time decides how many
 quanta to run, which taken naively fast-forwards a sim-week after a laptop sleeps. When the
 clamp binds, the clock falls behind rather than sprinting — quanta are never skipped, so
@@ -35,6 +56,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -46,6 +68,7 @@ from kernel import lease as lease_module
 from kernel.store import LogStore, RunAlreadyTerminated, StoreWriter
 from servicekit import logging as svclog
 from simcore import log as folder
+from simcore import snapshot as snapshotting
 from simcore import step as sim
 from simcore import time as simtime
 from simcore import verify as verifier
@@ -127,6 +150,10 @@ class RunLoop:
 
     run_id: str
     state: sim.State
+    #: The one lock between a command and a tick (R13). See the module docstring for why it is
+    #: a `threading.Lock`, why it is taken per quantum, and why nothing slow may happen inside
+    #: it. Public, so a multi-run operation can take two in run-id order (R22).
+    lock: threading.Lock = field(default_factory=threading.Lock)
     #: Persisted on the run row. 0 is paused.
     rate: int = 1
     rate_effective_tick: int = 0
@@ -391,14 +418,20 @@ class KernelRuntime:
 
         The *multiplier* deliberately never enters kernel state: storing it would make replay
         speed part of the run, and keeping it out means degrading it under lag is free.
+
+        The lock covers the new rate and the tick it took effect at together, and nothing after
+        (R13). Those two are one fact — "the clock changed speed here" — and read a quantum
+        apart they describe a tick the rate was never in force at. The row update and the append
+        are store round-trips and stay outside.
         """
         if rate < 0:
             raise ValueError("rate cannot be negative")
 
         run = self.runs[run_id]
-        previous = run.rate
-        run.rate = rate
-        run.rate_effective_tick = run.state.tick
+        with run.lock:
+            previous = run.rate
+            run.rate = rate
+            effective_tick = run.rate_effective_tick = run.state.tick
 
         with self.store.engine.begin() as connection:
             from sqlalchemy import update
@@ -415,20 +448,20 @@ class KernelRuntime:
                 sim.Emitted(
                     kind=EventKind.RATE_CHANGED,
                     payload={
-                        "tick": run.state.tick,
+                        "tick": effective_tick,
                         "rate": rate,
                         "previous_rate": previous,
-                        "effective_tick": run.state.tick,
+                        "effective_tick": effective_tick,
                     },
                 )
             ],
             lease_handle=self.lease,
             rules_ver=RULES_VERSION,
-            tick=run.state.tick,
+            tick=effective_tick,
         )
         log.info(
             "rate changed",
-            extra={"run": run_id, "tick": run.state.tick, "rate": rate, "was": previous},
+            extra={"run": run_id, "tick": effective_tick, "rate": rate, "was": previous},
         )
         return appended.envelopes[0] if appended.envelopes else None
 
@@ -525,6 +558,24 @@ class KernelRuntime:
 
         One transaction per tick (R21), through the single writer (R35). Returns the committed
         envelopes so the caller can publish them — after they are durable, never before.
+
+        **The lock is taken once per quantum and released before the append** (R13). Per quantum
+        because a partly advanced batch is a consistent state, so there is nothing to gain from
+        holding across up to 120 of them and a command waiting on 120 append round-trips to
+        lose. Released before the append because `writer.submit` blocks on the store writer's
+        commit: inside the lock, every command on this run would queue behind the store, and a
+        second run's ticks would too by way of the single writer they share.
+
+        Releasing before the append does mean a command's events can be sequenced ahead of a
+        tick's even though its mutation happened after — the same window that exists today,
+        since nothing held a lock across the handler and its append either. Closing *that* needs
+        commands enqueued onto the tick loop rather than applied from the request thread, which
+        is a different design and not this one. What is closed here is the one that corrupts: two
+        threads inside `run.state` at the same instant.
+
+        The tick each append is stamped with is read under the lock, so a command applied at
+        tick 100 is recorded at tick 100 rather than at whatever the clock reached while its
+        events were in the writer's queue.
         """
         committed: list[Envelope] = []
 
@@ -532,24 +583,33 @@ class KernelRuntime:
             if run.stopped or run.state.terminal_reason:
                 break
 
-            emitted = sim.step(run.state)
+            with run.lock:
+                emitted = sim.step(run.state)
+                at_tick = run.state.tick
 
-            if simtime.is_day_boundary(run.state.tick) and run.state.tick > 0:
-                emitted.append(
-                    sim.Emitted(
-                        kind=EventKind.DAY_CHECKPOINT,
-                        payload=verifier.build_checkpoint_payload(run.state),
+                if simtime.is_day_boundary(at_tick) and at_tick > 0:
+                    # A whole-state walk, so it belongs inside the lock rather than beside it:
+                    # a checkpoint payload assembled across two quanta would hash to a state
+                    # the run was never in, and the day checkpoint is the one event whose whole
+                    # job is to be that hash.
+                    emitted.append(
+                        sim.Emitted(
+                            kind=EventKind.DAY_CHECKPOINT,
+                            payload=verifier.build_checkpoint_payload(run.state),
+                        )
                     )
-                )
 
-            if (
-                run.state.tick - run.last_position_echo_tick >= POSITION_ECHO_INTERVAL_TICKS
-            ):
-                run.last_position_echo_tick = run.state.tick
-                # The server half of the divergence detector. Not appended to the log: it is
-                # derived state, and a client that disagrees can be told so without making
-                # the disagreement a permanent fact.
-                self._echo_position(run)
+                if at_tick - run.last_position_echo_tick >= POSITION_ECHO_INTERVAL_TICKS:
+                    run.last_position_echo_tick = at_tick
+                    # The server half of the divergence detector. Not appended to the log: it is
+                    # derived state, and a client that disagrees can be told so without making
+                    # the disagreement a permanent fact.
+                    #
+                    # Inside the lock, even though it publishes: it is a state read plus a
+                    # non-blocking enqueue, and outside it the echoed tick and the echoed
+                    # position could come from different quanta — which is precisely the
+                    # disagreement this echo exists to detect, manufactured by the detector.
+                    self._echo_position(run)
 
             if not emitted:
                 continue
@@ -559,7 +619,7 @@ class KernelRuntime:
                 emitted=emitted,
                 lease_handle=self.lease,
                 rules_ver=RULES_VERSION,
-                tick=run.state.tick,
+                tick=at_tick,
             )
             committed.extend(result.envelopes)
 
@@ -611,6 +671,29 @@ class KernelRuntime:
 
         A rejection raises `CommandRejected` and mutates nothing — the events list is empty,
         which is what "mutates nothing" means concretely.
+
+        **Under the run's lock, and released before the append** (R13). Every handler here is a
+        few microseconds of dictionary work, so the tick loop waits for a quantum's worth of
+        nothing — with one exception, handled below. The append is outside the lock because
+        `writer.submit` blocks on the store: inside it, the tick loop would serialise behind
+        every command's commit.
+
+        **Each handler is given the state it runs against, rather than reading `run.state`
+        itself.** That is what makes the exception expressible. A comparison is the only command
+        that changes nothing and still appends, and it is also the only one that reads the
+        *whole* state — `snapshot.capture` walks it twice and the branches then spend about a
+        third of a second on it. Holding the lock across that would stop the clock for as long
+        as the branches ran, so instead the *copy* is taken under the lock and the comparison
+        runs against the copy. The lock is held for the capture, about six tenths of a
+        millisecond, and for nothing after it.
+
+        That is strictly more correct than reading the live state, not merely cheaper: the
+        branches, the staleness guard and the recorded tick then all describe one instant, which
+        is the property `run_comparison` documents as load-bearing and could previously only
+        intend. It is also why `compare._capture_of`'s retry no longer has anything to catch on
+        this path — the copy it takes is of a state nothing else can touch. **U5** owns that
+        retry and the branch limiter; the copy here is what leaves it room to move branch
+        execution off the tick loop's worker pool and actually gain something by it.
         """
         from contracts import canonical
         from contracts.grpc import kernel_pb2
@@ -644,35 +727,35 @@ class KernelRuntime:
                 ) from None
 
         dispatch = {
-            kernel_pb2.ASSIGN_WORK: lambda: (
-                sim.assign_via_manager(run.state, decoded["item"])
+            kernel_pb2.ASSIGN_WORK: lambda state: (
+                sim.assign_via_manager(state, decoded["item"])
                 if decoded.get("via_manager")
-                else sim.assign_direct(run.state, decoded["item"], decoded["person"])
+                else sim.assign_direct(state, decoded["item"], decoded["person"])
             ),
-            kernel_pb2.REASSIGN_WORK: lambda: sim.reassign(
-                run.state, decoded["item"], decoded["person"]
+            kernel_pb2.REASSIGN_WORK: lambda state: sim.reassign(
+                state, decoded["item"], decoded["person"]
             ),
-            kernel_pb2.RETURN_TO_BACKLOG: lambda: sim.return_to_backlog(
-                run.state, decoded["item"]
+            kernel_pb2.RETURN_TO_BACKLOG: lambda state: sim.return_to_backlog(
+                state, decoded["item"]
             ),
-            kernel_pb2.RESOLVE_CHECKPOINT: lambda: sim.resolve_checkpoint(
-                run.state,
+            kernel_pb2.RESOLVE_CHECKPOINT: lambda state: sim.resolve_checkpoint(
+                state,
                 decoded["item"],
                 whole("cp_index"),
                 whole("option_index"),
                 in_person=bool(decoded["in_person"]),
             ),
-            kernel_pb2.SUBMIT_CEO_INPUT: lambda: sim.submit_ceo_input(
-                run.state, whole("bitmask"), whole("at_tick")
+            kernel_pb2.SUBMIT_CEO_INPUT: lambda state: sim.submit_ceo_input(
+                state, whole("bitmask"), whole("at_tick")
             ),
-            kernel_pb2.REQUEST_HIRE: lambda: sim.request_hire(run.state, decoded["director"]),
+            kernel_pb2.REQUEST_HIRE: lambda state: sim.request_hire(state, decoded["director"]),
             # `.get` rather than `[...]`: this is the one command carrying free-form text a
             # person typed, so a payload missing a key is a client mistake to answer with a
             # reason. A KeyError here would escape as a 500 — nothing above this catches
             # anything but `CommandRejected` — and `ask_person` rejects an empty person id
             # with a sentence of its own.
-            kernel_pb2.ASK_PERSON: lambda: sim.ask_person(
-                run.state, str(decoded.get("person", "")), str(decoded.get("question", ""))
+            kernel_pb2.ASK_PERSON: lambda state: sim.ask_person(
+                state, str(decoded.get("person", "")), str(decoded.get("question", ""))
             ),
             # Runs its branches here, in the handler, and therefore *outside* the append
             # transaction the writer opens below. That placement is the whole reason a
@@ -680,11 +763,15 @@ class KernelRuntime:
             # three branches at a tenth of a second each inside it would stall every other
             # run's clock and read as a store outage that is not happening.
             #
+            # It is also the reason this handler is given a copy rather than the live state: the
+            # branches are outside the append transaction but they are not outside the lock
+            # unless something puts them there. See `READ_ONLY` below.
+            #
             # `.get` rather than `[...]` for the same reason `ask_person` uses it: a payload
             # missing a key is a client mistake to answer with a reason, and a KeyError here
             # would escape as a 500 because nothing above catches anything but CommandRejected.
-            kernel_pb2.COMPARE_OPTIONS: lambda: sim.compare_options(
-                run.state,
+            kernel_pb2.COMPARE_OPTIONS: lambda state: sim.compare_options(
+                state,
                 str(decoded.get("item", "")),
                 whole("cp_index", -1),
                 str(decoded.get("person", "")),
@@ -693,11 +780,31 @@ class KernelRuntime:
             ),
         }
 
+        # Commands that read state and write none of it. A comparison is the only one — step.py
+        # calls it "the only command that changes nothing and still appends" — and it is also
+        # the only handler costing more than a quantum, so the two facts cancel: a command that
+        # mutates nothing *can* run against a copy, and one costing a third of a second must.
+        READ_ONLY = frozenset({kernel_pb2.COMPARE_OPTIONS})
+
         handler = dispatch.get(kind)
         if handler is None:
             raise sim.CommandRejected(f"no handler for command kind {kind}")
 
-        emitted = handler()
+        if kind in READ_ONLY:
+            with run.lock:
+                # The whole state, walked twice, with the tick loop shut out for the duration —
+                # which is what makes the capture whole. `restore` re-hashes what it rebuilt and
+                # refuses a mismatch, so a `SnapshotInvalid` out of here is no longer a torn read
+                # to retry past: it would mean the snapshot round-trip has genuinely lost a
+                # field, which is a bug to see rather than to paper over.
+                instant = snapshotting.capture(run_id, run.state, through_seq=0)
+            emitted = handler(snapshotting.restore(instant))
+            applied_tick = instant.tick
+        else:
+            with run.lock:
+                emitted = handler(run.state)
+                applied_tick = run.state.tick
+
         for item in emitted:
             item.command_id = command_id
 
@@ -710,7 +817,10 @@ class KernelRuntime:
                 emitted=emitted,
                 lease_handle=self.lease,
                 rules_ver=RULES_VERSION,
-                tick=run.state.tick,
+                # Read under the lock, so a command applied at tick 100 is recorded at tick 100
+                # rather than at whatever the clock reached while its events sat in the writer's
+                # queue. For a comparison that is a third of a second of drift removed.
+                tick=applied_tick,
             )
         except RunAlreadyTerminated as ended:
             # The run ended between this command being checked and its events being written.
@@ -787,11 +897,15 @@ class KernelRuntime:
         else:
             task_state = "running"
 
-        unresolved = [
-            f"{item.id}:cp{item.decisions and len(item.decisions) or 0}"
-            for item in run.state.items.values()
-            if item.status == sim.STATUS_BLOCKED
-        ]
+        # Under the lock: this walks `state.items`, and a dynamic item arriving on a tick
+        # mid-iteration raises "dictionary changed size during iteration". A diagnostic that
+        # fails when the run is busy fails exactly when it is wanted.
+        with run.lock:
+            unresolved = [
+                f"{item.id}:cp{item.decisions and len(item.decisions) or 0}"
+                for item in run.state.items.values()
+                if item.status == sim.STATUS_BLOCKED
+            ]
 
         return Diagnosis(
             run_id=run_id,
