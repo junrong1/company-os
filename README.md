@@ -216,6 +216,69 @@ processes:
 
 ---
 
+## Pointing it at a model
+
+Nothing here needs a model. With no provider configured the gateway reports itself
+absent, the directors fall back to their scripted replies, and every scenario stays
+playable — the test suite has no keyed path in it at all. Configuring one is five
+variables and no code:
+
+| Variable | What it is | Default |
+|---|---|---|
+| `COMPANY_OS_MODEL_PROVIDER` | one of the eight below | *(none — the bench is absent)* |
+| `COMPANY_OS_MODEL` | the model name that provider knows | *(none — required)* |
+| `COMPANY_OS_MODEL_BASE_URL` | overrides the provider's endpoint | the provider's own, below |
+| `COMPANY_OS_MODEL_API_KEY` | the key; wins over the provider's own variable | the provider's own, below |
+| `COMPANY_OS_MODEL_TIMEOUT_SECONDS` | one call's whole budget | `30` (connect gets 5) |
+
+Eight providers, and two code paths between them:
+
+| `COMPANY_OS_MODEL_PROVIDER` | Wire | Default base URL | Key |
+|---|---|---|---|
+| `openai` | OpenAI-compatible | `https://api.openai.com/v1` | required, or `OPENAI_API_KEY` |
+| `azure` | OpenAI-compatible | *(none — per-resource)* | required, or `AZURE_OPENAI_API_KEY` |
+| `openrouter` | OpenAI-compatible | `https://openrouter.ai/api/v1` | required, or `OPENROUTER_API_KEY` |
+| `ollama` | OpenAI-compatible | `http://127.0.0.1:11434/v1` | none |
+| `lmstudio` | OpenAI-compatible | `http://127.0.0.1:1234/v1` | none |
+| `vllm` | OpenAI-compatible | `http://127.0.0.1:8000/v1` | none, unless started with `--api-key` |
+| `sglang` | OpenAI-compatible | `http://127.0.0.1:30000/v1` | none |
+| `anthropic` | Anthropic native | `https://api.anthropic.com` | required, or `ANTHROPIC_API_KEY` |
+
+```bash
+COMPANY_OS_MODEL_PROVIDER=ollama COMPANY_OS_MODEL=qwen3:32b \
+  uv run python single_process.py            # a local model, no key anywhere
+```
+
+Seven of the eight speak one HTTP shape and one speaks another, which is why there
+are two request builders in `packages/modelgw/` and no LLM framework in the lockfile.
+Two HTTP shapes do not justify that dependency surface, and on a bring-your-own-key
+tool the framework's own configuration surface arrives as a support burden on top of
+the five variables above. What differs between the seven is data — a base URL, an
+auth header name, the token-limit field name — so a ninth OpenAI-compatible server is
+a row in `packages/modelgw/config.py`, and a test asserts every row resolves to one of
+the two paths.
+
+Azure is the one provider with no default endpoint, because its endpoint is
+per-resource: set the base URL to `https://<resource>.openai.azure.com/openai/v1`. It
+is also the one that versions by query parameter — an `?api-version=` you paste into
+the base URL is kept, and a bare endpoint gets a default.
+
+Every provider outcome comes back as a value, never as an exception: a 429, a 500, a
+timeout, a body that is not JSON, a 200 with nothing in it, and a refused connection
+at a local base URL are each a named condition the bench falls back on. None of them
+retries — a retry would spend a run's budget on an outcome the bench has already
+decided to replace.
+
+**The key is a type, not a string.** It renders as `***` through `str`, `repr`, an
+f-string and a traceback, it cannot be serialised to JSON or pickled at all, and one
+function in the package turns it back into a header. A provider's error body is
+scrubbed against that key before it is kept, because a 401 body that echoes the
+`Authorization` header back is how a key reaches a log store through code that never
+touched one. Export the key; never write it into a scenario file, a compose file or a
+`.env` you might commit.
+
+---
+
 ## The prototype
 
 `company-os.html` is the **prototype**: the whole original application in one file,
@@ -259,6 +322,7 @@ backend/
     simcore/                  the kernel library — no service, transport or store
     contracts/                proto stubs and the event envelope (U2)
     servicekit/               logging, status, bind rules, shared by all surfaces
+    modelgw/                  the bench's gateway: two wires, eight providers, one masked key
   services/
     kernel/                   sole log writer, owner of the clock
     gateway/                  REST commands, WebSocket stream
