@@ -188,6 +188,62 @@ def test_report_state_reconstruction_resolves_to_the_kernel_library() -> None:
     )
 
 
+def test_the_launcher_is_the_documented_exception_and_sits_outside_the_services() -> None:
+    """R28. One process, five surfaces, and exactly one component that sees more than one.
+
+    The gateway serving the report itself would be the shortest path to M2 and is the
+    import R4 forbids — so the launcher mounts it instead. That makes the launcher the only
+    place in the tree holding two services at once, and this is what keeps it *one* place:
+    a second composer, in `services/` or beside it, would be a second answer to who is
+    allowed to know the topology.
+
+    It sits outside `services/` for the mechanical reason as well as the conceptual one —
+    the two parametrized tests above walk `services/`, so a launcher inside it would fail
+    them for doing its job.
+    """
+    launcher = BACKEND / "single_process.py"
+
+    assert launcher.exists(), "the composition has moved; this rule has to move with it"
+    assert SERVICES not in launcher.parents, (
+        "the launcher is inside services/, where the import-boundary rules apply to it"
+    )
+
+    composed = _imported_roots(launcher) & SERVICE_NAMES
+    assert len(composed) > 1, (
+        f"the launcher composes only {sorted(composed)}; if the surfaces are reached some "
+        "other way now, R28's exception is being spent on nothing"
+    )
+
+    # And nothing else outside `services/` and `tests/` does the same.
+    others = [
+        path
+        for path in _python_files(BACKEND)
+        if SERVICES not in path.parents
+        and PACKAGES not in path.parents
+        and (BACKEND / "tests") not in path.parents
+        and path != launcher
+        and ".venv" not in path.parts
+        and len(_imported_roots(path) & SERVICE_NAMES) > 1
+    ]
+    assert not others, (
+        "a second component composes two services; the launcher is meant to be the only "
+        f"one: {[str(p.relative_to(BACKEND)) for p in others]}"
+    )
+
+
+def test_mounting_a_surface_created_no_import_edge_between_services() -> None:
+    """The point of mounting rather than importing, asserted at the two ends of it.
+
+    The gateway is the app the launcher mounts everything onto and the one whose stream
+    publishes the agents surface's spend counter. Both of those are reasons it might have
+    grown an import, and neither is a reason it may: the kernel client and the spend reader
+    are installed by the launcher through `use_kernel` and `use_spend`.
+    """
+    for path in _python_files(SERVICES / "gateway"):
+        reached = _imported_roots(path) & (SERVICE_NAMES - {"gateway"})
+        assert not reached, f"gateway/{path.name} imports {sorted(reached)}"
+
+
 def test_shared_packages_do_not_import_services() -> None:
     """A shared package importing a service inverts the dependency.
 

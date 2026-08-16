@@ -19,13 +19,32 @@ from urllib.parse import urlsplit
 DEFAULT_STORE_URL = "sqlite:///./var/company-os.sqlite3"
 _PROBE_TIMEOUT_SECONDS = 1.0
 
+#: The writer's DSN. The kernel's, and the default for anything that does not ask
+#: for another.
+ENV_STORE_URL = "COMPANY_OS_STORE_URL"
+
+#: The report's DSN: the same store reached through the role `infra/postgres/init`
+#: provisions with SELECT and nothing else. A separate variable because a SQLAlchemy
+#: engine is per-DSN rather than per-process, which is what keeps the read-only role
+#: a real boundary now that the report is mounted in the process that also appends.
+ENV_REPORT_STORE_URL = "COMPANY_OS_REPORT_STORE_URL"
+
 
 @dataclass(frozen=True)
 class StoreTarget:
-    """Where the log store lives, as the status payload reports it."""
+    """Where the log store lives, as the status payload reports it.
+
+    **It does not carry the URL.** It used to, and `describe()` returned it verbatim
+    for a scheme it did not recognise — so a typo in the driver name published the
+    password on an endpoint whose whole purpose is to be pasted into an issue (R6).
+    Holding only the parsed parts is what makes that unreachable rather than
+    remembered: there is no field here a future reporter could put on the wire.
+    """
 
     backend: str  # "postgres" | "sqlite" | "unknown"
-    url: str
+    #: The scheme as written, driver suffix stripped. Enough to name what was
+    #: misconfigured, and it carries no credential.
+    scheme: str = ""
     host: str | None = None
     port: int | None = None
     path: str | None = None
@@ -35,32 +54,62 @@ class StoreTarget:
             return f"{self.host}:{self.port}"
         if self.backend == "sqlite":
             return str(self.path)
-        return self.url
+        return f"{self.scheme or 'none'} (unrecognised scheme)"
 
 
-def store_url() -> str:
-    return os.environ.get("COMPANY_OS_STORE_URL", DEFAULT_STORE_URL)
+def store_url(env_var: str = ENV_STORE_URL) -> str:
+    """Where a component's store is, named by the variable that says so.
+
+    One unnamed variable was enough while every component was its own process: each
+    had its own environment, so "the store URL" meant a different string in the report
+    container than in the kernel's. In one process it means one string, and the
+    report's read-only credential would quietly become the writer's — the only
+    boundary that survives U20 through U22 being written into the process that also
+    appends.
+
+    A named variable **falls back to the writer's** rather than refusing. On a laptop
+    the store is a SQLite file with no roles to separate, so demanding a second DSN
+    there would turn a supported path into a configuration error for no gain.
+    """
+    value = (os.environ.get(env_var) or "").strip()
+    if value:
+        return value
+    if env_var != ENV_STORE_URL:
+        return store_url()
+    return DEFAULT_STORE_URL
 
 
 def parse_store_url(url: str) -> StoreTarget:
-    parts = urlsplit(url)
-    scheme = parts.scheme.split("+", 1)[0].lower()
+    """Split a DSN into the parts a status payload may report.
+
+    Every parse failure lands on `unknown`, and none of them raises. `urlsplit` rejects
+    an unbalanced `[` outright and raises again on `.port` when the port is not a number
+    — and `ServiceStatus.build` calls this *outside* the guard it wraps its probes in, so
+    a malformed DSN raising here would be a 500 on the endpoint whose job is to say what
+    is wrong.
+    """
+    try:
+        parts = urlsplit(url)
+        scheme = parts.scheme.split("+", 1)[0].lower()
+    except ValueError:
+        return StoreTarget(backend="unknown")
 
     if scheme in {"postgres", "postgresql"}:
-        return StoreTarget(
-            backend="postgres",
-            url=url,
-            host=parts.hostname or "localhost",
-            port=parts.port or 5432,
-        )
+        try:
+            # Read through `urlsplit` rather than off the string, so a password
+            # containing an `@` does not become part of the reported host.
+            host, port = parts.hostname or "localhost", parts.port or 5432
+        except ValueError:
+            return StoreTarget(backend="unknown", scheme=scheme)
+        return StoreTarget(backend="postgres", scheme=scheme, host=host, port=port)
 
     if scheme == "sqlite":
         # sqlite:///relative/path and sqlite:////absolute/path both occur.
         raw = parts.path
         path = raw[1:] if raw.startswith("/") and not raw.startswith("//") else raw
-        return StoreTarget(backend="sqlite", url=url, path=path or ":memory:")
+        return StoreTarget(backend="sqlite", scheme=scheme, path=path or ":memory:")
 
-    return StoreTarget(backend="unknown", url=url)
+    return StoreTarget(backend="unknown", scheme=scheme)
 
 
 def probe_store(url: str | None = None) -> tuple[bool, str]:
@@ -87,7 +136,13 @@ def probe_store(url: str | None = None) -> tuple[bool, str]:
             return True, f"{parent} writable; database not created yet"
         return False, f"{parent} missing or not writable"
 
-    return False, f"unrecognised store url scheme: {target.url!r}"
+    # The scheme, never the URL. This branch returned the whole DSN, so a typo in the
+    # driver name — `postgres+psycopg2` for `postgresql+psycopg`, the commonest one
+    # there is — published the password on the status endpoint (R6).
+    return False, (
+        f"unrecognised store url scheme {target.scheme or '(none)'!r}: expected a "
+        f"postgresql:// or sqlite:// url. Check {ENV_STORE_URL}."
+    )
 
 
 def probe_http(url: str) -> tuple[bool, str]:

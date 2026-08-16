@@ -86,6 +86,28 @@ _fatal: str = ""
 #: The runtime, once the store let us in.
 _runtime: Any = None
 
+#: True when the runtime was handed to us by the launcher rather than started here. It
+#: changes exactly one thing — who stops it — and getting that wrong is not visible in a
+#: status payload, which is why it is a flag rather than an inference.
+_adopted: bool = False
+
+
+def use_runtime(runtime: Any) -> None:
+    """Adopt a runtime the launcher already started (R28).
+
+    The mirror of the gateway's `use_kernel`, and it exists for the same reason. In one
+    process there is one `KernelRuntime`, because there is one writer lease: this app
+    starting a second one would take the lease against itself, fail, and report the
+    launcher's own runtime as a fatal `LeaseHeld` — a healthy system describing itself
+    as broken.
+
+    Ownership does not transfer with it. The launcher started it and the launcher stops
+    it, so `teardown` below leaves an adopted runtime alone; stopping it here would cancel
+    the tick loops while the gateway on the same port was still answering commands.
+    """
+    global _runtime, _adopted
+    _runtime, _adopted = runtime, True
+
 
 def _store_ddl_version() -> dict[str, Any]:
     """What this build expects. What was *found* is reported under `store`."""
@@ -141,7 +163,9 @@ async def _try_start_runtime() -> None:
 async def _on_start(app: FastAPI):
     await _watch.observe()
 
-    if _watch.reachable:
+    # `_runtime is None` rather than an unconditional attempt: under the launcher one is
+    # already installed, and starting a second would collide with it at the lease.
+    if _runtime is None and _watch.reachable:
         await _try_start_runtime()
 
     watch_task = asyncio.create_task(_watch.run(), name="kernel-store-watch")
@@ -162,7 +186,7 @@ async def _on_start(app: FastAPI):
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
-        if _runtime is not None:
+        if _runtime is not None and not _adopted:
             await _runtime.stop()
 
     return teardown

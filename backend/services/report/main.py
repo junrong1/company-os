@@ -8,6 +8,14 @@ It reads and never writes. Two things enforce that rather than one: the Postgres
 SELECT only, and `tests/test_lifecycle.py` asserts that no module in this service mentions a
 write operation. The role is the one that holds when someone later hands this service a
 session that could write.
+
+**The role is now the only one of the two that is structural.** This app is mounted by the
+launcher into the process that also holds the writer's engine (R28), so "the report is a
+different container" has stopped being part of the argument. What is left is the credential:
+a SQLAlchemy engine is per-DSN rather than per-process, so a connection opened against
+`COMPANY_OS_REPORT_STORE_URL` cannot append however the code around it changes. That is why
+this module resolves its own name rather than calling `store_url()` bare — which, in one
+process, would have handed the fold the owner's connection and quietly retired the boundary.
 """
 
 from __future__ import annotations
@@ -19,7 +27,7 @@ from fastapi import HTTPException
 from report import fold as reporting
 from servicekit import logging as svclog
 from servicekit.app import create_service_app
-from servicekit.probes import probe_store, store_url
+from servicekit.probes import ENV_REPORT_STORE_URL, probe_store, store_url
 from servicekit.runtime import serve
 from servicekit.status import Dependency
 
@@ -27,17 +35,34 @@ SERVICE = "report"
 
 log = svclog.get_logger(SERVICE)
 
+
+def reader_url() -> str:
+    """The read-only DSN, falling back to the writer's where there are no roles.
+
+    Compose sets both. A laptop run sets neither and gets a SQLite file, where a
+    read-only role is not a thing that exists — so the fallback is what keeps the
+    contributor path working rather than a second variable to remember.
+    """
+    return store_url(ENV_REPORT_STORE_URL)
+
+
+def _probe_reader() -> tuple[bool, str]:
+    """Probe the credential this service actually uses, not the writer's."""
+    return probe_store(reader_url())
+
+
 app = create_service_app(
     SERVICE,
     dependencies=[
         Dependency(
             name="store",
-            probe=probe_store,
+            probe=_probe_reader,
             required=True,
             note="read-only; the report folds the log and never appends to it",
         )
     ],
     reports_store=True,
+    store_env_var=ENV_REPORT_STORE_URL,
 )
 
 
@@ -59,7 +84,7 @@ def _read_log(run_id: str) -> tuple[list, int]:
     from contracts.envelope import Envelope
     from logschema import event_log, runs
 
-    engine = create_engine(store_url(), future=True)
+    engine = create_engine(reader_url(), future=True)
     try:
         with engine.connect() as connection:
             rows = connection.execute(

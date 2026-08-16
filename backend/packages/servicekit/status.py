@@ -21,7 +21,7 @@ from typing import Any
 
 from fastapi import APIRouter, Response
 
-from servicekit.probes import parse_store_url, store_url
+from servicekit.probes import ENV_STORE_URL, parse_store_url, store_url
 from servicekit.versions import git_sha, resolve_versions
 
 
@@ -45,6 +45,11 @@ class ServiceStatus:
     dependencies: list[Dependency] = field(default_factory=list)
     version_extra: Callable[[], dict[str, Any]] | None = None
     reports_store: bool = False
+    #: Which variable names the store this service reports. Named rather than assumed,
+    #: because the report reaches the same database through the read-only role and a
+    #: status payload that showed the writer's DSN would be reporting a connection this
+    #: service does not have.
+    store_env_var: str = ENV_STORE_URL
 
     def build(self) -> tuple[dict[str, Any], bool]:
         checked: list[dict[str, Any]] = []
@@ -81,7 +86,7 @@ class ServiceStatus:
         }
 
         if self.reports_store:
-            target = parse_store_url(store_url())
+            target = parse_store_url(store_url(self.store_env_var))
             payload["store"] = {"backend": target.backend, "at": target.describe()}
 
         degraded = [d["name"] for d in checked if not d["reachable"] and not d["required"]]
@@ -96,12 +101,14 @@ def build_status(
     dependencies: list[Dependency] | None = None,
     version_extra: Callable[[], dict[str, Any]] | None = None,
     reports_store: bool = False,
+    store_env_var: str = ENV_STORE_URL,
 ) -> tuple[dict[str, Any], bool]:
     return ServiceStatus(
         service=service,
         dependencies=list(dependencies or []),
         version_extra=version_extra,
         reports_store=reports_store,
+        store_env_var=store_env_var,
     ).build()
 
 
@@ -110,6 +117,7 @@ def status_router(
     dependencies: list[Dependency] | None = None,
     version_extra: Callable[[], dict[str, Any]] | None = None,
     reports_store: bool = False,
+    store_env_var: str = ENV_STORE_URL,
 ) -> APIRouter:
     router = APIRouter()
 
@@ -119,7 +127,9 @@ def status_router(
     # request and every WebSocket send for the probe timeout.
     @router.get("/status")
     def status(response: Response) -> dict[str, Any]:
-        payload, healthy = build_status(service, dependencies, version_extra, reports_store)
+        payload, healthy = build_status(
+            service, dependencies, version_extra, reports_store, store_env_var
+        )
         response.status_code = 200 if healthy else 503
         return payload
 

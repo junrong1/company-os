@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import FastAPI
 
 from servicekit import logging as svclog
+from servicekit.probes import ENV_STORE_URL
 from servicekit.status import Dependency, status_router
 
 # A service's startup hook: given the app, return an async teardown callable (or
@@ -29,6 +30,7 @@ def create_service_app(
     dependencies: list[Dependency] | None = None,
     version_extra: Callable[[], dict[str, Any]] | None = None,
     reports_store: bool = False,
+    store_env_var: str = ENV_STORE_URL,
     on_start: StartHook | None = None,
     title: str | None = None,
 ) -> FastAPI:
@@ -63,6 +65,7 @@ def create_service_app(
             dependencies=dependencies,
             version_extra=version_extra,
             reports_store=reports_store,
+            store_env_var=store_env_var,
         )
     )
     return app

@@ -171,10 +171,33 @@ Individual services still start on their own (`uv run python -m kernel.main`, or
 read in isolation. A bare `gateway.main` serves the routes with no kernel behind
 them and says so on `/status`; the launcher is what puts one there.
 
+### The five surfaces, on one port
+
+The launcher mounts all five service apps into one process. The gateway keeps the
+root, because that is what the client's `/api/` proxy maps onto; the other four
+keep a prefix, so one port never means two surfaces for one path.
+
+| Surface | Status endpoint | Also serves |
+|---|---|---|
+| `gateway` | `/status` | `/runs`, `/runs/{id}/commands`, `/runs/{id}/state`, `/ws/{id}` |
+| `kernel` | `/kernel/status` | `/kernel/runs/{id}/diagnose` |
+| `domain` | `/domain/status` | — |
+| `agents` | `/agents/status` | `/agents/runs/{id}/spend` |
+| `report` | `/report/status` | `/report/runs/{id}/report` |
+
+The report is mounted by the launcher rather than reached through the gateway, and
+that is a rule rather than a preference: no service may import another's internals,
+and the launcher is the one component outside `services/` that is allowed to see
+two. It also keeps its own `COMPANY_OS_REPORT_STORE_URL` — a SQLAlchemy engine is
+per-DSN rather than per-process, so the read-only role is still a real boundary now
+that the fold runs in the process that appends. Unset, it falls back to the writer's
+DSN, which is what a SQLite laptop run wants: there are no roles there to separate.
+
 ### Diagnosing
 
 ```bash
 curl -s http://127.0.0.1:8800/status | python3 -m json.tool
+curl -s http://127.0.0.1:8800/kernel/status | python3 -m json.tool
 docker compose logs -f                 # single-line JSON, one aggregator
 ```
 
@@ -195,11 +218,23 @@ stack trace, because all three are deliberate:
 - **`no kernel client is configured`** — a `gateway.main` started on its own. The
   launcher is what installs one.
 
-The first two currently arrive as a Python traceback with the sentence at the
-bottom, which is the right sentence in the wrong wrapper: the kernel service
-entrypoint handles both and prints the reason alone, and the launcher does not yet.
-The container exits non-zero either way, and the capped restart policy stops it
-after three attempts rather than looping.
+All three arrive as the sentence alone. The first two used to come wrapped in a
+Python traceback with the reason at the bottom — the right sentence in the wrong
+wrapper — because only the kernel service entrypoint handled them and the launcher
+is what the container runs. The container exits non-zero either way, and the capped
+restart policy stops it after three attempts rather than looping.
+
+A DDL mismatch also refuses **before** touching the schema and leaves the writer
+lease unheld, so the store it refused is exactly the store it found and the next
+attempt does not wait out the lease's thirty-second TTL.
+
+One runtime refusal is worth recognising too. The event stream answers a handshake
+**403** when its `Origin` is not the authority the socket was opened against: a
+WebSocket upgrade is exempt from every cross-origin rule the browser applies to
+`fetch`, so loopback alone would let any page you have open read a run. All three
+shipped paths are same-origin by construction — nginx forwards `$http_host`, the Vite
+dev server rewrites the origin to its target, and 8800 direct is itself. A proxy that
+does neither needs its origin named in `COMPANY_OS_ALLOWED_ORIGINS`.
 
 Two health definitions are deliberately asymmetric, and both survive the collapse
 into one container because they are properties of the surfaces rather than of the
@@ -608,11 +643,14 @@ Not real — deliberately, and stated on screen:
    is a bound on how far a projection may be read.
 6. **A comparison costs about a second and a half, on the request thread.** Six
    branches at the bound, stepped synchronously in pure Python. It runs outside the
-   store's append transaction so it cannot stall the log writer, but it does occupy a
-   slot in the same worker pool the tick loops use — so enough simultaneous
-   comparisons would slow every run's clock in the process. Fine for one person at one
-   keyboard, which is what this is; it would need a process pool before it was
-   anything else.
+   store's append transaction so it cannot stall the log writer, and branch execution
+   draws from its own two-slot limiter rather than from the worker pool the tick loops
+   and the lease heartbeat use — so a burst of comparisons queues instead of slowing
+   every run's clock. The clock's worker slots are reserved the same way, and
+   readiness reports whether sim-time is still moving rather than whether the tick
+   task is alive, so a starved clock says so instead of reporting ready. What has not
+   changed is the cost of *one*: a second and a half is a second and a half, and
+   shortening that would need a process pool.
 
 ---
 

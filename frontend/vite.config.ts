@@ -25,6 +25,13 @@ export default defineConfig({
         target: gatewayWs,
         ws: true,
         changeOrigin: true,
+        // The stream refuses a handshake whose `Origin` is not the authority the
+        // socket was opened against (R26), and `changeOrigin` rewrites only `Host`.
+        // Without this the dev server would hand the backend `Host: 127.0.0.1:8800`
+        // with `Origin: http://127.0.0.1:5173` — a genuinely foreign-looking pair,
+        // refused for a correct reason by a check the dev server had defeated.
+        // Verified against a real handshake: `Origin` arrives as the target.
+        rewriteWsOrigin: true,
       },
     },
   },

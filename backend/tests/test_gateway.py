@@ -13,8 +13,10 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
+from agents import main as agents_main
 from contracts import canonical
 from contracts.envelope import EventKind
 from gateway import main as gateway_main
@@ -35,6 +37,12 @@ def composed(tmp_path, monkeypatch):
 
     import single_process
 
+    # The spend ledger holds one engine for the process, built on first use — which is
+    # inside `compose()`. Left over from a previous test it would still be pointed at that
+    # test's store, so the spend frame this run published would be counting somebody else's
+    # calls. Cleared *before* composing, because composing is what builds it.
+    agents_main._LEDGER = None
+
     runtime, client = single_process.compose()
     runtime.create_run(RUN, SEED, horizon_tick=simtime.TICKS_PER_SIM_DAY * 30)
 
@@ -44,6 +52,8 @@ def composed(tmp_path, monkeypatch):
 
     yield runtime, client
     runtime.writer.stop()
+    agents_main.ledger().dispose()
+    agents_main._LEDGER = None
 
 
 @pytest.fixture
@@ -707,6 +717,198 @@ def test_a_subscriber_never_receives_an_event_beyond_the_durable_head(api) -> No
 
     for frame in frames:
         assert int(frame["seq"]) <= head
+
+
+# =========================================================================
+# Request origin (R26)
+# =========================================================================
+
+
+def test_a_stream_connection_from_another_origin_is_refused(api) -> None:
+    """R26. Loopback is not a boundary against a browser.
+
+    A WebSocket handshake is exempt from every cross-origin rule the browser applies to
+    `fetch`: no preflight, no `Access-Control-*`, the socket simply connects. So any page
+    the operator has open could read a run's event stream — and this port now fronts the
+    report, the diagnose call and the domain surface too.
+    """
+    with pytest.raises(WebSocketDisconnect) as refused:
+        with api.websocket_connect(
+            f"/ws/{RUN}", headers={"origin": "https://evil.example", "host": "testserver"}
+        ) as socket:
+            socket.receive_json()
+
+    assert refused.value.code == 1008, "policy violation is the close code for this"
+
+
+def test_a_stream_connection_from_the_clients_own_origin_is_accepted(api) -> None:
+    """The other half, and the half that would silently break the product if it failed.
+
+    "Its own" is the `Host` header rather than a configured hostname: the client reaches
+    this port under three authorities — direct, through nginx, through the dev server —
+    and pinning a list would mean editing the backend to change a published port.
+    """
+    with api.websocket_connect(
+        f"/ws/{RUN}", headers={"origin": "http://testserver", "host": "testserver"}
+    ) as socket:
+        assert socket.receive_json()["kind"] == "GENESIS"
+
+
+def test_a_handshake_with_no_origin_at_all_is_accepted(api) -> None:
+    """curl, `websocat`, the CLI and this test client send none.
+
+    A browser always sends `Origin` on a handshake, so its absence means the caller is not
+    a browser — and a hostile page cannot become one by omitting the header, because the
+    browser writes it. Refusing them would harden nothing and would break every
+    non-browser consumer of the stream.
+    """
+    with api.websocket_connect(f"/ws/{RUN}") as socket:
+        assert socket.receive_json()["kind"] == "GENESIS"
+
+
+def test_the_authority_is_compared_and_the_scheme_is_not() -> None:
+    """Behind a proxy this process cannot see the scheme, and must not guess at it.
+
+    nginx sends no `X-Forwarded-Proto`, so `https` upstream is indistinguishable from
+    `http`; the vite dev server rewrites the origin to its own target, which it spells
+    `ws://` where the same address reached directly is spelled `http://`. A foreign
+    origin differs in the authority every time, which is what is compared.
+    """
+    assert gateway_main.origin_is_our_own("http://127.0.0.1:8790", "127.0.0.1:8790")
+    assert gateway_main.origin_is_our_own("ws://127.0.0.1:8800", "127.0.0.1:8800")
+    assert gateway_main.origin_is_our_own("https://127.0.0.1:8790", "127.0.0.1:8790")
+
+    assert not gateway_main.origin_is_our_own("http://evil.example", "127.0.0.1:8790")
+    # A port is part of an authority: another server on this machine is not this server.
+    assert not gateway_main.origin_is_our_own("http://127.0.0.1:5173", "127.0.0.1:8800")
+
+
+def test_a_deliberate_second_front_end_can_be_named(monkeypatch) -> None:
+    """The escape hatch, for a proxy that does not forward `Host` unchanged.
+
+    Empty in every shipped configuration — nginx forwards `$http_host` and the dev server
+    rewrites the origin, so both are same-origin by construction. A value here is
+    somebody's decision rather than something the product needs.
+    """
+    monkeypatch.setenv(gateway_main.ENV_ALLOWED_ORIGINS, "http://studio.local:3000, http://x:1")
+
+    assert gateway_main.origin_is_our_own("http://studio.local:3000", "127.0.0.1:8800")
+    assert not gateway_main.origin_is_our_own("http://studio.local:3001", "127.0.0.1:8800")
+
+
+# =========================================================================
+# The model-spend control frame (M28)
+# =========================================================================
+
+
+def test_the_spend_frame_reaches_a_subscriber_on_connect(api) -> None:
+    """M28's tile has nothing to render until something publishes.
+
+    U9 built the counter, the read and the client's reducer, and nothing sent the frame —
+    so the tile showed its zero-and-absent state for the life of every run, keyed or not.
+    The first frame matters even for a keyless run, because it is what carries the
+    ceiling: before it the tile shows "of —", which is honest and useless.
+    """
+    frame = _first_spend_frame(api)
+
+    assert frame is not None, "no MODEL_SPEND frame was published"
+    assert frame["run_id"] == RUN
+    assert frame["max_calls"] == 200, "the shipped ceiling, reported rather than guessed"
+    assert frame["bench_present"] is False, "no key configured is a supported state"
+
+
+def test_the_spend_frame_carries_every_field_the_clients_reducer_reads(api) -> None:
+    """The wire contract, from the side that sends it.
+
+    `readSpend` in `frontend/src/net/store.ts` reads these nine keys and defends against
+    each being absent — which means a publisher that omitted one would produce a tile
+    showing zero rather than an error anybody could see. Asserting the keys here is what
+    turns that defence into a belt rather than the only strap.
+    """
+    frame = _first_spend_frame(api)
+
+    assert frame is not None
+    for field in (
+        "calls",
+        "tokens",
+        "cache_hits",
+        "max_calls",
+        "max_tokens",
+        "lineage_calls",
+        "lineage_tokens",
+        "bench_present",
+        "quiet",
+    ):
+        assert field in frame, field
+
+    # R6 by omission: which provider answered is not on this wire, and the tile has no
+    # use for it. `ModelGateway.describe()` reports it where an operator wants it.
+    assert "provider" not in frame and "model" not in frame and "api_key" not in frame
+
+
+def test_the_spend_frame_moves_during_a_run(api, monkeypatch) -> None:
+    """M28 says the HUD updates *during* a run, which is the whole of why this exists.
+
+    A counter read once at connect would satisfy a screenshot and nothing else: the
+    figure it is about is the one that grows while the player is briefing somebody.
+    """
+    from modelgw.ceiling import Spend
+
+    # Shortened rather than waited out: the claim is that a moving counter reaches the
+    # client, not that it takes two seconds to. The route reads this when a connection
+    # opens, which is what makes it overridable here at all.
+    monkeypatch.setattr(streaming, "SPEND_POLL_SECONDS", 0.02)
+
+    with api.websocket_connect(f"/ws/{RUN}") as socket:
+        first = _drain_for_spend(socket)
+        assert first is not None and first["calls"] == 0
+
+        agents_main.ledger().add(RUN, Spend(calls=3, input_tokens=120, output_tokens=40))
+
+        moved = _drain_for_spend(socket, limit=200)
+
+    assert moved is not None, "the counter moved and the stream never said so"
+    assert moved["calls"] == 3
+    assert moved["tokens"] == 160
+    # The lineage total is a join to `runs.lineage_root_id`, and a run is its own root at
+    # creation — so it equals this run's spend until U16 makes a child point at a parent.
+    assert moved["lineage_calls"] == 3
+
+
+def test_the_spend_frame_is_not_an_event(api) -> None:
+    """A control frame, and U9's docstring says why it can never be anything else.
+
+    What a call cost depends on which provider answered and what it counted, so an event
+    carrying it would be an output the fold cannot reproduce — strict replay would then
+    fail on every run that used the bench. The client's `isEventFrame` discriminates on
+    `seq` being a string, so a sequence on this frame would route it into the event fold.
+    """
+    frame = _first_spend_frame(api)
+
+    assert frame is not None
+    assert "seq" not in frame, "a sequence would make the client fold this as an event"
+    assert gateway_main._kernel.read_events(RUN, after_seq=0), "the run does have events"
+    for envelope in gateway_main._kernel.read_events(RUN, after_seq=0):
+        assert "SPEND" not in envelope.kind.name, "spend must not be in the log"
+
+
+def _first_spend_frame(api) -> dict | None:
+    with api.websocket_connect(f"/ws/{RUN}") as socket:
+        return _drain_for_spend(socket)
+
+
+def _drain_for_spend(socket, limit: int = 40) -> dict | None:
+    """Read frames until the spend frame arrives, or give up.
+
+    The stream carries the event backlog and position echoes on the same socket, so this
+    cannot assume the spend frame is first — and asserting on frame *order* between two
+    independent publishers would be a test of the scheduler.
+    """
+    for _ in range(limit):
+        frame = socket.receive_json()
+        if frame.get("kind") == "MODEL_SPEND":
+            return frame
+    return None
 
 
 # =========================================================================
