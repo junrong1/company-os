@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { CEO_ID, PALETTE_OVERRIDE, personPalette } from '../src/render/palettes'
-import { DIRS, FRAMES, SPRITE_HEIGHT, SPRITE_WIDTH, characterSheet, depthSort, walkFrame } from '../src/render/actors'
-import { CHARACTER_PALETTE } from '../src/render/sprites'
+import { CEO_ID } from '../src/render/palettes'
+import { StrideTracker, depthSort } from '../src/render/actors'
+import { ATLAS } from '../src/render/cast/atlas-index'
+import { skinFor } from '../src/render/cast/atlas'
+import { ACCENT } from '../src/design/tokens'
 import { type FloorData, TILE, buildGrid, walkable } from '../src/render/floor'
 import {
   CEO_DIAGONAL_MILLI_PER_TICK,
@@ -104,48 +106,42 @@ describe('the CEO in the actor projection', () => {
 })
 
 // =========================================================================
-// R1: the accent, and that it is not shared
+// R1: the player, and that they are not lost in the crowd
 // =========================================================================
 
-describe('the CEO palette', () => {
-  it('differs from every staff palette, so the player never loses themselves in the crowd', () => {
-    const ceo = personPalette(CEO_ID)
-
-    for (const id of rosterIds()) {
-      const staff = personPalette(id)
-      // The top is the accent slot, and it is the one that has to be unique.
-      expect([staff.t, staff.T, staff.u]).not.toEqual([ceo.t, ceo.T, ceo.u])
+describe('the CEO', () => {
+  it('wears a top no member of staff wears', () => {
+    // The player has to stay findable among ten people at a glance, which is R1 and is the
+    // one thing about their appearance that is not cosmetic.
+    for (const seed of [0, 1, 2, 17, 4242]) {
+      const ceo = skinFor(CEO_ID, seed).top
+      for (const id of rosterIds()) {
+        expect(skinFor(id, seed).top, `${id} at seed ${seed}`).not.toBe(ceo)
+      }
     }
   })
 
-  it('is the app accent rather than a hashed choice', () => {
-    // Read off the override rather than re-deriving it: this asserts the override is what
-    // reaches the sheet, which is the thing that could silently stop being true.
-    expect(personPalette(CEO_ID).t).toBe(PALETTE_OVERRIDE[CEO_ID].t)
-    expect(personPalette(CEO_ID).t).toBe('#57c3c2')
+  it('keeps a cool signal that is not the interface accent', () => {
+    // 石绿 in the office, 天蓝 in the chrome. The split exists because the sales room and
+    // everyone in it already wear 花青, and a CEO in 天蓝 would read as a sales hire.
+    //
+    // Every appearance, not just the one this seed happens to pick: the player's colour is a
+    // requirement rather than a look, so it cannot depend on which letter a run drew. It comes
+    // off the casting board's own art rather than being pinned in code — all three `you`
+    // candidates were drawn in the same teal jacket, which is why this holds without anything
+    // in the client asserting it into place.
+    const tops = new Set([0, 1, 2, 17, 4242].map((seed) => skinFor(CEO_ID, seed).top))
+    expect(tops.size).toBe(1)
+    expect([...tops][0]).not.toBe(ACCENT)
   })
 
-  it('generates a rectangular sheet with a clean palette, like every other person', () => {
-    const cache = new Map<string, ReturnType<typeof characterSheet>>()
-    const sheet = characterSheet(CEO_ID, cache, () => ({
-      width: 0,
-      height: 0,
-      getContext: () => null,
-    }) as unknown as HTMLCanvasElement)
-
-    expect(sheet.canvas.width).toBe(SPRITE_WIDTH * FRAMES)
-    expect(sheet.canvas.height).toBe(SPRITE_HEIGHT * DIRS.length)
-
-    // Every glyph the art uses resolves to a colour or to a deliberate transparent.
-    for (const key of CHARACTER_PALETTE) {
-      expect(key in sheet.palette).toBe(true)
+  it('is drawn from the casting board like everyone else', () => {
+    // They cannot be findable if the atlas has no art for them.
+    for (const letter of ['a', 'b', 'c']) {
+      expect(ATLAS[`${CEO_ID}-${letter}`], letter).toBeDefined()
     }
   })
 })
-
-// =========================================================================
-// Depth: the CEO sorts with everyone else
-// =========================================================================
 
 describe('depth sorting the CEO', () => {
   /** The projection, reduced to the depth the renderer sorts on. */
@@ -383,23 +379,40 @@ describe('predicting CEO movement', () => {
   })
 
   it('animates the walk cycle while held and rests when released', () => {
-    const { prediction, open } = atSpawn()
+    const { prediction, open, clearTicks } = atSpawn()
 
     prediction.hold(open, 1n)
     prediction.advanceTo(4n)
     expect(prediction.pose().moving).toBe(true)
 
-    // Frame 0 is standing still; a moving actor cycles through the stride.
-    const frames = new Set(
-      [0, 7, 14, 21].map((ticks) =>
-        walkFrame({ ...prediction.pose(), id: CEO_ID, animTicks: ticks }),
-      ),
-    )
-    expect(frames.size).toBeGreaterThan(1)
+    // Frame 0 is standing still; a moving actor cycles through the stride. Driven by the
+    // distance the prediction actually covered rather than by elapsed ticks, which is the
+    // rule the cast changed to — the CEO and staff move at different speeds and one cadence
+    // for both left one of them skating.
+    // Bounded by the clear run rather than by a fixed number of ticks. The floor is
+    // generated, so walking a fixed distance turns a tighter layout into a movement
+    // regression that is not one — the same trap `clearTicks` exists to close elsewhere here.
+    const stride = new StrideTracker()
+    const frames = new Set<number>()
+    const last = BigInt(Math.max(6, clearTicks))
 
-    prediction.hold(0, 5n)
-    prediction.advanceTo(6n)
-    expect(walkFrame({ ...prediction.pose(), id: CEO_ID, animTicks: 7 })).toBe(0)
+    for (let tick = 2n; tick <= last; tick += 1n) {
+      prediction.advanceTo(tick)
+      const actor = { ...prediction.pose(), id: CEO_ID, animTicks: 0 }
+      stride.advance(actor)
+      frames.add(stride.frame(actor))
+    }
+
+    // The CEO covers 144 milli-tiles a tick and a stride step is 250, so a clear run of any
+    // usable length crosses at least one boundary.
+    expect(frames.size).toBeGreaterThan(1)
+    expect(frames).not.toContain(0)
+
+    prediction.hold(0, last + 2n)
+    prediction.advanceTo(last + 3n)
+    const resting = { ...prediction.pose(), id: CEO_ID, animTicks: 0 }
+    stride.advance(resting)
+    expect(stride.frame(resting)).toBe(0)
   })
 
   it('faces the direction of travel', () => {

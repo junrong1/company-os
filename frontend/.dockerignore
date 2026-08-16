@@ -1,3 +1,8 @@
 node_modules/
 dist/
 .vite/
+
+# Authoring sources for the cast. Committed, because losing them means losing the
+# ability to edit the art — but never bundled and never in the image.
+art/
+scripts/

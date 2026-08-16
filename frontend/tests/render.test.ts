@@ -9,32 +9,29 @@ import {
   positionDiverged,
 } from '../src/render/clock'
 import { TICKS_PER_SIM_HOUR } from '../src/render/interpolate'
+import { RESERVED_BEAM, relativeLuminance } from '../src/design/tokens'
 
 /** Wall milliseconds that advance the clock by at least `ticks` at rate 1. */
 function wallMsFor(ticks: bigint): number {
   return Number((ticks * TICKS_PER_WALL_MS_DENOMINATOR) / TICKS_PER_WALL_MS_NUMERATOR) + 1
 }
 import { Renderer, resetSheetCounter, sheetsGenerated } from '../src/render/index'
-import {
-  ART,
-  BODY,
-  CHARACTER_PALETTE,
-  LEGS,
-  LONG_HAIR,
-  PROPS,
-  PROP_PALETTE,
-} from '../src/render/sprites'
+import { ART, PROPS, OUTLINE_GLYPHS, PROP_PALETTE } from '../src/render/sprites'
 import {
   DIRS,
   FRAMES,
   SPRITE_HEIGHT,
   SPRITE_WIDTH,
   BEAM_COLOUR,
-  characterSheet,
+  STRIDE_MILLI,
+  StrideTracker,
+  WALK_CYCLE,
   depthSort,
+  drawActor,
   drawWaitingBeam,
-  walkFrame,
 } from '../src/render/actors'
+import { ATLAS } from '../src/render/cast/atlas-index'
+import { IDENTITIES, candidateFor, resetAtlas } from '../src/render/cast/atlas'
 import {
   type FloorData,
   CORRIDOR as CORRIDOR_TILE,
@@ -419,11 +416,11 @@ describe('position divergence', () => {
 // =========================================================================
 
 describe('the ported sprite grids', () => {
-  it('has every prop 16 rows of 16 columns, in the prop palette', () => {
+  it('has every prop 32 rows of 32 columns, in the prop palette', () => {
     for (const [name, rows] of Object.entries(PROPS)) {
-      expect(rows.length, `${name} row count`).toBe(16)
+      expect(rows.length, `${name} row count`).toBe(32)
       for (const [index, row] of rows.entries()) {
-        expect(row.length, `${name} row ${index} width`).toBe(16)
+        expect(row.length, `${name} row ${index} width`).toBe(32)
         for (const glyph of row) {
           expect(PROP_PALETTE.has(glyph), `${name} row ${index} glyph ${glyph}`).toBe(true)
         }
@@ -431,39 +428,27 @@ describe('the ported sprite grids', () => {
     }
   })
 
-  it('has every body 14 rows of 10 columns, in the character palette', () => {
-    for (const [name, rows] of Object.entries(BODY)) {
-      expect(rows.length, `${name} row count`).toBe(14)
-      for (const [index, row] of rows.entries()) {
-        expect(row.length, `${name} row ${index} width`).toBe(10)
-        for (const glyph of row) {
-          expect(CHARACTER_PALETTE.has(glyph), `${name} row ${index} glyph ${glyph}`).toBe(true)
-        }
-      }
-    }
+  it('is a daylight set with dark outlines, rather than an ink set', () => {
+    // Deliberately not "every value clears a luminance floor". Structure is legitimately mid
+    // — a chair post and a window frame are 鲸鱼灰 and should be — so a floor high enough to
+    // mean anything would forbid the furniture from having any weight at all.
+    //
+    // What is actually claimed is the shape of the set: the two outline glyphs are the two
+    // darkest values in it, and most of the rest is light. An ink-room palette fails the
+    // second half immediately, which is what makes this worth asserting.
+    const byLuminance = Object.entries(ART).sort(
+      ([, a], [, b]) => relativeLuminance(a) - relativeLuminance(b),
+    )
+
+    const darkestTwo = new Set(byLuminance.slice(0, 2).map(([glyph]) => glyph))
+    expect(darkestTwo).toEqual(OUTLINE_GLYPHS)
+
+    const light = byLuminance.filter(([, colour]) => relativeLuminance(colour) > 0.15)
+    expect(light.length).toBeGreaterThanOrEqual(Math.ceil(byLuminance.length * 0.6))
   })
 
-  it('has three walk frames of two-row legs', () => {
-    expect(LEGS.length).toBe(3)
-    for (const [frame, rows] of LEGS.entries()) {
-      expect(rows.length, `legs frame ${frame}`).toBe(2)
-      for (const row of rows) {
-        expect(row.length).toBe(10)
-        for (const glyph of row) expect(CHARACTER_PALETTE.has(glyph)).toBe(true)
-      }
-    }
-  })
-
-  it('has every long-hair overlay 14 rows of 10 columns', () => {
-    for (const [name, rows] of Object.entries(LONG_HAIR)) {
-      expect(rows.length, `${name} row count`).toBe(14)
-      for (const row of rows) expect(row.length).toBe(10)
-    }
-  })
-
-  it('composes a 16-row character from 14 body rows and 2 leg rows', () => {
-    const body = Object.values(BODY)[0]
-    expect(body.length + LEGS[0].length).toBe(16)
+  it('spends the reserved amber on no prop', () => {
+    expect(Object.values(ART)).not.toContain(RESERVED_BEAM)
   })
 
   it('maps every prop glyph except transparent to a colour', () => {
@@ -473,13 +458,12 @@ describe('the ported sprite grids', () => {
     }
   })
 
-  it('carries the same sprite count the prototype validates', () => {
-    const total =
-      Object.keys(PROPS).length +
-      Object.keys(BODY).length +
-      LEGS.length +
-      Object.keys(LONG_HAIR).length
-    expect(total).toBe(18)
+  it('carries every grid the office is furnished from', () => {
+    // Sixteen props rather than the prototype's ten: R10 asks for artwork, plants and
+    // collaboration spaces, and none of those existed. The assertion itself is what catches a
+    // grid deleted by accident, which is the only reason to count them.
+    expect(Object.keys(PROPS)).toHaveLength(16)
+
   })
 })
 
@@ -506,9 +490,15 @@ function recordingCanvas(): { canvas: HTMLCanvasElement; calls: string[] } {
     clearRect: () => calls.push('clearRect'),
     drawImage: (...args: unknown[]) => calls.push(`drawImage:${args.length}`),
     createRadialGradient: () => ({ addColorStop: () => undefined }),
+    createImageData: (width: number, height: number) => {
+      calls.push('createImageData')
+      return { width, height, data: new Uint8ClampedArray(width * height * 4) }
+    },
+    putImageData: () => calls.push('putImageData'),
     save: () => calls.push('save'),
     restore: () => calls.push('restore'),
     scale: (x: number) => calls.push(`scale:${x}`),
+    translate: (x: number, y: number) => calls.push(`translate:${x},${y}`),
   }
   const canvas = {
     width: 0,
@@ -573,19 +563,6 @@ describe('the depth sort', () => {
   })
 })
 
-describe('the walk cycle', () => {
-  it('stands still on frame zero', () => {
-    expect(walkFrame({ ...ACTOR, moving: false, animTicks: 99 })).toBe(0)
-  })
-
-  it('alternates feet rather than repeating one frame', () => {
-    const frames = [0, 7, 14, 21].map((animTicks) =>
-      walkFrame({ ...ACTOR, moving: true, animTicks }),
-    )
-    expect(frames).toEqual([0, 1, 0, 2])
-  })
-})
-
 const ACTOR = {
   id: 'stf_cs',
   xMilli: 10_000,
@@ -595,33 +572,93 @@ const ACTOR = {
   animTicks: 0,
 }
 
-describe('character sheets', () => {
-  it('builds one sheet per person and caches it', () => {
-    const cache = new Map()
-    const make = () => recordingCanvas().canvas
-
-    const first = characterSheet('stf_cs', cache, make)
-    const second = characterSheet('stf_cs', cache, make)
-
-    expect(second).toBe(first)
-    expect(cache.size).toBe(1)
+describe('the cast', () => {
+  it('draws every person from the approved casting board', () => {
+    // Not a rig, and not a composition. The board's 33 candidates *are* the art — four
+    // facings by four frames each, all of it derived from their own pixels.
+    expect(Object.keys(ATLAS)).toHaveLength(33)
+    expect(SPRITE_WIDTH).toBe(48)
+    expect(SPRITE_HEIGHT).toBe(64)
+    expect(FRAMES).toBe(4)
+    expect(DIRS).toEqual(['down', 'up', 'left', 'right'])
   })
 
-  it('sizes a sheet as four facings by three frames', () => {
-    const cache = new Map()
-    const sheet = characterSheet('dir_sales', cache, () => recordingCanvas().canvas)
-
-    expect(sheet.canvas.width).toBe(SPRITE_WIDTH * FRAMES)
-    expect(sheet.canvas.height).toBe(SPRITE_HEIGHT * DIRS.length)
+  it('has art for every identity the office can show, including the player', () => {
+    for (const id of IDENTITIES) {
+      for (const letter of ['a', 'b', 'c']) {
+        expect(ATLAS[`${id}-${letter}`], `${id}-${letter}`).toBeDefined()
+      }
+    }
+    expect(IDENTITIES).toContain('you')
   })
 
-  it('derives a different palette for different people', () => {
-    const cache = new Map()
-    const make = () => recordingCanvas().canvas
-    const a = characterSheet('stf_cs', cache, make).palette
-    const b = characterSheet('dir_sales', cache, make).palette
+  it('casts anyone the board never met as somebody who is on it', () => {
+    // R9, and the simplest possible reading of it: a background coworker is not *compatible*
+    // with the leads, they are literally the same casting board.
+    for (const id of ['temp_001', 'contractor', 'visitor_9']) {
+      expect(ATLAS[candidateFor(id, 3)], id).toBeDefined()
+    }
+  })
 
-    expect(JSON.stringify(a)).not.toBe(JSON.stringify(b))
+  it('draws nothing rather than waiting when the atlas has not arrived', () => {
+    // An image decode is one round trip against a renderer that owes a frame every sixteen
+    // milliseconds. A blank office for the length of a decode is the one thing this redesign
+    // cannot afford to look like, so the loop asks and never waits.
+    resetAtlas()
+    const recording = recordingCanvas()
+    drawActor(recording.canvas.getContext('2d')!, ACTOR, 1, 0)
+    expect(recording.calls.filter((call) => call.startsWith('drawImage'))).toHaveLength(0)
+  })
+})
+
+describe('the stride', () => {
+  const walking = { ...ACTOR, moving: true }
+
+  it('stands still on frame zero', () => {
+    const stride = new StrideTracker()
+    expect(stride.frame({ ...ACTOR, moving: false })).toBe(0)
+  })
+
+  it('alternates feet as a person covers ground', () => {
+    // Keyed to distance rather than to elapsed ticks, which is what lets the CEO at 144
+    // milli-tiles a tick and staff at about 78 share one rule without either skating.
+    const stride = new StrideTracker()
+    const frames: number[] = []
+
+    let x = walking.xMilli
+    for (let step = 0; step < 8; step += 1) {
+      stride.advance({ ...walking, xMilli: x })
+      frames.push(stride.frame({ ...walking, xMilli: x }))
+      x += STRIDE_MILLI
+    }
+
+    expect(new Set(frames).size).toBeGreaterThan(1)
+    expect(frames).not.toContain(0)
+  })
+
+  it('does not spin the legs through a cycle when somebody is teleported', () => {
+    // A resync, a fork or a seeded spawn moves a person across the floor in one frame. That
+    // is not a walk, and counting it as one runs the whole cycle in a single frame.
+    const stride = new StrideTracker()
+    stride.advance(walking)
+    stride.advance({ ...walking, xMilli: walking.xMilli + 400_000 })
+
+    expect(stride.frame(walking)).toBe(WALK_CYCLE[0])
+  })
+
+  it('forgets anyone who has left the floor', () => {
+    // A Map keyed by id that nothing removes from is the same leak the renderer's lifecycle
+    // exists to prevent, in a different shape.
+    const stride = new StrideTracker()
+    stride.advance(walking)
+    stride.advance({ ...walking, id: 'dir_hr' })
+    expect(stride.size).toBe(0)
+
+    stride.advance({ ...walking, xMilli: walking.xMilli + 100 })
+    expect(stride.size).toBe(1)
+
+    stride.retain([])
+    expect(stride.size).toBe(0)
   })
 })
 
@@ -646,7 +683,7 @@ describe('the zoom', () => {
     expect(chooseZoom(700, 400)).toBe(1)
   })
 
-  it('sizes the canvas to the floor times the zoom', () => {
+  it('sizes the canvas to the stage, not to the floor', () => {
     const { canvas } = recordingCanvas()
     const instance = new Renderer({
       canvas,
@@ -656,8 +693,32 @@ describe('the zoom', () => {
 
     instance.resize(1600, 900)
 
-    expect(canvas.width).toBe(FLOOR_FIXTURE.cols * TILE * instance.currentZoom)
-    expect(canvas.height).toBe(FLOOR_FIXTURE.rows * TILE * instance.currentZoom)
+    // It used to be the floor times the zoom, and `.stage` scrolled. That worked while the
+    // office was 496×288 and stopped the moment it became 992×576 — larger than the stage on
+    // most laptops, so the CEO would walk off the visible area. The camera shows the right
+    // part of the floor instead, and the canvas is simply the window onto it.
+    expect(canvas.width).toBe(1600)
+    expect(canvas.height).toBe(900)
+    expect(instance.view.width).toBe(1600 / instance.currentZoom)
+    expect(instance.view.height).toBe(900 / instance.currentZoom)
+  })
+
+  it('resizes without rebuilding the sheets or the baked floor', () => {
+    const { canvas } = recordingCanvas()
+    const instance = new Renderer({
+      canvas,
+      floor: FLOOR_FIXTURE,
+      makeCanvas: () => recordingCanvas().canvas,
+    })
+
+    instance.start()
+    const built = sheetsGenerated()
+
+    instance.resize(1264, 450)
+    instance.resize(1904, 840)
+
+    expect(sheetsGenerated()).toBe(built)
+    expect(instance.staticLayerBuilt).toBe(true)
   })
 })
 
@@ -733,10 +794,17 @@ describe('a frame', () => {
     expect(order).toEqual(['desk-above', 'person', 'desk-below'])
   })
 
-  it('caches one character sheet per actor drawn, not one per frame', () => {
+  it('keeps drawing the room while the cast is still loading', () => {
+    // There is no per-person sheet to cache any more — everybody comes out of one atlas
+    // image, which arrives asynchronously. What used to be "one sheet per actor, not one per
+    // frame" is now the stronger claim: the office does not wait for the cast at all. A blank
+    // room for the length of an image decode is the one thing this redesign cannot look like.
+    resetAtlas()
+
     const frames = fakeFrames()
+    const canvas = recordingCanvas()
     const instance = new Renderer({
-      canvas: recordingCanvas().canvas,
+      canvas: canvas.canvas,
       floor: FLOOR_FIXTURE,
       actors: () => [ACTOR, { ...ACTOR, id: 'dir_sales' }],
       makeCanvas: () => recordingCanvas().canvas,
@@ -751,12 +819,18 @@ describe('a frame', () => {
       frames.runOne()
     }
 
-    expect(instance.cachedSheets).toBe(2)
+    expect(instance.frameCount).toBe(5)
+    // The floor and its furniture went down on every one of those frames.
+    expect(canvas.calls.filter((call) => call.startsWith('drawImage')).length).toBeGreaterThan(0)
   })
 
   it('draws the reserved amber only for someone waiting on a decision', () => {
-    /* Amber means one thing across the whole product, and this is the only place that spends it. */
-    expect(BEAM_COLOUR).toBe('#f0a92b')
+    /* Amber means one thing across the whole product, and this is the only place that spends
+     * it. Asserted against the token module rather than against a literal, because for a
+     * while there were two of them — the canvas drew `#f0a92b` while the chrome drew
+     * `#f2c46b`, which is two ambers for one meaning in a product whose strongest claim is
+     * that exactly one signal pulls the eye. Pinning the hex here is what let them drift. */
+    expect(BEAM_COLOUR).toBe(RESERVED_BEAM)
 
     const withBeam = recordingCanvas()
     drawWaitingBeam(withBeam.canvas.getContext('2d')!, { ...ACTOR, waiting: true })

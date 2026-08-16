@@ -123,7 +123,7 @@ export function paintText(
   originX: number,
   originY: number,
   zoom = 1,
-  colour: string = PAL.yuebai,
+  colour: string = PAL.text,
 ): number {
   let cursor = originX
   const ink: GridPalette = { '1': colour }

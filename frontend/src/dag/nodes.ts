@@ -85,7 +85,7 @@ export const STATUS: Record<ItemStatus, StatusEncoding> = {
     glyph: 'work',
     hue: ACCENT,
     edge: 'dashed',
-    label: PAL.yuebai,
+    label: PAL.text,
   },
   blocked: {
     border: 'broken',
@@ -99,7 +99,7 @@ export const STATUS: Record<ItemStatus, StatusEncoding> = {
     glyph: 'deliver',
     hue: OK,
     edge: 'solid',
-    label: PAL.yuebai,
+    label: PAL.text,
   },
 }
 
@@ -119,15 +119,22 @@ export const GLYPHS: Record<string, readonly string[]> = {
 }
 
 /**
- * The plate behind a glyph is dark, so the glyph's *structure* has to be the light value.
+ * The plate behind a glyph is light, so the glyph's *structure* has to be the dark value.
  *
- * Inking `k` in the stage colour would make the outline vanish into the plate and leave only
- * the interior fill showing — the glyph would read as two dashes rather than as a symbol.
+ * This inverted with the ground and the reasoning did not: inking `k` in the plate's own
+ * value would make the outline vanish and leave only the interior fill showing, and the
+ * glyph would read as two dashes rather than as a symbol. What changed is which end of the
+ * scale the plate sits at.
+ *
+ * `b` carries the same requirement one step in. On ink it could be the panel grey, because
+ * panel grey was lighter than the plate; on ivory the panel grey *is* nearly the plate, so
+ * the secondary fill moves to 星蓝 — far enough from `a` to read as a second tone and far
+ * enough from the plate to read at all.
  */
 export const GLYPH_PALETTE = {
   k: PAL.yueyingbai,
   a: PAL.jingyuhui,
-  b: PAL.qinghui,
+  b: PAL.xinghui,
 }
 
 /**
@@ -233,19 +240,24 @@ export function drawNode(context: PixelContext, node: NodeView): void {
   const width = (node.cols ?? NODE_COLS) * GRID
   const height = NODE_ROWS * GRID
 
-  // Plate. A completed node's interior is recessed, which is the third cue on `done`.
-  context.fillStyle = PAL.qinghui
+  // Plate. A completed node's interior is recessed, which is the third cue on `done` —
+  // "recessed" meaning *darker than its neighbours*, so on ivory it deepens where on ink it
+  // used to blacken. The outer ring is the rule colour rather than the track colour, because
+  // on a light ground a node needs an edge to be a node at all.
+  context.fillStyle = PAL.rule
   context.fillRect(x, y, width, height)
-  context.fillStyle = node.status === 'done' ? '#0c1019' : PAL.gangqing
+  context.fillStyle = node.status === 'done' ? PAL.qinghui : PAL.gangqing
   context.fillRect(x + 2, y + 2, width - 4, height - 4)
 
   // Department stripe, left edge, in the room's own floor colour.
   context.fillStyle = deptColour(node.dept)
   context.fillRect(x + 2, y + 2, 4, height - 4)
 
-  // Load bar, bottom edge, on the ramp the office uses.
+  // Load bar, bottom edge, on the ramp the office uses. The track is the rule colour rather
+  // than the panel track: a `done` node's plate *is* the panel track, and a bar drawn in it
+  // would disappear on exactly the nodes whose load still matters to read.
   const trackWidth = width - 20
-  context.fillStyle = PAL.qinghui
+  context.fillStyle = PAL.rule
   context.fillRect(x + 10, y + height - 8, trackWidth, 4)
   context.fillStyle = loadColour(node.loadPermille, node.ceiling)
   const fill = Math.round(
@@ -306,7 +318,9 @@ export function drawPip(
 ): number {
   const encoding = STATUS[node.status]
 
-  context.fillStyle = PAL.gangqing
+  // Lifted off the strip rather than recessed into it: the strip's band is the warm quiet
+  // surface, so a pip reads as a chip on top of it.
+  context.fillStyle = PAL.ganglan
   context.fillRect(x, y, PIP_WIDTH, PIP_HEIGHT)
   context.fillStyle = deptColour(node.dept)
   context.fillRect(x, y, 2, PIP_HEIGHT)

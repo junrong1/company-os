@@ -1,3 +1,15 @@
+/* The surface before the office: starting a run, and the gateway's health when it cannot be
+ * reached.
+ *
+ * On the same palette as everything else. This file used to be a third opinion about what
+ * colour a card is — the office had one, the chrome had another, and the diagnostic view had
+ * its own — and a third opinion is a third thing to forget when the palette moves. The values
+ * mirror src/design/tokens.ts, and are spelled out rather than read from custom properties
+ * because this surface renders whether or not shell.css has been loaded.
+ *
+ * `.shell` here is the pre-run layout and `.shell` in shell.css is the office layout; the two
+ * never render at the same time. */
+
 .shell {
   max-width: 44rem;
   margin: 0 auto;
@@ -12,23 +24,23 @@ h1 {
 
 .sub {
   margin: 0.35rem 0 2rem;
-  color: #7d8494;
+  color: #5c677a;
 }
 
 .card {
-  border: 1px solid #262b35;
+  border: 1px solid #c3d5de;
   border-left-width: 3px;
   border-radius: 2px;
   padding: 1rem 1.25rem;
-  background: #14171d;
+  background: #f7fbf9;
 }
 
 .card.ok {
-  border-left-color: #4f9d6a;
+  border-left-color: #12775e;
 }
 
 .card.bad {
-  border-left-color: #b4543f;
+  border-left-color: #c8402a;
 }
 
 .card h2 {
@@ -44,7 +56,7 @@ h1 {
   font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: #7d8494;
+  color: #5c677a;
 }
 
 .pill {
@@ -54,7 +66,7 @@ h1 {
   padding: 0.1rem 0.4rem;
   border: 1px solid currentColor;
   border-radius: 2px;
-  color: #7d8494;
+  color: #5c677a;
 }
 
 dl {
@@ -65,7 +77,7 @@ dl {
 }
 
 dt {
-  color: #7d8494;
+  color: #5c677a;
 }
 
 dd {
@@ -78,25 +90,25 @@ ul {
 }
 
 li.up::marker {
-  color: #4f9d6a;
+  color: #12775e;
 }
 
 li.down::marker {
-  color: #b4543f;
+  color: #c8402a;
 }
 
 .hint {
-  color: #7d8494;
+  color: #5c677a;
   margin-bottom: 0;
 }
 
 code {
-  background: #1c212a;
+  background: #eef7f2;
   padding: 0.1rem 0.3rem;
   border-radius: 2px;
 }
 
 em {
-  color: #7d8494;
+  color: #5c677a;
   font-style: normal;
 }

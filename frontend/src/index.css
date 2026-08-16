@@ -1,10 +1,16 @@
-/* Minimal ground only. The real palette, glyphs and label face are specified in
-   docs/design/art-direction.html and land with U12 and U13; putting a second
-   opinion here now would be one to unpick later. */
+/* The ground everything else sits on.
+ *
+ * The palette, glyphs and label face are specified in docs/design/art-direction.html and
+ * live in src/design/tokens.ts and src/ui/shell.css. What belongs here is only what has to
+ * be true before either of those loads: the colour scheme, the face, and a body that is
+ * already the product's ground rather than a placeholder that flashes dark on first paint. */
 
 :root {
-  color-scheme: dark;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color-scheme: light;
+  /* A humanist sans for prose, and monospace only for figures. The approved direction reads as
+     a product rather than as a terminal because of this one choice — an earlier pass set
+     everything in mono and the result read as a console with pictures in it. */
+  font-family: "Avenir Next", Avenir, "PingFang SC", "Hiragino Sans GB", system-ui, sans-serif;
   font-size: 14px;
   line-height: 1.5;
 }
@@ -16,6 +22,8 @@
 body {
   margin: 0;
   min-height: 100vh;
-  background: #0f1115;
-  color: #d7dae0;
+  /* 象牙白 and 鸽蓝, matching --ganglan and --text. Spelled out rather than read from a
+     custom property because this rule has to hold before shell.css is parsed. */
+  background: #fffef8;
+  color: #1c2938;
 }

@@ -145,6 +145,26 @@ The CEO's act of letting one Director read another's Memory. It is recorded, and
 how work that needs another Department's knowledge gets unblocked.
 _Avoid_: permission, grant, access, approval (an approval is a kind of Checkpoint)
 
+## How a person is drawn
+
+**Rig**:
+The shared body every person in the office is built on: three views by four frames, on a
+transparent 48×64 canvas. It carries skin, limb silhouette and the outline, and nothing that
+distinguishes one person from another.
+_Avoid_: base sprite, template, skeleton
+
+**Manifest**:
+Who a person is, as the four choices and six colours that make them themselves — a hair shape,
+an outfit, at most one accessory, and a palette. Authored for the eleven identities and derived
+from the id for anyone else.
+_Avoid_: skin, config, profile, preset
+
+**Appearance**:
+Which of a named identity's three candidates a Run shows. Chosen client-side from the Seed, and
+never sent anywhere — so a cosmetic choice cannot reach the simulation because there is no
+channel by which it could.
+_Avoid_: variant, skin, costume
+
 ## The economy
 
 **Draw**:
