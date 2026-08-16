@@ -1,0 +1,623 @@
+# The shipped company. See schema.md in this directory for the format.
+#
+# Everything here is authored data: who sits where, who reports to whom, what work
+# exists, and what each person says when the CEO asks. Nothing in it is executed —
+# the tools, MCP servers and skills describe what a person is understood to have
+# (M15, M16).
+
+schema = 1
+id = "default"
+title = "Northwind Components"
+summary = "A mid-size components company: ten people, four reporting lines, and eight pieces of work that each stop for a decision only the CEO can take."
+
+# --- the four reporting lines -------------------------------------------------
+#
+# Fixed by the rules (M11): a scenario staffs these four and cannot add a fifth.
+# `draw_hours_per_month` is the line's recurring baseline workload, in the same
+# hours-per-month unit the Manual work metric displays — their sum *is* the
+# starting value of that metric.
+
+[[department]]
+id = "admin"
+director = "dir_admin"
+draw_hours_per_month = 120
+
+[[department]]
+id = "sales"
+director = "dir_sales"
+draw_hours_per_month = 100
+
+[[department]]
+id = "support"
+director = "dir_cs"
+draw_hours_per_month = 60
+
+[[department]]
+id = "hr"
+director = "dir_hr"
+draw_hours_per_month = 60
+
+# --- the roster ---------------------------------------------------------------
+#
+# Order is load-bearing: it decides who wins a contested desk, and it is covered by
+# the content hash. `room` is where someone sits; `manager` is whose line they are
+# in. They disagree for Priya on purpose — see schema.md.
+
+[[person]]
+id = "dir_sales"
+name = "Marcus Webb"
+initials = "MW"
+title = "VP, Sales"
+room = "sales"
+manager = ""
+rank = "director"
+seat_slot = 2
+responsibility = "Owns the revenue number, and is the only approval for credit terms and discounts."
+tools = ["Sales CRM", "Forecast workbook", "Email"]
+mcp_servers = ["crm", "reporting-warehouse"]
+skills = ["pipeline-review", "discount-approval", "territory-planning"]
+deflection = "I would be guessing, and you would be able to tell. Ask me why the numbers land where they do, what reaches me, what is mine to approve, or what we all know is broken."
+
+[person.voice]
+why = "I see the numbers daily. Why they came out that way, I would have to ask the floor."
+exception = "The exceptions live with the team. What reaches me is already too late to fix."
+axis = "Credit and discounts are mine. Everything else sits with the account owner."
+bottleneck = "The duplicate order entry. We know about it; nobody has a free hand to fix it."
+
+[[person]]
+id = "stf_order"
+name = "Dana Reyes"
+initials = "DR"
+title = "Order Processing Specialist"
+room = "sales"
+manager = "dir_sales"
+rank = "staff"
+seat_slot = 0
+responsibility = "Enters every order into the order system, and holds the delivery dates the floor promised."
+tools = ["Order System", "Sales spreadsheet", "Stock enquiry terminal"]
+mcp_servers = ["order-system", "inventory"]
+skills = ["order-entry", "stock-reservation", "delivery-date-check"]
+deflection = "I would not know about that. Ask me why the entry works the way it does, where the exceptions are, what I decide myself, or where the time goes."
+
+[person.voice]
+why = "Sales promises a date in their spreadsheet, then I retype it into the order system. Flip that order and sales cannot answer the customer."
+exception = "For our three largest accounts I hold stock over the phone before I enter anything. That never shows up in the system."
+axis = "I decide whether to pull a delivery date forward. Under three days I just do it and tell nobody."
+bottleneck = "Typing the same numbers twice. About 25 hours a month."
+
+[[person]]
+id = "stf_field"
+name = "Tom Baird"
+initials = "TB"
+title = "Account Executive"
+room = "sales"
+manager = "dir_sales"
+rank = "staff"
+seat_slot = 1
+responsibility = "Carries the customer relationship on the road, and promises delivery dates at the table."
+tools = ["Sales CRM", "Personal delivery spreadsheet", "Mobile phone"]
+mcp_servers = ["crm"]
+skills = ["account-visits", "verbal-order-intake", "delivery-promising"]
+deflection = "That is not my end of it. Ask me why I keep my own numbers, what I take verbally, what I promise on my own, or what stops me on the road."
+
+[person.voice]
+why = "I carry my own spreadsheet so I can answer on delivery dates at the customer table. They cannot see our system."
+exception = "Repeat orders I take verbally and collect the paperwork later."
+axis = "The delivery promise is mine. I check stock with Dana, but urgent ones I call myself."
+bottleneck = "I cannot process an order while I am travelling."
+
+[[person]]
+id = "dir_admin"
+name = "Grace Okafor"
+initials = "GO"
+title = "Director, Administration"
+room = "admin"
+manager = ""
+rank = "director"
+seat_slot = 1
+responsibility = "Runs the month-end close, and owns the manager approval threshold."
+tools = ["Ledger", "Approval queue", "Close checklist"]
+mcp_servers = ["ledger", "approval-queue"]
+skills = ["month-end-close", "authority-policy", "supplier-relations"]
+deflection = "I do not have that to hand. Ask me why the close runs long, what we let slide at quarter end, where the approval line sits, or what everything waits on."
+
+[person.voice]
+why = "The close takes five days for two reasons — waiting on paper invoices, and approvals sitting idle. Both causes start outside my department."
+exception = "At quarter end we let the close run a day late to make the numbers line up."
+axis = "Manager approval above $10K. That threshold can move. Nobody has decided to move it."
+bottleneck = "Idle approvals. If the approver is travelling, everything parks for two days."
+
+[[person]]
+id = "stf_ap"
+name = "Priya Raman"
+initials = "PR"
+title = "Accounts Payable"
+room = "accounting"
+manager = "dir_admin"
+rank = "staff"
+seat_slot = 0
+responsibility = "Reconciles every invoice against its paper copy, and releases the payment run."
+tools = ["Ledger", "Invoice scanner", "Payment run"]
+mcp_servers = ["ledger", "document-store"]
+skills = ["invoice-matching", "payment-release", "supplier-reconciliation"]
+deflection = "That is above my desk. What I can tell you is why the reconciliation runs as it does, the exceptions I make, where my authority ends, and what eats the month."
+
+[person.voice]
+why = "Invoices arrive on paper and as PDF, so I reconcile both before I post anything. With only one of them, things slip through."
+exception = "The last three days of the month I release payment before the paper arrives. Waiting would miss the supplier close."
+axis = "Anything over $10K needs the manager approval. Nobody has revisited that line in five years."
+bottleneck = "Matching. Seven minutes an invoice, four hundred invoices a month."
+
+[[person]]
+id = "stf_buyer"
+name = "Victor Hale"
+initials = "VH"
+title = "Procurement Buyer"
+room = "admin"
+manager = "dir_admin"
+rank = "staff"
+seat_slot = 0
+responsibility = "Collects competing quotes, and places every purchase order."
+tools = ["Purchase order system", "Quote tracker", "Supplier directory"]
+mcp_servers = ["purchasing", "supplier-directory"]
+skills = ["quote-collection", "single-source-justification", "purchase-ordering"]
+deflection = "No idea, honestly. Ask me why we quote the way we do, when I go single-source, what is mine to call, or where an order parks."
+
+[person.voice]
+why = "Three competing quotes on everything, so we can defend the price if an auditor asks."
+exception = "Repairs and emergency parts go single-source. The plant stops otherwise, so I write the paperwork afterwards."
+axis = "The three-quote rule ignores value. I collect three quotes for a thousand-dollar desk."
+bottleneck = "Waiting for quotes to come back. Every order parks 2.5 days there."
+
+[[person]]
+id = "dir_cs"
+name = "Nina Kaur"
+initials = "NK"
+title = "Customer Support Manager"
+room = "support"
+manager = ""
+rank = "director"
+seat_slot = 1
+responsibility = "Owns first-line response time, and takes every cancellation and legal ticket herself."
+tools = ["Ticket desk", "Answer templates", "Escalation board"]
+mcp_servers = ["ticket-desk"]
+skills = ["escalation-handling", "response-time-review", "template-authoring"]
+deflection = "You would want someone closer to it than me. Ask me why first line costs what it does, what comes to me, how escalation actually works, or what fills Owen's day."
+
+[person.voice]
+why = "First-line response is entirely people. I cannot see a way to shrink it without losing quality."
+exception = "Cancellations and anything legal come to me, regardless of content."
+axis = "There is no written escalation rule. It is Owen judgement."
+bottleneck = "Answering repeat questions. That is 60% of Owen time."
+
+[[person]]
+id = "stf_cs"
+name = "Owen Cole"
+initials = "OC"
+title = "Support, First Line"
+room = "support"
+manager = "dir_cs"
+rank = "staff"
+seat_slot = 0
+responsibility = "Answers the first-line queue, and decides what goes to engineering."
+tools = ["Ticket desk", "Answer templates", "Knowledge base"]
+mcp_servers = ["ticket-desk", "knowledge-base"]
+skills = ["ticket-triage", "answer-drafting", "engineering-handoff"]
+deflection = "Not something I see from first line. Ask me why the answers take as long as they do, what I escalate, what is my judgement, or what fills the queue."
+
+[person.voice]
+why = "I write the same answers by hand every time. We have templates, but I rework them for each customer."
+exception = "Anything that mentions cancelling goes straight to Nina, whatever else it says."
+axis = "Whether a ticket goes to engineering is my call. About five a day I genuinely cannot judge."
+bottleneck = "Questions we have already answered. Six of every ten tickets."
+
+[[person]]
+id = "dir_hr"
+name = "Ruth Bello"
+initials = "RB"
+title = "People Manager"
+room = "hr"
+manager = ""
+rank = "director"
+seat_slot = 1
+responsibility = "Owns hiring lead time, and translates what a hiring manager wants into a posting."
+tools = ["Applicant tracker", "Job board", "Interview calendar"]
+mcp_servers = ["applicant-tracker", "calendar"]
+skills = ["requirements-gathering", "posting-authoring", "offer-negotiation"]
+deflection = "I have nothing useful on that. Ask me why the requirements drift, which hires go around us, who really decides, or what the agreeing costs."
+
+[person.voice]
+why = "We ask the hiring manager what they want, then translate it into our language for the posting. That is where it drifts."
+exception = "Executive hires run through a different route and leave no record."
+axis = "The hiring manager decides at the end, but we filter before they ever see a candidate."
+bottleneck = "Agreeing requirements. Two weeks of back and forth."
+
+[[person]]
+id = "stf_rec"
+name = "Sam Delgado"
+initials = "SD"
+title = "Recruiter"
+room = "hr"
+manager = "dir_hr"
+rank = "staff"
+seat_slot = 0
+responsibility = "Sources candidates, sets the first-round bar, and schedules every interview."
+tools = ["Applicant tracker", "Job board", "Interview calendar"]
+mcp_servers = ["applicant-tracker", "calendar"]
+skills = ["candidate-sourcing", "first-round-screening", "interview-scheduling"]
+deflection = "I could not say. Ask me why the postings drift, which candidates skip the process, where I set the bar, or what the scheduling costs."
+
+[person.voice]
+why = "What the hiring manager wants and what the job post says do not match. Rewriting it pauses the listing, so we run it as is."
+exception = "Referrals skip the requirements entirely. That route actually retains better."
+axis = "I set the first-round bar. I have never aligned it with the people who run the interviews."
+bottleneck = "Interview scheduling. Six emails per candidate."
+
+# --- the work -----------------------------------------------------------------
+#
+# Order is covered by the hash too: it is the order the catalog reaches the client
+# in. Every checkpoint is a place the work stops until the CEO settles it.
+
+[[item]]
+id = "wi_ap_map"
+title = "Map how accounts payable actually works"
+brief = "Trace the real steps from invoice arrival to payment. Right now nobody in the company can explain who decides what."
+room = "accounting"
+want = "stf_ap"
+effort_hours = 16
+friction = "I am stuck reconciling paper against PDFs."
+output_title = "AP process map (12 steps)"
+output_kind = "Process map"
+unlocks = ["wi_ap_auto"]
+visit_meeting = false
+final = false
+effect = { visibility = 10 }
+requires = { items = [] }
+
+[[item.checkpoint]]
+at_percent = 50
+kind = "info"
+label = "Information"
+prompt = "Invoices arrive twice — once on paper, once as a PDF. Which one is the record? I cannot make that call."
+tacit = "...for the last three days of every month we release payment before the paper even arrives. If we waited we would miss the supplier close. Nobody upstairs knows that."
+
+[[item.checkpoint.option]]
+label = "PDF is the record"
+detail = "Paper becomes reference only. Everything gets searchable, but thirty suppliers need telling."
+note = "PDF is the system of record"
+effect = { visibility = 6, leadTime = -1, morale = -1 }
+
+[[item.checkpoint.option]]
+label = "Paper is the record"
+detail = "Nothing changes on the floor. We can map it, but the waste stays."
+note = "Paper stays the system of record"
+effect = { visibility = 3 }
+
+[[item.checkpoint.option]]
+label = "Let the team decide"
+detail = "Priya picks. Morale goes up, the rule drifts."
+note = "Record of truth delegated to the team"
+effect = { morale = 3, visibility = 1 }
+
+[[item]]
+id = "wi_ap_auto"
+title = "Automate invoice matching"
+brief = "Four of the twelve mapped steps eat 60% of the time. Find out whether a machine can take them."
+room = "accounting"
+want = "stf_ap"
+effort_hours = 24
+friction = "Running OCR accuracy tests. The quote came back."
+output_title = "Invoice matching automation plan"
+output_kind = "Automation candidate"
+unlocks = []
+visit_meeting = false
+final = false
+effect = { visibility = 4 }
+requires = { items = ["wi_ap_map"] }
+
+[[item.checkpoint]]
+at_percent = 60
+kind = "approval"
+label = "Approval"
+prompt = "The OCR matching quote is in: $120K up front, $8K a month, and {hours_word} hours of manual work disappear every month. I need your approval."
+tacit = "...70% of the matching is the same three suppliers. You do not need all of them to get the benefit. That is not in the quote."
+
+[[item.checkpoint.option]]
+label = "Approve it"
+detail = "Roll out to every invoice. The investment pays back and the human check stays."
+note = "OCR matching approved for all invoices"
+effect = { cash = -120, draw = -40, leadTime = -1, morale = 3 }
+
+[[item.checkpoint.option]]
+label = "Approve a limited rollout"
+detail = "Top ten suppliers only. A third of the cost, a third of the benefit."
+note = "Limited rollout to the top ten suppliers"
+effect = { cash = -40, draw = -15, morale = 1 }
+
+[[item.checkpoint.option]]
+label = "Reject it"
+detail = "No spend this year. The manual work stays."
+note = "Automation rejected"
+effect = { morale = -3 }
+
+[[item]]
+id = "wi_dup_entry"
+title = "Kill the duplicate order entry"
+brief = "The same figures get typed into a sales spreadsheet and the order system. {Hours_word} hours a month. Nobody has decided to stop it."
+room = "sales"
+want = "stf_order"
+effort_hours = 20
+friction = "Sales and the order desk disagree on which number is real."
+output_title = "Duplicate order entry: options"
+output_kind = "Automation candidate"
+unlocks = []
+visit_meeting = true
+final = false
+effect = { visibility = 8 }
+requires = { items = [] }
+
+[[item.checkpoint]]
+at_percent = 45
+kind = "decision"
+label = "Decision"
+prompt = "We enter the same figures twice — the sales spreadsheet and the order system. Which one do we kill?"
+tacit = "...the spreadsheet holds the delivery date we actually promised. The system has no field for it. Kill the spreadsheet and sales starts lying to customers."
+
+[[item.checkpoint.option]]
+label = "Kill the spreadsheet"
+detail = "One record. The hours vanish, but sales can no longer quote dates at the customer table."
+note = "Spreadsheet retired, system is the record"
+effect = { draw = -25, leadTime = -1, morale = -2 }
+
+[[item.checkpoint.option]]
+label = "Change the system to fit sales"
+detail = "$60K of development. Sales keeps working the way it works; only the double entry goes."
+note = "System modified to match how sales works"
+effect = { cash = -60, draw = -18, morale = 2 }
+
+[[item.checkpoint.option]]
+label = "Leave it alone"
+detail = "Do not touch it. The double entry stays."
+note = "Duplicate entry continues"
+effect = { morale = -1 }
+
+[[item]]
+id = "wi_faq"
+title = "Cut first-line support with an FAQ"
+brief = "Six of ten first-line tickets are questions we have answered before. Classify them and the queue stops needing a person."
+room = "support"
+want = "stf_cs"
+effort_hours = 18
+friction = "Classifying past tickets. Forty-eight so far."
+output_title = "Ticket taxonomy and FAQ v1 (48 entries)"
+output_kind = "Process map"
+unlocks = []
+visit_meeting = false
+final = false
+effect = { visibility = 7 }
+requires = { items = [] }
+
+[[item.checkpoint]]
+at_percent = 55
+kind = "approval"
+label = "Approval"
+prompt = "Publishing the FAQ should cut tickets 25%. The trade-off is that answer quality gets uneven. Do we publish?"
+tacit = "...five tickets a day are the ones I genuinely cannot judge. Those five generate 80% of the complaints. An FAQ will not touch them."
+
+[[item.checkpoint.option]]
+label = "Publish it externally"
+detail = "Goes to customers. Largest effect, and our mistakes go public too."
+note = "FAQ published externally"
+effect = { draw = -30, leadTime = -2, morale = 1 }
+
+[[item.checkpoint.option]]
+label = "Keep it internal"
+detail = "Answer templates for the team. Half the effect, none of the exposure."
+note = "FAQ kept as internal templates"
+effect = { draw = -12 }
+
+[[item.checkpoint.option]]
+label = "Hold off"
+detail = "Take no quality risk."
+note = "FAQ publication deferred"
+effect = { morale = -2 }
+
+[[item]]
+id = "wi_quotes"
+title = "Revisit the three-quote purchasing rule"
+brief = "Every purchase needs three competing quotes regardless of value. Each order parks 2.5 days waiting for them."
+room = "admin"
+want = "stf_buyer"
+effort_hours = 14
+friction = "Sorting two years of purchase orders by value."
+output_title = "Purchasing policy revision (value thresholds)"
+output_kind = "Policy change"
+unlocks = []
+visit_meeting = false
+final = false
+effect = { visibility = 6 }
+requires = { items = [] }
+
+[[item.checkpoint]]
+at_percent = 50
+kind = "decision"
+label = "Decision"
+prompt = "Three quotes on everything costs us 2.5 days per order. Do we change the rule?"
+tacit = "...the three-quote rule came from an audit finding five years ago. That finding was closed long ago. Nobody has decided to remove the rule."
+
+[[item.checkpoint.option]]
+label = "One quote under $50K"
+detail = "80% of orders go single-quote. Controls stay where the money is."
+note = "Single quote permitted under $50K"
+effect = { leadTime = -2, draw = -14, morale = 2 }
+
+[[item.checkpoint.option]]
+label = "One quote on everything"
+detail = "Fastest possible. We also lose the ability to defend a price."
+note = "Single quote on all purchases"
+effect = { leadTime = -3, draw = -20, morale = -4 }
+
+[[item.checkpoint.option]]
+label = "Keep all three"
+detail = "No change. Audit-proof and slow."
+note = "Three-quote rule retained"
+effect = { morale = -1 }
+
+[[item]]
+id = "wi_hiring"
+title = "Shorten hiring lead time"
+brief = "Two weeks to agree requirements, six emails to schedule one interview. Candidates accept elsewhere while we are still talking."
+room = "hr"
+want = "stf_rec"
+effort_hours = 22
+friction = "What the hiring manager wants and what the job post says do not match."
+output_title = "Hiring requirements alignment process"
+output_kind = "Process map"
+unlocks = []
+visit_meeting = false
+final = false
+effect = { visibility = 6 }
+requires = { items = [] }
+
+[[item.checkpoint]]
+at_percent = 45
+kind = "info"
+label = "Information"
+prompt = "The job post does not match what the hiring manager actually wants. Which one is right?"
+tacit = "...referrals skip the requirements entirely, and they are the ones who stay. We have never measured that."
+
+[[item.checkpoint.option]]
+label = "The hiring manager version"
+detail = "Rewrite the post. The listing goes dark for two weeks."
+note = "Hiring manager requirements take precedence"
+effect = { leadTime = -3, visibility = 4, morale = 1 }
+
+[[item.checkpoint.option]]
+label = "The job post"
+detail = "The listing keeps running. We absorb the gap at interview stage."
+note = "Existing job post stands"
+effect = { morale = -2 }
+
+[[item.checkpoint.option]]
+label = "Put them in a room weekly"
+detail = "More hours, but it stops recurring."
+note = "Weekly requirements alignment introduced"
+effect = { draw = 6, leadTime = -4, visibility = 6, morale = 2 }
+
+[[item]]
+id = "wi_close"
+title = "Close the month in two days instead of five"
+brief = "Spans accounting and procurement. Two causes: waiting on paper invoices, and approvals sitting idle. Only a director can move both."
+room = "admin"
+want = "dir_admin"
+effort_hours = 32
+friction = "Interviewing both accounting and procurement."
+output_title = "Month-end close roadmap"
+output_kind = "Improvement plan"
+unlocks = []
+visit_meeting = true
+final = false
+effect = { visibility = 8, leadTime = -1 }
+requires = { visibility = 24, items = [] }
+
+[[item.checkpoint]]
+at_percent = 30
+kind = "decision"
+label = "Decision"
+prompt = "Two things stall the close. Which do we fix first? The floor cannot absorb both at once."
+tacit = "...when an approver travels, everything parks for two days. We have a delegate mechanism, but it is not in the authority policy, so nobody uses it."
+
+[[item.checkpoint.option]]
+label = "Paper invoices first"
+detail = "Needs supplier cooperation. Worth two days."
+note = "Paper invoice wait tackled first"
+effect = { leadTime = -2, visibility = 3 }
+
+[[item.checkpoint.option]]
+label = "Idle approvals first"
+detail = "Entirely internal, so it moves fast. Worth a day and a half."
+note = "Approval delays tackled first"
+effect = { leadTime = -1, visibility = 3, morale = 1 }
+
+[[item.checkpoint.option]]
+label = "Both at once"
+detail = "Fastest, and it spikes the team workload."
+note = "Both causes tackled simultaneously"
+effect = { leadTime = -3, draw = 10, morale = -3 }
+
+[[item.checkpoint]]
+at_percent = 75
+kind = "approval"
+label = "Approval"
+prompt = "We can automate the manager approval above $10K with a value threshold. Where do you set it? This changes the authority policy, so it is your call."
+tacit = "...somebody set $10K five years ago and it has never been revisited. In today prices that is about $3K."
+
+[[item.checkpoint.option]]
+label = "Raise it to $30K"
+detail = "Approvals drop 70%. Controls stay in place."
+note = "Approval threshold raised to $30K"
+effect = { leadTime = -1, draw = -18, morale = 2 }
+
+[[item.checkpoint.option]]
+label = "Leave it at $10K"
+detail = "No policy change. The delay stays."
+note = "Approval threshold unchanged"
+effect = {}
+
+[[item.checkpoint.option]]
+label = "Remove manager approval"
+detail = "Fastest. Fraud detection becomes after-the-fact."
+note = "Manager approval removed"
+effect = { leadTime = -2, draw = -26, morale = -5 }
+
+[[item]]
+id = "wi_ai_rank"
+title = "Rank what AI can take over"
+brief = "Line up every mapped process, decide what a machine can do, and put them in order. Everything produced so far feeds into this."
+room = "sales"
+want = "dir_sales"
+effort_hours = 30
+friction = "Reconciling the deliverables from every department."
+output_title = "AI opportunity ranking (12 processes)"
+output_kind = "Improvement plan"
+unlocks = []
+visit_meeting = false
+final = true
+effect = { visibility = 10 }
+requires = { visibility = 48, items = [] }
+
+[[item.checkpoint]]
+at_percent = 60
+kind = "decision"
+label = "Decision"
+prompt = "Pick the ranking criterion. Change the criterion and the order changes."
+tacit = "...ask the four directors separately and each names a different worst pain. Pick one company-wide winner and three departments will not accept it."
+
+[[item.checkpoint.option]]
+label = "Rank by hours saved"
+detail = "Easy to defend as payback. The painful work waits."
+note = "Ranked by hours saved"
+effect = { draw = -20, visibility = 4 }
+
+[[item.checkpoint.option]]
+label = "Rank by lead time"
+detail = "Customers feel it. The hours stay."
+note = "Ranked by lead time"
+effect = { leadTime = -3, visibility = 4 }
+
+[[item.checkpoint.option]]
+label = "Rank by where it hurts"
+detail = "It sticks, and it is harder to defend with numbers."
+note = "Ranked by where the pain is"
+effect = { morale = 6, visibility = 6, draw = -8 }
+
+# --- what the company was already doing ---------------------------------------
+#
+# M6: a run opens on a person already holding an unsettled decision rather than on
+# an idle floor. `done_percent` is percent of the item's own effort, and authoring
+# it at a checkpoint's own percent is what makes the opening stop structural.
+
+[[seeded_assignment]]
+item = "wi_hiring"
+person = "dir_hr"
+done_percent = 45
