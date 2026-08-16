@@ -2,7 +2,14 @@ import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { AUTHORED_TUNING, PAL, RESERVED_BEAM, TACIT, loadColour } from '../src/design/tokens'
+import {
+  ACCENT,
+  AUTHORED_TUNING,
+  PAL,
+  RESERVED_BEAM,
+  TACIT,
+  loadColour,
+} from '../src/design/tokens'
 import { FONT, paintText } from '../src/design/text'
 import { SEVERED_FRACTION, buildModel, drawGraph, drawPolyline } from '../src/dag/draw'
 import { stripOrder, stripWidth } from '../src/dag/strip'
@@ -345,8 +352,10 @@ describe('edges', () => {
   it('derives appearance from the source node, so the graph shows where work can flow', () => {
     const delivered = new RecordingContext()
     drawGraph(delivered, twoNodeModel('done'), 1, 400, 200)
-    // Solid, drawn in the accent — upstream delivered.
-    expect(delivered.colours()).toContain(PAL.shilv)
+    // Solid, drawn in the accent — upstream delivered. Asserted through `ACCENT` rather than
+    // through the value behind it: the daylight redesign moved the accent from 石绿 to 天蓝,
+    // and a test that pins the hex is testing the palette rather than the edge.
+    expect(delivered.colours()).toContain(ACCENT)
 
     const open = new RecordingContext()
     drawGraph(open, twoNodeModel('active'), 1, 400, 200)
@@ -427,7 +436,7 @@ describe('edges', () => {
     drawGraph(late, model, 1, 400, 200)
 
     const accentDrawn = (context: RecordingContext) =>
-      context.inColour(PAL.shilv).reduce((total, r) => total + Math.max(r.width, r.height), 0)
+      context.inColour(ACCENT).reduce((total, r) => total + Math.max(r.width, r.height), 0)
 
     expect(accentDrawn(early)).toBeLessThan(accentDrawn(late))
   })
