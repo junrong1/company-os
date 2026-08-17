@@ -2,7 +2,7 @@ import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { MetricDef } from '../src/design/tokens'
+import { AUTHORED_TUNING, DESCRIPTION, MEASURED, type MetricDef } from '../src/design/tokens'
 import type { EventFrame, OptionDef, PersonView, RosterEntry } from '../src/net/store'
 import {
   comparePayload,
@@ -28,6 +28,7 @@ import {
   distanceMilli,
   optionConsequence,
   personActivity,
+  personSchema,
   resolvePayload,
   selectConversation,
   stoppedCard,
@@ -1708,5 +1709,152 @@ describe('what a person is actually doing', () => {
 
     expect(header?.stateLabel).toBe('Waiting on your decision')
     expect(header?.waiting).toBe(true)
+  })
+})
+
+describe("a person's authored schema (M15, M16)", () => {
+  it('carries responsibility and the three lists off the genesis roster', () => {
+    // Read from the generated fixture rather than from a hand-typed roster, so the assertion is
+    // about the payload the kernel actually sends. A scenario authors these for everyone,
+    // whether or not a model ever answers for them.
+    useRunStore.getState().apply(genesisFrame())
+    const roster = useRunStore.getState().genesis?.roster ?? {}
+
+    const schema = personSchema('stf_ap', roster)
+
+    expect(schema?.responsibility).toContain('invoice')
+    expect(schema?.lists.map((list) => list.key)).toEqual(['tools', 'mcpServers', 'skills'])
+    expect(schema?.lists.every((list) => list.entries.length > 0)).toBe(true)
+  })
+
+  it('drops a list that is empty rather than heading a blank', () => {
+    const bare: Record<string, RosterEntry> = {
+      p1: {
+        name: 'Sole Trader',
+        initials: 'ST',
+        title: 'Everything',
+        dept: 'admin',
+        mgr: '',
+        rank: 'director',
+        seat: [0, 0],
+        responsibility: 'Does all of it.',
+        tools: ['Notebook'],
+        mcpServers: [],
+        skills: [],
+      },
+    }
+
+    const schema = personSchema('p1', bare)
+
+    expect(schema?.lists.map((list) => list.key)).toEqual(['tools'])
+  })
+
+  it('has no schema for a person a scenario never authored', () => {
+    // A hire who arrives at runtime, or a run recorded before the fields existed. Null rather
+    // than an object of empty strings, so the surface renders nothing instead of a heading.
+    const arrived: Record<string, RosterEntry> = {
+      hire1: {
+        name: 'New Arrival',
+        initials: 'NA',
+        title: 'Analyst',
+        dept: 'sales',
+        mgr: 'dir_sales',
+        rank: 'staff',
+        seat: [0, 0],
+        responsibility: '',
+        tools: [],
+        mcpServers: [],
+        skills: [],
+      },
+    }
+
+    expect(personSchema('hire1', arrived)).toBeNull()
+    expect(personSchema('nobody', arrived)).toBeNull()
+    expect(personSchema(null, arrived)).toBeNull()
+  })
+
+  it('renders the tools on the conversation surface, marked as description', () => {
+    useRunStore.getState().apply(genesisFrame())
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => {
+      root.render(createElement(Conversation, { personId: 'stf_ap' } as never))
+    })
+
+    const tools = host.querySelector('[data-schema="tools"]')
+    expect(tools).not.toBeNull()
+    expect(tools?.textContent).toContain('Ledger')
+
+    // The marking travels with the list, and it is the *description* marking rather than
+    // either of the two figure markings. A tool list satisfying a rule about numbers would be
+    // how the completeness claim over figures rots.
+    expect(tools?.querySelector('[data-described]')).not.toBeNull()
+    expect(tools?.querySelector('[data-authored-tuning]')).toBeNull()
+    expect(tools?.querySelector('[data-measured]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('offers nothing to click in the whole schema (M16)', () => {
+    // The absence of a mechanism, asserted as an absence. Nothing in this repository turns a
+    // tool name into a call, so nothing on this surface may invite the attempt — a button here
+    // would promise a capability the product does not have.
+    useRunStore.getState().apply(genesisFrame())
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => {
+      root.render(createElement(Conversation, { personId: 'stf_ap' } as never))
+    })
+
+    const schema = host.querySelector('.conversation__schema') as HTMLElement
+    expect(schema).not.toBeNull()
+    expect(schema.querySelectorAll('button, a, input, [role="button"], [onclick]')).toHaveLength(0)
+
+    // And clicking one changes nothing that is on screen.
+    const before = schema.innerHTML
+    const tool = schema.querySelector('li') as HTMLElement
+    act(() => tool.click())
+    expect(schema.innerHTML).toBe(before)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('says in words that nothing here is executed', () => {
+    // The glyph is the marking; this is the sentence a reader needs the first time they meet
+    // it. R36's rule — the meaning is in the character and the label, never in a hue — means
+    // the claim has to survive being read rather than seen.
+    useRunStore.getState().apply(genesisFrame())
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => {
+      root.render(createElement(Conversation, { personId: 'stf_ap' } as never))
+    })
+
+    expect(host.querySelector('.schema__note')?.textContent).toContain('not wired up')
+    expect(host.querySelector('[data-described]')?.getAttribute('aria-label')).toContain(
+      DESCRIPTION.label,
+    )
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps the three markings distinct, so none can stand in for another', () => {
+    for (const [left, right] of [
+      [AUTHORED_TUNING, MEASURED],
+      [AUTHORED_TUNING, DESCRIPTION],
+      [MEASURED, DESCRIPTION],
+    ] as const) {
+      expect(left.glyph).not.toBe(right.glyph)
+      expect(left.label).not.toBe(right.label)
+    }
   })
 })

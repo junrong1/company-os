@@ -20,14 +20,17 @@ import { CompareAffordance } from './Comparison'
 import type { CompareSender } from './comparison-model'
 import { OptionConsequence } from './Consequence'
 import type { CommandSender } from './Panels'
+import { Described } from './Marking'
 import {
   type AssignableItem,
+  type PersonSchema,
   type StoppedCard,
   askPayload,
   askable,
   assignCost,
   assignableWork,
   conversationHeader,
+  personSchema,
   resolvePayload,
   stoppedCard,
 } from './conversation-model'
@@ -80,6 +83,11 @@ export function Conversation({ personId, onCommand, onCompare }: ConversationPro
   const roster = useRunStore((state) => state.genesis?.roster)
   const catalog = useRunStore((state) => state.genesis?.catalog)
 
+  // Derived from a value that cannot change within a run, so it is memoised on the person
+  // rather than subscribed to: the schema is scenario content, and a scenario is immutable for
+  // the life of the run.
+  const schema = useMemo(() => personSchema(personId, roster ?? {}), [personId, roster])
+
   // Encoded to strings before it reaches the equality check, the way the panels do it: a
   // selector that returned the item objects would hand back fresh references on every call and
   // re-render forever, because the check is `Object.is` on the selector's own output.
@@ -128,6 +136,8 @@ export function Conversation({ personId, onCommand, onCompare }: ConversationPro
         </span>
       </header>
 
+      {schema !== null && <Schema schema={schema} name={header.name} />}
+
       {stopped !== null && (
         <Decision
           key={`${stopped.itemId}:${stopped.cpIndex}`}
@@ -153,6 +163,51 @@ export function Conversation({ personId, onCommand, onCompare }: ConversationPro
           asking why, and that is the mechanic rather than an oversight. */}
       <Ask personId={header.id} answers={answers} onCommand={onCommand} />
     </aside>
+  )
+}
+
+/**
+ * What this person is responsible for, and what they are described as having (M15).
+ *
+ * **Above the decision, below the name.** It is the answer to "who am I standing in front of",
+ * which is the question the CEO has at the moment the panel opens and before they read what the
+ * person is stopped on. Under the ask box it would be a footnote about someone whose decision
+ * you had already taken.
+ *
+ * **Nothing here is interactive, and that is the design rather than an omission** (M16). A tool
+ * renders as a word, not a button: a name in one of these lists is what a person is understood
+ * to have, and no code path in this repository turns one into a call. Making it clickable would
+ * promise a capability the product does not have — so the marking says "described, not wired
+ * up" and there is nothing to press to find out.
+ */
+function Schema({ schema, name }: { schema: PersonSchema; name: string }) {
+  return (
+    <section className="conversation__schema">
+      {schema.responsibility !== '' && (
+        <p className="schema__responsibility">
+          {schema.responsibility} <Described of={`what ${name} is responsible for`} />
+        </p>
+      )}
+
+      {schema.lists.map((list) => (
+        <div key={list.key} className="schema__list" data-schema={list.key}>
+          <h4>
+            {list.label} <Described of={`${name}'s ${list.label.toLowerCase()}`} />
+          </h4>
+          <ul>
+            {list.entries.map((entry) => (
+              <li key={entry}>{entry}</li>
+            ))}
+          </ul>
+        </div>
+      ))}
+
+      {/* Said once, in words, under the lists it is about. The glyph beside each heading is the
+          marking; this is the sentence a reader needs the first time they meet it. */}
+      <p className="schema__note" style={{ color: PAL.textFaint }}>
+        Described, not wired up — nothing here is executed.
+      </p>
+    </section>
   )
 }
 

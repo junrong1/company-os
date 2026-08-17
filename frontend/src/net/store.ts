@@ -99,6 +99,24 @@ export interface RosterEntry {
   mgr: string
   rank: string
   seat: [number, number]
+  /**
+   * What this person is understood to be responsible for, in one authored sentence (M15).
+   *
+   * Authored for everyone, whether or not a model ever answers for them, and immutable for the
+   * life of the run — which is why it rides genesis with the name and the title rather than
+   * being asked for when the CEO walks over.
+   */
+  responsibility: string
+  /**
+   * What they are described as having (M15), and description is all it is (M16).
+   *
+   * Nothing in this repository turns a name in one of these lists into a call. They shape what
+   * a director later claims it could do and what the report counts; the surface that renders
+   * them says so, which is the whole reason they are carried to the client at all.
+   */
+  tools: string[]
+  mcpServers: string[]
+  skills: string[]
 }
 
 /** Everything the run was created with. Immutable for its lifetime, inherited by forks. */
@@ -1282,6 +1300,12 @@ function readGenesis(payload: Record<string, unknown>): Partial<RunStore> {
  * a run exported before the change is still readable through the report path, where the
  * rules-version gate that rejects a live resync does not apply. Falling back to the id is worse
  * than a name and much better than the word "undefined" where a person should be.
+ *
+ * `responsibility` and the three lists arrived later still, with scenarios. They get the same
+ * treatment for the same reason, and the empty defaults are load-bearing rather than tidy: the
+ * conversation renders a section per list and renders nothing where a list is empty, so a run
+ * that predates the fields shows a person without a schema instead of a person with three
+ * empty headings.
  */
 function readRoster(value: unknown): Record<string, RosterEntry> {
   if (!isRecord(value)) return {}
@@ -1298,9 +1322,19 @@ function readRoster(value: unknown): Record<string, RosterEntry> {
       mgr: toStr(entry.mgr),
       rank: toStr(entry.rank, 'staff'),
       seat: [toInt(seat[0]), toInt(seat[1])],
+      responsibility: toStr(entry.responsibility),
+      tools: readTags(entry.tools),
+      mcpServers: readTags(entry.mcp_servers),
+      skills: readTags(entry.skills),
     }
   }
   return roster
+}
+
+/** One authored list of names, with anything that is not a string dropped rather than rendered. */
+function readTags(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry !== '')
 }
 
 function readDeliverable(record: Record<string, unknown>): DeliverableView {

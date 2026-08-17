@@ -24,9 +24,11 @@
 
 import {
   AUTHORED_TUNING,
+  DESCRIPTION,
   MEASURED,
   PAL,
   authoredTuningLabel,
+  describedLabel,
   measuredLabel,
 } from '../design/tokens'
 
@@ -82,6 +84,31 @@ export function Measured({ of, withLabel = false }: MarkProps) {
         {MEASURED.glyph}
       </span>
       {withLabel && <span className="mark__label">{MEASURED.label}</span>}
+    </span>
+  )
+}
+
+/**
+ * The marking for a capability that is described rather than wired up (M16).
+ *
+ * Same construction and the same absence of hue as the two above, and a *third* attribute
+ * rather than a reuse of either: `data-described` is a claim about a capability, and the two
+ * figure markings are claims about a number. Sharing an attribute would let the completeness
+ * sweep over figures be satisfied by a tool list, which is how a claim like R27's rots.
+ */
+export function Described({ of, withLabel = false }: MarkProps) {
+  return (
+    <span
+      className="mark"
+      data-described={DESCRIPTION.glyph}
+      style={{ color: PAL.textFaint }}
+      title={DESCRIPTION.description}
+      aria-label={describedLabel(of)}
+    >
+      <span className="mark__glyph" aria-hidden="true">
+        {DESCRIPTION.glyph}
+      </span>
+      {withLabel && <span className="mark__label">{DESCRIPTION.label}</span>}
     </span>
   )
 }

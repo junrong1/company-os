@@ -247,6 +247,36 @@ export function measuredLabel(what: string): string {
 }
 
 /**
+ * A third claim, and a claim about a *capability* rather than about a figure.
+ *
+ * M15 puts a responsibility and a list of tools, MCP servers and skills on every person, and
+ * M16 says none of them is executed: they describe what someone is understood to have, they
+ * shape what a director later claims it could do, and no code path in this repository turns one
+ * into a call. Rendering "Ledger, Invoice scanner, Payment run" unmarked would state the
+ * opposite — a reader who has learned that this product means what it shows would take a named
+ * tool for a tool the company has wired up.
+ *
+ * Built like the other two, and deliberately *not* one of them. The sweep in `hud.test.ts`
+ * requires exactly one of `data-authored-tuning` or `data-measured` on every figure, and a
+ * marking that reused either attribute would let a description satisfy a rule about numbers, or
+ * a number satisfy a rule about descriptions. Three attributes, three claims, none substitutable.
+ *
+ * `·` because it is the quietest mark that is still a mark. A tool list is not a warning and not
+ * a figure; the glyph has to say "this is a description" without competing with the person's
+ * name for the first thing the eye reaches.
+ */
+export const DESCRIPTION = {
+  glyph: '·',
+  label: 'described, not wired up',
+  description: 'Authored description of what this person is understood to have. Nothing here is executed.',
+} as const
+
+/** The description marking's accessible label for one named list. */
+export function describedLabel(what: string): string {
+  return `${what} — ${DESCRIPTION.label}`
+}
+
+/**
  * Interactive, selected. Already means "live", which is why it carries in-progress.
  *
  * 天蓝 rather than 石绿, and the split is the point. The Product Contract gives 天蓝 to
