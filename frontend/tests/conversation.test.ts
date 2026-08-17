@@ -70,6 +70,14 @@ function person(id: string, xMilli: number, yMilli: number, over: Partial<Person
     state: 'idle',
     itemId: '',
     waiting: false,
+    // Standing still, which is what "resting default" means for a walker: an empty path is
+    // the kernel's own convention for not walking, so the start tick and the arrival state
+    // are both meaningless rather than merely unset. Spelled out rather than left off,
+    // because `Partial<PersonView>` would otherwise widen them to `undefined` and the only
+    // thing that notices is `tsc` — which `npm test` does not run.
+    path: [],
+    pathStartTick: 0n,
+    arrivesIn: '',
     ...over,
   }
 }
