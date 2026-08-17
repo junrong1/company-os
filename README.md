@@ -100,6 +100,10 @@ ask for that run again.
 The clock starts with the run, and a restart picks it back up — rate is run state
 (R18), so a running run resumes running and a paused one stays paused.
 
+Add `"scenario":"ashcroft"` to the body to run a different company; omit it for the
+shipped one. `GET /scenarios` lists what this backend can start. See
+[Changing the company](#changing-the-company).
+
 ### Ports
 
 Only two ports reach the host, and only on loopback.
@@ -655,6 +659,29 @@ Not real — deliberately, and stated on screen:
 ---
 
 ## Changing the company
+
+**A company is a file.** Two ship — `backend/scenarios/default.toml`, the Northwind
+Components company every suite asserts against, and `backend/scenarios/ashcroft.toml`,
+an independent publisher of nine — and adding a third needs no code change: drop
+`acme.toml` next to them and a run can be created against `acme`. What is yours to
+author and what the rules fix is in
+[`backend/scenarios/schema.md`](backend/scenarios/schema.md).
+
+Which one a run is of is chosen when the run is created, by name and never by path:
+
+```bash
+curl -s http://127.0.0.1:8800/scenarios        # what is on offer, with its refusal if it will not load
+curl -s -X POST http://127.0.0.1:8800/runs \
+  -H 'content-type: application/json' -d '{"scenario":"ashcroft"}'
+```
+
+The client offers the same list on its start screen. Omit the field and you get the
+shipped company. **Editing a scenario invalidates every run written against it** —
+the run's numbers came from a company that no longer exists in that form, and the
+three guard sites refuse rather than replay against the edit. Finish a run before you
+edit its company, or accept that you are starting a new one.
+
+### The prototype's own three structures
 
 Three data structures near the top of the prototype's script hold everything:
 

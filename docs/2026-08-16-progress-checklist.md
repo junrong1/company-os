@@ -141,7 +141,7 @@ pushed the office off the screen.
 
 ## Phase 5 — the MVP (`docs/plans/2026-08-16-001-feat-company-os-mvp-plan.md`)
 
-Twenty-five units in six phases. **Twelve are done: Phases A and B are complete, and Phase C is
+Twenty-five units in six phases. **Thirteen are done: Phases A and B are complete, and Phase C is
 half built.** Execution paused here by decision, with the tree clean and both suites green — not
 blocked. The plan's open questions and everything execution resolved or found are in
 [`docs/2026-08-16-mvp-execution-decisions.md`](2026-08-16-mvp-execution-decisions.md), which also
@@ -158,12 +158,12 @@ carries the deferred defect register.
 | U5. Comparison off the tick worker pool | `[x]` | `79dd779` — `BRANCH_SLOTS=2` sized by sweep; the capture/restore torn read closed for every caller, 15–19% escape rate to zero |
 | U24. Compose the remaining surfaces in one process | `[x]` | `2aba425` — five surfaces, the redacting filter, origin validation, `MODEL_SPEND` published |
 
-**Phase B — scenarios.** Complete but for U7.
+**Phase B — scenarios.** Complete.
 
 | Unit | Status | Evidence |
 |---|---|---|
 | U6. The scenario format, the loader, and the company that moves into it | `[x]` | Two passes: `1a01b44` the format, loader, `default.toml`, `schema.md` and 98 tests; `8bbb91f` the wiring, the genesis identity, the three guard sites, and the constants deleted from six modules |
-| U7. Choosing a scenario, and seeing what it says | `[ ]` | Started and stopped; nothing landed. `available()`, `resolve()` and a `MINIMAL` scenario are ready for it |
+| U7. Choosing a scenario, and seeing what it says | `[x]` | The name threaded through the gateway body, the `KernelClient` protocol, the launcher and `create_run`; `GET /scenarios`; `ashcroft.toml`, a second company of nine; the picker on the start screen; a person's responsibility and tools on the conversation surface under a third marking. The genesis payload did not move, so no golden fixture did either |
 
 **Phase C — the bench.** Half built.
 
@@ -177,6 +177,8 @@ carries the deferred defect register.
 | U13. Continuous integration for the keyless path | `[ ]` | Blocked on U11. **There is still no `.github/workflows`** |
 
 **Phases D, E, F.** Not started. U14 and U16 are unblocked; U15, U17–U23 and U25 sit behind them.
+U14's `Panels.tsx` half no longer collides with anything — U7 put the person's schema on the
+conversation rather than in the panel rail.
 
 **One fix outside the plan.** `a69c304` — a command's events were never published to a connected
 client. `_publish` had one caller inside the tick loop and published only what that batch returned,
@@ -184,7 +186,7 @@ so a client learned its own effects as a sequence gap on a later tick. Pre-exist
 and taken as its own unit rather than deferred because it sat under U10, U15, U16 and U25 — four
 units that would have passed their tests and not worked live.
 
-### What twelve units found that no test was failing on
+### What thirteen units found that no test was failing on
 
 Every shipped unit but one turned up a live defect on its path. The pattern is worth keeping:
 
@@ -202,6 +204,9 @@ Every shipped unit but one turned up a live defect on its path. The pattern is w
   person ids.
 - The tree was failing `tsc` while `npm test` stayed green, because vitest does not typecheck and
   there is no CI (`2c38686`).
+- U7 is the exception that proves the pattern: it found no live defect, because U6 had left it a
+  tripwire — a test asserting the scenarios directory offered exactly one company, with a docstring
+  saying a second one was U7's. It failed on the first run, which is what it was for.
 
 ---
 
@@ -224,13 +229,13 @@ Requirements this plan has moved are marked with the unit that moved them.
 - [x] M10 a run from the file is identical to a run from the compiled roster — **U6**, established by four digests taken from the constants before they were deleted
 - [x] M11 the four lines and eight rooms stay fixed — **U6**, a fifth department or a new room is refused
 - [x] M12 a scenario loads whole or not at all — **U6**, validation completes before anything is constructed
-- [ ] M13 a second scenario is selectable with no code change — **U7**. The loader can do it; nothing reaches it yet, which is exactly the gap U7's approach note predicts
+- [x] M13 a second scenario is selectable with no code change — **U7**. `ashcroft.toml` is the second company, chosen by name at run creation and offered by the client; the only thing that made it reachable was writing it
 
 **The bench (M14–M22)**
 - [x] M17 opening a checkpoint in person raises one statement request — **U10**
 - [x] M22 no metric moves between the request and the statement — **U10**
 - [ ] M14, M18, M19, M20, M21 — **U11**. `services/agents/stub.py` still declines every request; there is no persona, prompt or provider call yet
-- [x] M15, M16's data half — **U6** puts responsibility, tools, MCP servers and skills on the wire per person, asserted there. Nothing renders them yet — that is U7
+- [x] M15, M16 — **U6** puts responsibility, tools, MCP servers and skills on the wire per person; **U7** renders them on the conversation surface under a `described, not wired up` marking, with nothing in the section to click. A third marking attribute rather than a reuse of either figure marking, so a tool list cannot satisfy R27's sweep over numbers
 
 **The model gateway (M23–M30)**
 - [x] M23, M24, M25, M26, M29 — **U8**
@@ -272,9 +277,10 @@ Across four completed plans, 28 units: 23 `[x]`, 5 `[~]` with a named gap, none 
 simulation half of the product is built and covered by four suites plus golden vectors across two
 languages, and the daylight visual system is complete on top of it.
 
-The MVP plan is **12 of 25 units in**, with Phases A and B complete but for U7 and Phase C half
-built. Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about 34 are
-met now. The suites went from 699 backend tests to **1,078**, and the client from 404 to **459**.
+The MVP plan is **13 of 25 units in**, with Phases A and B complete and Phase C half built. Of the
+PRD's 67 requirements, roughly 8 were met when that plan was written and about 35 are met now — M13
+is the one U7 closed, and M15 and M16 stopped being half-met. The
+suites went from 699 backend tests to **1,095**, and the client from 404 to **479**.
 
 What remains is still concentrated where the plan said it would be. The bench's *contract and
 transport* exist now — which was the plan's single biggest risk, and the unit most likely to be

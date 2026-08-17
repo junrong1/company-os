@@ -716,27 +716,110 @@ sets checked against each other even when one of them is "just" a fix.
 
 ---
 
+## What U7 found, that U11 and U14 need
+
+U7 threaded a scenario *name* through run creation, shipped a second company, and put a person's
+authored schema on the conversation surface. The genesis payload did not change, so no golden
+fixture moved and `frontend/tests/golden.test.ts` was not touched.
+
+### The tripwire U6 left fired, and what replaced it
+
+`test_the_default_scenario_is_the_only_one_the_directory_offers_yet` asserted `available() ==
+("default",)` with a docstring saying a second file was U7's. It failed the moment `ashcroft.toml`
+landed, which is exactly what it was for. It is now two tests: one naming both shipped companies,
+and one **parametrised over the directory** so that a third file is validated by the suite the
+moment it lands. A list of names written in the test would have been the one piece of code that
+adding a company still required — which is the claim M13 makes.
+
+### The gateway must not learn to recognise a loader exception
+
+`ScenarioNotFound` is a `simcore` type, and the gateway does not import `simcore` — it talks to a
+`KernelClient`, which is what keeps R4 an import rule rather than an intention. So the in-process
+client translates the refusal to `ValueError`, which the protocol already documents as "a request
+the kernel cannot serve", and the creation route's existing `except (TypeError, ValueError)` turns
+it into a 400 carrying the loader's own sentence — the one that lists the names that *do* resolve.
+`scenarios()` is on the protocol for the same reason: "which companies exist" is simulation
+knowledge that merely happens to be answerable from a directory listing.
+
+### A third marking exists now, and U11 has to use it
+
+M16 says the tools, MCP servers and skills are description and nothing is executed. Rendering them
+unmarked would state the opposite, so there is a `Described` marking beside `Mark` and `Measured`,
+under a **third** attribute, `data-described`.
+
+Not a reuse of either existing one, and the reason is the completeness sweep: `hud.test.ts`
+requires exactly one of `data-authored-tuning` or `data-measured` on every figure. A marking that
+shared an attribute would let a tool list satisfy a rule about numbers, or a number satisfy a rule
+about descriptions — which is precisely how a completeness claim rots. **When U11 renders what a
+director claims it could do, it is the same marking**: the claim is about a capability, and the
+capability is still description.
+
+### The catalogue loads every file, and says so when one will not load
+
+`GET /scenarios` parses each file rather than only listing names, because the picker shows a title
+and a summary and a name alone is not a choice a person can make. A file that refuses is returned
+with `loadable: false` and its reason rather than filtered out — one bad file cannot hide the good
+ones, and the author of the bad file is usually the person reading the list. The client preselects
+the shipped company where it loads and otherwise the first one that does, so the button never opens
+by submitting a name the server has already said it will refuse.
+
+### Two things that cost time and are worth knowing
+
+- **`GET /runs/{id}/state` returns the run *row*, not the state.** Status, tick, rate, head
+  sequence. The roster is in the genesis event, so a test asserting which company a run is of reads
+  the log — and should, since what matters is that the choice reached *the wire*.
+- **jsdom has no usable `WebSocket`, and creating a run swaps the page for the office.** Any test
+  that drives `App` through a successful creation has to stub the global, or every assertion about
+  the request fails on what happened after it. `tests/app.test.ts` has the stub; `stream.ts` keeps a
+  `makeSocket` seam for the same reason.
+
+### `uv run` on this machine rewrites `uv.lock`, and R8 forbids that
+
+The `uv` on PATH here is **0.4.22**; the Dockerfile pins **0.9.17**. The older one writes a
+revision-less lockfile with no `upload-time` fields, so a single `uv run pytest` rewrites 454 lines
+of `backend/uv.lock` — same versions, same resolution, purely a format downgrade — and R8 says a
+unit leaves the lockfile alone. It was reverted with `git checkout backend/uv.lock`, and the suite
+was re-run through `backend/.venv/bin/python -m pytest` to confirm it stays clean.
+
+**Check `git status backend/uv.lock` before committing.** Every unit executed on this machine has
+the same trap, and the diff is large enough to be waved through as noise. Running the suite through
+the venv directly avoids it entirely.
+
+### One live observation, not confirmed as a defect
+
+Driving the client through browser automation, every movement key produced `input is for tick N,
+which is not in the future (now M)` and the CEO did not move — the client's predicted tick trailing
+the kernel's by hundreds. **It reproduces identically on the shipped company**, so it is not U7's
+and not scenario-related. The likely cause is the automation's tab being unfocused and its
+`requestAnimationFrame` throttled, which would starve the render clock the input tick is derived
+from — an artifact rather than a product defect. It is recorded because U11 and U14 will both drive
+the client live, and because if it *does* reproduce in a focused tab it is a serious one.
+
+---
+
 ## Where this stopped, and the order to resume in
 
-Twelve of twenty-five units, paused by decision with the tree clean and both suites green. Status per
-unit is in [`docs/2026-08-16-progress-checklist.md`](2026-08-16-progress-checklist.md); this is only
-the sequencing, because the dependency graph is no longer the plan's phase order.
+Thirteen of twenty-five units, paused by decision with the tree clean and both suites green. Status
+per unit is in [`docs/2026-08-16-progress-checklist.md`](2026-08-16-progress-checklist.md); this is
+only the sequencing, because the dependency graph is no longer the plan's phase order.
 
 **Unblocked right now, and mutually disjoint enough to run in parallel:**
 
 - **U11** (four directors who brief and object) — the critical path. U10 left the guard module at
   `simcore/statement.py` with the agents-side call site already live in `produce_statement`; U11 adds
   M18's ranking predicate and M19's citation predicate *into that module*, plus the personas, the
-  prompts, the fallback content and the client's pending block. It gates U12 and U13.
+  prompts, the fallback content and the client's pending block. It gates U12 and U13. **It now
+  shares `Conversation.tsx` with U7's `Schema` section**, which sits between the header and the
+  decision card — U11's pending block goes below the decision, not above it.
 - **U16** (persistent forks) — file set is disjoint from U11's. It also inherits two findings: U9
   left `lineage_root_id` set at creation needing only the parent's root copied at fork, and U10 found
   `statement_request_id` is not run-scoped, so a parent and a fork at one tick mint the same id.
-- **U7** (choosing a scenario) — small, gates nothing, and everything it needs is ready
-  (`available()`, `resolve()`, and a `MINIMAL` scenario in `test_scenario.py`). It collides with
-  U11 on `Conversation.tsx` and U14 on `Panels.tsx`, so run it alone or first.
+- **U14** (director memory and the CEO's reading surface) — behind U11 in practice, since both write
+  `test_bench.py`, but its `Panels.tsx` half no longer collides with anything: U7 put the person's
+  schema on the conversation rather than in the rail.
 
-**Then:** U14 behind U11 (both write `test_bench.py`), U12 and U13 behind U11, U15 behind U14, and
-U17/U18/U19/U25 behind U16. Phase F last, as the plan has it.
+**Then:** U12 and U13 behind U11, U15 behind U14, and U17/U18/U19/U25 behind U16. Phase F last, as
+the plan has it.
 
 **The one thing overdue against the plan's own reasoning is U13.** "The path most users take is the
 path CI proves" — and there is still no `.github/workflows`, so nothing verifies the keyless path or
