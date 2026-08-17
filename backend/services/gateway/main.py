@@ -218,6 +218,12 @@ async def post_run(body: dict[str, Any] | None = None) -> dict[str, Any]:
     The seed is echoed back because it is the run's identity for reproduction: two fresh runs from
     one seed produce identical logs (R11), and a caller that let the server mint one would otherwise
     have no way to ask for that run again.
+
+    **`scenario` is a name and the body is the only way to send one** (M13). There is no
+    `?path=`, no upload and no default that reads an environment variable: the kernel resolves
+    the name inside the scenarios directory and refuses anything that could leave it before
+    touching the filesystem (R9). Omitting it is how you ask for the shipped company, which is
+    what every client that predates the choice keeps doing.
     """
     payload = body or {}
     client = kernel()
@@ -239,17 +245,38 @@ async def post_run(body: dict[str, Any] | None = None) -> dict[str, Any]:
 
     horizon = payload.get("horizon_tick")
 
+    # Empty and absent mean the same thing — the shipped company — because a form that posts its
+    # untouched field would otherwise ask for a scenario named "" and be told it does not exist.
+    scenario = str(payload.get("scenario") or "").strip() or None
+
     try:
         created = client.create_run(
             run_id,
             int(seed),
             horizon_tick=None if horizon is None else int(horizon),
+            scenario=scenario,
         )
     except (TypeError, ValueError) as bad:
         raise HTTPException(status_code=400, detail=f"could not create the run: {bad}") from bad
 
-    log.info("run created", extra={"run": run_id, "seed": int(seed)})
+    log.info(
+        "run created",
+        extra={"run": run_id, "seed": int(seed), "scenario": created.get("scenario", "")},
+    )
     return {**created, "created": True}
+
+
+@app.get("/scenarios")
+def get_scenarios() -> dict[str, Any]:
+    """The companies a run can be created against.
+
+    What makes M13 true from the client rather than only from the loader: a second file in the
+    scenarios directory has to be *reachable*, and a picker cannot offer what it cannot list.
+
+    A file that will not load is listed with its refusal rather than dropped, so an author who
+    mistyped a key sees the reason here instead of a file that silently vanished.
+    """
+    return {"scenarios": kernel().scenarios()}
 
 
 # =========================================================================

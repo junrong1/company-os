@@ -95,7 +95,11 @@ class KernelClient(Protocol):
         ...
 
     def create_run(
-        self, run_id: str, run_seed: int, horizon_tick: int | None = None
+        self,
+        run_id: str,
+        run_seed: int,
+        horizon_tick: int | None = None,
+        scenario: str | None = None,
     ) -> dict[str, Any]:
         """Create a run and start its clock. Deliberately not a command.
 
@@ -103,6 +107,20 @@ class KernelClient(Protocol):
         so that a typo'd id cannot conjure a simulation. Creation is therefore its own verb rather
         than a kind, which is also why it does not carry an idempotency key: the run id *is* the
         key, and creating one that exists returns the existing run.
+
+        `scenario` is the *name* of a company, never a path, and `None` means the shipped one.
+        A name the loader will not resolve arrives back as a `ValueError` carrying the loader's
+        own sentence — which is how the gateway answers 400 with the list of names that do
+        resolve without importing the loader to recognise its exception.
+        """
+        ...
+
+    def scenarios(self) -> list[dict[str, Any]]:
+        """The companies a run could be created against, for the surface that offers the choice.
+
+        On the protocol rather than read off the filesystem by the gateway, for the same reason
+        every other read is: the gateway holds no simulation knowledge, and "which companies
+        exist" is simulation knowledge that happens to be answerable from a directory listing.
         """
         ...
 

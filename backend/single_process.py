@@ -163,7 +163,11 @@ class InProcessKernel:
     # --- reads ------------------------------------------------------------
 
     def create_run(
-        self, run_id: str, run_seed: int, horizon_tick: int | None = None
+        self,
+        run_id: str,
+        run_seed: int,
+        horizon_tick: int | None = None,
+        scenario: str | None = None,
     ) -> dict[str, Any]:
         """Create a run, then start its clock.
 
@@ -173,14 +177,70 @@ class InProcessKernel:
 
         It must run on the event loop, since it creates a task. The gateway's create route is
         `async` for that reason while its command route is not.
+
+        **A refused scenario is translated here, not caught at the gateway.** The protocol says a
+        request the kernel cannot serve arrives as a `ValueError`, and honouring that is what
+        keeps the gateway from importing `simcore` to name an exception type — the same reason it
+        talks to a `KernelClient` at all. The loader's own sentence is carried through unchanged,
+        because it is the one that lists the names that *do* resolve.
         """
-        run = self.runtime.create_run(run_id, run_seed, horizon_tick=horizon_tick)
+        from simcore.scenario import ScenarioInvalid
+
+        try:
+            run = self.runtime.create_run(
+                run_id, run_seed, horizon_tick=horizon_tick, scenario=scenario
+            )
+        except ScenarioInvalid as refused:
+            raise ValueError(str(refused)) from refused
+
         if run.rate > 0:
             self.runtime.ensure_loop(run_id)
 
         status = self.run_status(run_id)
         assert status is not None, "a run just created has a row"
-        return {**status, "run_seed": run_seed, "horizon_tick": run.state.horizon_tick}
+        return {
+            **status,
+            "run_seed": run_seed,
+            "horizon_tick": run.state.horizon_tick,
+            # Which company it is a run of. The client asked by name and gets the name back, so a
+            # reload that re-attaches by run id can still say whose office it is looking at
+            # without the genesis payload growing a field the store and the goldens would carry.
+            "scenario": run.state.scenario.scenario_id,
+        }
+
+    def scenarios(self) -> list[dict[str, Any]]:
+        """Every company a run could be created against, for the surface that offers the choice.
+
+        **Each file is loaded rather than only listed**, because a name on its own is not an
+        offer: the picker shows the title and the summary, and a scenario that would be refused
+        at creation has to read as refused *here* rather than as a working choice that fails on
+        the button. So the reason travels with the entry and the entry stays in the list —
+        dropping it would leave an author who mistyped a key with a file that had silently
+        vanished.
+
+        One bad file therefore cannot hide the good ones, which is the property that matters on a
+        directory anyone can drop a file into.
+        """
+        from simcore import scenario as sc
+
+        catalogue: list[dict[str, Any]] = []
+        for name in sc.available():
+            try:
+                company = sc.load(name)
+            except sc.ScenarioInvalid as refused:
+                catalogue.append({"id": name, "loadable": False, "refusal": str(refused)})
+                continue
+            catalogue.append(
+                {
+                    "id": company.scenario_id,
+                    "title": company.title,
+                    "summary": company.summary,
+                    "people": len(company.people),
+                    "items": len(company.items),
+                    "loadable": True,
+                }
+            )
+        return catalogue
 
     def run_status(self, run_id: str) -> dict[str, Any] | None:
         run = self.runtime.runs.get(run_id)
