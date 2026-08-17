@@ -797,35 +797,166 @@ the client live, and because if it *does* reproduce in a focused tab it is a ser
 
 ---
 
+## What U11 found, that U12 and U13 need
+
+U11 filled the prose seam: the personas, the prompt, the provider call, M18's ranking predicate and
+M19's figure predicate, the single fallback exit, and the client's pending block. Both suites are
+green — backend 1,095 → **1,127**, client 479 → **491** — and no event payload, schema version or
+golden fixture moved.
+
+### The plan's file list was wrong twice, and both were already known
+
+- **`bench/guards.py` does not hold the guards.** §1 of this document settled that months of drift
+  ago: the predicates live in `packages/simcore/statement.py`, which both services import and neither
+  reimplements. `guards.py` is the agents-side *call site* — it calls `stmt.refusal`, maps a
+  `FailureKind` to a logged reason, and owns the single fallback constructor. It writes no predicate.
+- **`services/agents/stub.py` needed nothing.** It is the Phase 1 *resolver* stub (`NEVER_ANSWERS`)
+  and has no connection to statements. M14's "opening one with a specialist produces the scripted
+  reply" is the Phase 2 `voice`/`deflection` conversation, which has shipped since `ae557fd`. The
+  specialist case U11 does own is the *refusal* — a request naming a non-director is declined on both
+  sides — and that is in `main.py` and `step.py`.
+
+### The offer is re-derived, not carried, and that is a deliberate break with the scope
+
+`stmt.refusal` needed the checkpoint's option labels — M18 refuses a statement for *preferring* one —
+and its authored figures, which is half of what M19 resolves against. The obvious move was to put
+them on the `REQUEST_RAISED` payload beside `scope`, since `statement.py`'s own docstring argues that
+scope is *carried* so a leg cannot widen it.
+
+It is not the same case, and the difference is worth writing down. A scope is state-dependent and is a
+*permission*; a checkpoint's options are immutable authored content already sent to every client in
+the genesis catalog. There is nothing a leg could widen in its own favour. So `stmt.Offered` has **two
+adapters in one file** — `from_checkpoint` off folded state for the kernel, `from_catalog` off the
+genesis payload for the leg — and `REQUEST_RAISED`'s payload did not move, which keeps this unit off
+the replay surface entirely.
+
+**The two adapters disagreed, and the test that compares them is the one thing here worth copying.**
+`from_catalog` admitted `0`, because `catalog_to_state` splits the draw out of `effect` and writes
+`draw_delta: 0` where an option does not move it, while the state's `effect` simply has no key. A
+director could have written "0" and had it resolve. It is caught by
+`test_the_two_readings_of_a_checkpoint_agree_on_every_shipped_company`, parametrised over
+`sc.available()` and asserted against each company's own `total_checkpoints` — so a third company is
+covered completely by being added.
+
+### Five decisions, each of which the next unit could otherwise reopen
+
+1. **The guards are lexical over a closed vocabulary, and they have to be.** The refusal they produce
+   is an `ANSWER_REJECTED` output event the fold regenerates on every replay, so a predicate that
+   consulted a model would make the *record of a refusal* irreproducible. `RANKING_PHRASES` is
+   therefore a stated boundary rather than a completeness claim: what it buys is that the obvious ways
+   to rank are refused deterministically and the prompt is told not to try. What escapes it is caught
+   by a CEO reading a briefing that argues for one option, which is a product problem rather than a
+   silent one.
+2. **`not_configured` is not a fallback reason, and its absence is M20.** A run with no key raises the
+   request and lets it reach its deadline, exactly as a U10-only build did. The client gates the whole
+   block on `spend.benchPresent`, which arrives on the first `MODEL_SPEND` frame — long before the CEO
+   can walk to a desk — so "the conversation is the Phase 2 conversation exactly" is literally true
+   rather than nearly true. `test_bench.py` asserts the two closed sets differ by exactly that member
+   and by `guard_refused`.
+3. **The fallback prose is this repository's, not the scenario's.** Each person carries an authored
+   `deflection`, which would have given each director their own voice for a turn the bench could not
+   answer. It is unreachable: `roster_to_state` does not carry `deflection`, so putting it on the wire
+   would move the genesis payload — and the genesis payload is what every golden fixture in two
+   languages is taken from. Flavour is not worth regenerating the fixture set, and the honest reading
+   is that a fallback is not the director speaking at all.
+4. **A derived figure is not a shown figure.** A statement converting `load_permille: 550` into "55%"
+   is refused. That is the intended reading of M19 rather than a limitation of it: a figure the CEO
+   cannot resolve back to a row is a figure the report cannot either.
+5. **Digits, not words.** `"two weeks"` is prose and `"2 weeks"` is a figure. The line is at the
+   numeral because that is where every other figure in this product is drawn, and because a guard that
+   resolved spelled-out counts would refuse sentences the shipped company already contains — its own
+   authored copy says "the listing goes dark for two weeks".
+
+### A fourth marking exists now, and it is the strongest of the four
+
+`data-scripted`, beside `data-authored-tuning`, `data-measured` and U7's `data-described`. Its own
+attribute for exactly the reason U7 gave for the third: the sweeps over each are supposed to be
+unsatisfiable by the others. It is the strongest claim of the four and the one whose absence would
+mislead most — the other three qualify something a reader can see is a figure or a list, while this
+one says that a paragraph which reads like a director's considered view is not one. `withLabel`
+defaults to *on* for the same reason.
+
+`chrome.test.ts` asserts the bench block spends no hue in any of its four states, so a scripted reply
+stays distinguishable from a briefing with every colour removed.
+
+### Two things the plan's approach section says that are not quite right
+
+- **"The settle action stays enabled throughout."** It is disabled until an option is picked, which is
+  Phase 2's rule and has nothing to do with the bench. The honest claim, and what the client suite
+  asserts, is that *the bench never disables it*: picking an option with a pending block showing
+  enables the button.
+- **The tacit line stays out of the prompt.** `prompts.build` takes a `tacit` parameter and discards
+  it, with the reason at the call site: the tacit line is the in-person reward and it is delivered to
+  the *player*, so spending it on a model would be paying the reward to the wrong party. It is a
+  parameter rather than an absence so the decision is visible where somebody would otherwise add it.
+
+### What U12 inherits
+
+- **The assembled prompt exists now**, which was the whole of why U12 could not start: `prompts.build`
+  returns a `modelgw.Prompt`, and its digest is the input U12's key derivation is content-addressed on.
+- **There is exactly one provider call site.** `guards._completed` is the only place
+  `BoundedGateway.complete` is reached from the bench, so the cache lookup wraps one function rather
+  than being threaded through the leg. `note_cache_hit` is still unused and still typed so a `Failure`
+  cannot be recorded as a hit.
+- **`Offered` is not part of the key.** The prompt already contains everything the offer describes, so
+  hashing both would be hashing the same authored content twice.
+- The fork half of M33 is still unreachable until U16: `fork_run` sets the child's `lineage_root_id` to
+  its own id, and `test_modelgw.py` shows the `UPDATE`-it-directly workaround U9 used.
+
+### What U13 inherits
+
+- `RANKING_FIXTURE` and `UNCITED_FIXTURE` in `tests/test_bench.py` are the two canned provider replies
+  its CI assertion rests on — one that ranks, one that quotes a figure resolving to nothing — kept as
+  named constants precisely so a keyless job can assert the guards fire.
+- **The whole bench suite runs with no provider configured.** Every test uses `httpx.MockTransport`
+  through `test_modelgw`'s harness, so the keyless job covers the bench rather than skipping it.
+
+### Two things that cost time and are worth knowing
+
+- **A test can pass for the wrong reason and read as if it proved something.** The first version of
+  "a tick resolves to its sim-day" used tick 540, which is day 2 — and both `1` and `2` are authored
+  option deltas on that checkpoint, so it passed on the option figures while claiming to prove the day
+  resolution. Moved to tick 2160, which is day 5, a number nothing else on that checkpoint supplies.
+- **U10's `statement_answer` fixture had to change meaning, not just fields.** It built a
+  `PRODUCER_SCRIPTED` statement because U11 did not exist yet. Scripted now means one specific thing —
+  a fallback standing in for a briefing that did not arrive, naming the condition that fired — so the
+  fixture is a model's statement, which is what those tests were always about.
+
+---
+
 ## Where this stopped, and the order to resume in
 
-Thirteen of twenty-five units, paused by decision with the tree clean and both suites green. Status
+Twelve of twenty-five plan units, paused by decision with the tree clean and both suites green. Status
 per unit is in [`docs/2026-08-16-progress-checklist.md`](2026-08-16-progress-checklist.md); this is
 only the sequencing, because the dependency graph is no longer the plan's phase order.
 
 **Unblocked right now, and mutually disjoint enough to run in parallel:**
 
-- **U11** (four directors who brief and object) — the critical path. U10 left the guard module at
-  `simcore/statement.py` with the agents-side call site already live in `produce_statement`; U11 adds
-  M18's ranking predicate and M19's citation predicate *into that module*, plus the personas, the
-  prompts, the fallback content and the client's pending block. It gates U12 and U13. **It now
-  shares `Conversation.tsx` with U7's `Schema` section**, which sits between the header and the
-  decision card — U11's pending block goes below the decision, not above it.
-- **U16** (persistent forks) — file set is disjoint from U11's. It also inherits two findings: U9
+- **U13** (continuous integration for the keyless path) — no longer blocked on anything. U11 shipped
+  the bench suite, every test in it runs against `httpx.MockTransport` with no provider configured, and
+  two named fixtures (`RANKING_FIXTURE`, `UNCITED_FIXTURE`) exist for the assertion that the guards
+  fire. All three jobs the plan describes can be written today.
+- **U12** (caching on the situation) — unblocked by U11. The assembled prompt exists, and
+  `guards._completed` is the single provider call site the lookup wraps. Read "What U12 inherits"
+  above before starting: the plan's file list puts a store-backed cache inside `modelgw`, which
+  `test_modelgw.py` forbids, and the fork half of M33 stays unreachable until U16.
+- **U16** (persistent forks) — file set is disjoint from both. It also inherits two findings: U9
   left `lineage_root_id` set at creation needing only the parent's root copied at fork, and U10 found
   `statement_request_id` is not run-scoped, so a parent and a fork at one tick mint the same id.
-- **U14** (director memory and the CEO's reading surface) — behind U11 in practice, since both write
-  `test_bench.py`, but its `Panels.tsx` half no longer collides with anything: U7 put the person's
-  schema on the conversation rather than in the rail.
+- **U14** (director memory and the CEO's reading surface) — writes `test_bench.py`, which now exists
+  and is 73 tests, so check the file's own sections before adding to it. Its `Panels.tsx` half
+  collides with nothing: U7 put the person's schema on the conversation rather than in the rail, and
+  U11's bench block is its own section below the decision card. **Reuse `stmt.Authorized` rather than
+  inventing a second scope type**, and reach further back than `context.LOOKBACK_TICKS` on purpose —
+  a statement's working set is shorter than a memory.
 
-**Then:** U12 and U13 behind U11, U15 behind U14, and U17/U18/U19/U25 behind U16. Phase F last, as
-the plan has it.
+**Then:** U15 behind U14, and U17/U18/U19/U25 behind U16. Phase F last, as the plan has it.
 
-**The one thing overdue against the plan's own reasoning is U13.** "The path most users take is the
-path CI proves" — and there is still no `.github/workflows`, so nothing verifies the keyless path or
-the first command. U13 is blocked on U11 only for its bench-suite job; its keyless job and its compose
-smoke job could run today. The `tsc` failure fixed in `2c38686` — a type error that sat in the tree
-while `npm test` stayed green, because vitest does not typecheck — is what the absence costs.
+**The one thing overdue against the plan's own reasoning is still U13.** "The path most users take is
+the path CI proves" — and there is still no `.github/workflows`, so nothing verifies the keyless path
+or the first command. It has no excuse left: U11 was its last dependency. The `tsc` failure fixed in
+`2c38686` — a type error that sat in the tree while `npm test` stayed green, because vitest does not
+typecheck — is what the absence costs, and U11 ran `npx tsc --noEmit` by hand for exactly that reason.
 
 ### Orchestration notes worth carrying forward
 
