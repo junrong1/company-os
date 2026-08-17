@@ -1951,10 +1951,18 @@ def test_nothing_in_the_backend_can_execute_what_a_scenario_names() -> None:
 def test_the_tool_lists_have_exactly_two_readers_and_neither_calls_anything() -> None:
     """M16 as a reachability statement rather than as an absence of one call.
 
-    A tool name is loaded (`scenario.py`), projected onto genesis (`people.py`), and read by
-    nobody else in the backend — so there is no third site where a dispatch could be added
-    without this failing. `envelope.py` is in the set because the schema-version table records
-    *why* the payload grew these fields; it holds a comment, not a reader.
+    A tool name is loaded (`scenario.py`), projected onto genesis (`people.py`), assembled into a
+    persona (`bench/personas.py`), described to a provider (`bench/prompts.py`), and read by nobody
+    else in the backend — so there is no sixth site where a dispatch could be added without this
+    failing. `envelope.py` is in the set because the schema-version table records *why* the payload
+    grew these fields; it holds a comment, not a reader.
+
+    The two bench modules joined the set with U11, and what they do with a tool list is worth stating
+    because it is the first time one is *said out loud* rather than displayed. `personas.py` copies
+    the list off the genesis roster; `prompts.py` writes it into the user turn under the words "none
+    of which you can run". Neither has a call site to add one to, which the scan above asserts over
+    every module in `packages/` and `services/` — including these two, automatically, which is why
+    that test is the guarantee and this one is the tripwire.
     """
     naming = {
         path.relative_to(BACKEND).as_posix()
@@ -1971,7 +1979,9 @@ def test_the_tool_lists_have_exactly_two_readers_and_neither_calls_anything() ->
         "packages/simcore/scenario.py",
         "packages/simcore/people.py",
         "packages/contracts/envelope.py",
-    }, f"a third module reads what a scenario describes: {sorted(naming)}"
+        "services/agents/bench/personas.py",
+        "services/agents/bench/prompts.py",
+    }, f"a sixth module reads what a scenario describes: {sorted(naming)}"
 
 
 # =========================================================================
