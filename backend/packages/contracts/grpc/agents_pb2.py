@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x61gents.proto\x12\x13\x63ompanyos.agents.v1\"\xa2\x01\n\nResolution\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x0e\n\x06run_id\x18\x02 \x01(\t\x12\x16\n\x0eraised_at_tick\x18\x03 \x01(\x04\x12\x13\n\x0bowning_item\x18\x04 \x01(\t\x12\x15\n\rcheckpoint_id\x18\x05 \x01(\t\x12\x19\n\x11permitted_options\x18\x06 \x03(\t\x12\x11\n\trules_ver\x18\x07 \x01(\t\"\xf7\x01\n\x08\x44\x65\x63ision\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x15\n\rchosen_option\x18\x02 \x01(\t\x12\x37\n\x08resolver\x18\x03 \x01(\x0b\x32%.companyos.agents.v1.ResolverIdentity\x12\x11\n\trules_ver\x18\x04 \x01(\t\x12\x41\n\nprovenance\x18\x05 \x03(\x0b\x32-.companyos.agents.v1.Decision.ProvenanceEntry\x1a\x31\n\x0fProvenanceEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\xbb\x01\n\x10ResolverIdentity\x12\x38\n\x04kind\x18\x01 \x01(\x0e\x32*.companyos.agents.v1.ResolverIdentity.Kind\x12\x10\n\x08identity\x18\x02 \x01(\t\"[\n\x04Kind\x12\x14\n\x10KIND_UNSPECIFIED\x10\x00\x12\x13\n\x0fHUMAN_IN_PERSON\x10\x01\x12\x13\n\x0fHUMAN_FROM_TRAY\x10\x02\x12\t\n\x05\x41GENT\x10\x03\x12\x08\n\x04STUB\x10\x04\x32^\n\rAgentResolver\x12M\n\x07Resolve\x12\x1f.companyos.agents.v1.Resolution\x1a\x1d.companyos.agents.v1.Decision(\x01\x30\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0c\x61gents.proto\x12\x13\x63ompanyos.agents.v1\"\xa2\x01\n\nResolution\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x0e\n\x06run_id\x18\x02 \x01(\t\x12\x16\n\x0eraised_at_tick\x18\x03 \x01(\x04\x12\x13\n\x0bowning_item\x18\x04 \x01(\t\x12\x15\n\rcheckpoint_id\x18\x05 \x01(\t\x12\x19\n\x11permitted_options\x18\x06 \x03(\t\x12\x11\n\trules_ver\x18\x07 \x01(\t\"\xf7\x01\n\x08\x44\x65\x63ision\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x15\n\rchosen_option\x18\x02 \x01(\t\x12\x37\n\x08resolver\x18\x03 \x01(\x0b\x32%.companyos.agents.v1.ResolverIdentity\x12\x11\n\trules_ver\x18\x04 \x01(\t\x12\x41\n\nprovenance\x18\x05 \x03(\x0b\x32-.companyos.agents.v1.Decision.ProvenanceEntry\x1a\x31\n\x0fProvenanceEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\xcd\x01\n\x10StatementRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x0e\n\x06run_id\x18\x02 \x01(\t\x12\x16\n\x0eraised_at_tick\x18\x03 \x01(\x04\x12\x13\n\x0bowning_item\x18\x04 \x01(\t\x12\x10\n\x08\x63p_index\x18\x05 \x01(\r\x12\x0e\n\x06person\x18\x06 \x01(\t\x12\x33\n\x05scope\x18\x07 \x01(\x0b\x32$.companyos.agents.v1.AuthorizedScope\x12\x11\n\trules_ver\x18\x08 \x01(\t\"0\n\x0f\x41uthorizedScope\x12\x0e\n\x06people\x18\x01 \x03(\t\x12\r\n\x05items\x18\x02 \x03(\t\"\xdc\x01\n\tStatement\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x10\n\x08\x62riefing\x18\x02 \x01(\t\x12\x11\n\tobjection\x18\x03 \x01(\t\x12\x11\n\tcitations\x18\x04 \x03(\x04\x12\x36\n\x07\x63ontext\x18\x05 \x01(\x0b\x32%.companyos.agents.v1.RetrievedContext\x12\x38\n\x08producer\x18\x06 \x01(\x0b\x32&.companyos.agents.v1.StatementProducer\x12\x11\n\trules_ver\x18\x07 \x01(\t\"\xad\x01\n\x11StatementProducer\x12\x0e\n\x06person\x18\x01 \x01(\t\x12\x39\n\x04kind\x18\x02 \x01(\x0e\x32+.companyos.agents.v1.StatementProducer.Kind\x12\x16\n\x0emodel_identity\x18\x03 \x01(\t\"5\n\x04Kind\x12\x14\n\x10KIND_UNSPECIFIED\x10\x00\x12\t\n\x05MODEL\x10\x01\x12\x0c\n\x08SCRIPTED\x10\x02\"\x93\x02\n\x10RetrievedContext\x12\x10\n\x08\x64irector\x18\x01 \x01(\t\x12\x0c\n\x04line\x18\x02 \x03(\t\x12\x11\n\tsince_seq\x18\x03 \x01(\x04\x12\x13\n\x0bthrough_seq\x18\x04 \x01(\x04\x12\x33\n\x06\x65vents\x18\x05 \x03(\x0b\x32#.companyos.agents.v1.RetrievedEvent\x12=\n\x04\x64raw\x18\x06 \x03(\x0b\x32/.companyos.agents.v1.RetrievedContext.DrawEntry\x12\x16\n\x0eunlocking_note\x18\x07 \x01(\t\x1a+\n\tDrawEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\x03:\x02\x38\x01\"g\n\x0eRetrievedEvent\x12\x0b\n\x03seq\x18\x01 \x01(\x04\x12\x0c\n\x04tick\x18\x02 \x01(\x04\x12\x0c\n\x04kind\x18\x03 \x01(\t\x12\x0e\n\x06person\x18\x04 \x01(\t\x12\x0c\n\x04item\x18\x05 \x01(\t\x12\x0e\n\x06\x64\x65tail\x18\x06 \x01(\t\"\xbb\x01\n\x10ResolverIdentity\x12\x38\n\x04kind\x18\x01 \x01(\x0e\x32*.companyos.agents.v1.ResolverIdentity.Kind\x12\x10\n\x08identity\x18\x02 \x01(\t\"[\n\x04Kind\x12\x14\n\x10KIND_UNSPECIFIED\x10\x00\x12\x13\n\x0fHUMAN_IN_PERSON\x10\x01\x12\x13\n\x0fHUMAN_FROM_TRAY\x10\x02\x12\t\n\x05\x41GENT\x10\x03\x12\x08\n\x04STUB\x10\x04\x32^\n\rAgentResolver\x12M\n\x07Resolve\x12\x1f.companyos.agents.v1.Resolution\x1a\x1d.companyos.agents.v1.Decision(\x01\x30\x01\x32\x63\n\rDirectorBench\x12R\n\x05\x42rief\x12%.companyos.agents.v1.StatementRequest\x1a\x1e.companyos.agents.v1.Statement(\x01\x30\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,16 +33,36 @@ if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_DECISION_PROVENANCEENTRY']._loaded_options = None
   _globals['_DECISION_PROVENANCEENTRY']._serialized_options = b'8\001'
+  _globals['_RETRIEVEDCONTEXT_DRAWENTRY']._loaded_options = None
+  _globals['_RETRIEVEDCONTEXT_DRAWENTRY']._serialized_options = b'8\001'
   _globals['_RESOLUTION']._serialized_start=38
   _globals['_RESOLUTION']._serialized_end=200
   _globals['_DECISION']._serialized_start=203
   _globals['_DECISION']._serialized_end=450
   _globals['_DECISION_PROVENANCEENTRY']._serialized_start=401
   _globals['_DECISION_PROVENANCEENTRY']._serialized_end=450
-  _globals['_RESOLVERIDENTITY']._serialized_start=453
-  _globals['_RESOLVERIDENTITY']._serialized_end=640
-  _globals['_RESOLVERIDENTITY_KIND']._serialized_start=549
-  _globals['_RESOLVERIDENTITY_KIND']._serialized_end=640
-  _globals['_AGENTRESOLVER']._serialized_start=642
-  _globals['_AGENTRESOLVER']._serialized_end=736
+  _globals['_STATEMENTREQUEST']._serialized_start=453
+  _globals['_STATEMENTREQUEST']._serialized_end=658
+  _globals['_AUTHORIZEDSCOPE']._serialized_start=660
+  _globals['_AUTHORIZEDSCOPE']._serialized_end=708
+  _globals['_STATEMENT']._serialized_start=711
+  _globals['_STATEMENT']._serialized_end=931
+  _globals['_STATEMENTPRODUCER']._serialized_start=934
+  _globals['_STATEMENTPRODUCER']._serialized_end=1107
+  _globals['_STATEMENTPRODUCER_KIND']._serialized_start=1054
+  _globals['_STATEMENTPRODUCER_KIND']._serialized_end=1107
+  _globals['_RETRIEVEDCONTEXT']._serialized_start=1110
+  _globals['_RETRIEVEDCONTEXT']._serialized_end=1385
+  _globals['_RETRIEVEDCONTEXT_DRAWENTRY']._serialized_start=1342
+  _globals['_RETRIEVEDCONTEXT_DRAWENTRY']._serialized_end=1385
+  _globals['_RETRIEVEDEVENT']._serialized_start=1387
+  _globals['_RETRIEVEDEVENT']._serialized_end=1490
+  _globals['_RESOLVERIDENTITY']._serialized_start=1493
+  _globals['_RESOLVERIDENTITY']._serialized_end=1680
+  _globals['_RESOLVERIDENTITY_KIND']._serialized_start=1589
+  _globals['_RESOLVERIDENTITY_KIND']._serialized_end=1680
+  _globals['_AGENTRESOLVER']._serialized_start=1682
+  _globals['_AGENTRESOLVER']._serialized_end=1776
+  _globals['_DIRECTORBENCH']._serialized_start=1778
+  _globals['_DIRECTORBENCH']._serialized_end=1877
 # @@protoc_insertion_point(module_scope)

@@ -117,8 +117,20 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     EventKind.RUN_TERMINATED: 1,  # U8
     EventKind.RUN_FORKED: 1,  # U15
     EventKind.STORE_RECOVERED: 1,  # U6/U9
-    EventKind.REQUEST_RAISED: 1,  # U11
-    EventKind.INPUT_RECEIVED: 1,  # U11
+    # 2: the MVP's U10 added a third leg to the pending-input contract. A statement request carries
+    # the director it was raised on, the checkpoint it is about, and the authorized scope the leg
+    # must query under (R23) — present only on that leg, so a period consult's payload is
+    # byte-identical to version 1 and a log written before this unit still replays strictly. The
+    # bump is for the consumer that has to be able to tell whether the event it is holding can carry
+    # a director at all.
+    EventKind.REQUEST_RAISED: 2,  # U11, MVP U10
+    # 2: the answer to a statement request rides here rather than on a new kind, which is what keeps
+    # it inside the partial unique index that already enforces one answer per request per run. The
+    # discriminator is on the payload: `service` names the leg, and the answer then carries the
+    # prose, the objection, the citations, the retrieved context and the producer identity (R2, M31,
+    # M32). Additive — a resolution and a period consult are unchanged — and versioned because a
+    # client rendering a briefing has to know whether this event can hold one.
+    EventKind.INPUT_RECEIVED: 2,  # U11, MVP U10
     EventKind.ANSWER_REJECTED: 1,  # U11
     EventKind.CEO_INPUT: 1,  # U4
     # 2: U13/U14 added `item_status`, the status the item landed in. Every kind that moves

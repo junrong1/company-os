@@ -2,6 +2,19 @@ syntax = "proto3";
 
 package companyos.agents.v1;
 
+// Two legs, and the difference between them is the plan's central claim about a
+// bench: a director is a statement *producer*, never a resolver. The bench answers
+// with prose and citations; the CEO answers with a choice. So they are separate
+// services here even though one process houses both, and the shipped resolver keeps
+// its stub and its never-answers default rather than being replaced by the bench.
+//
+// The transport these describe is no longer gRPC. The compose collapse deleted the
+// servicer that fronted the split, and these files stay as the *vocabulary* — the
+// same role kernel.proto's command enum plays for the gateway. What survives the
+// collapse unchanged is the direction: the kernel opens the stream and no answering
+// service holds the kernel's address, which in one process is the launcher handing
+// the kernel a producer rather than the agents surface reaching for a runtime.
+
 // Phase 2's agent layer. Phase 1 ships a stub resolver whose only job is to prove
 // the pending-input contract works before Phase 2 depends on it.
 service AgentResolver {
@@ -48,6 +61,119 @@ message Decision {
   // change: an answer that carries provenance is the same shape whether the
   // provenance is empty or not.
   map<string, string> provenance = 5;
+}
+
+// The bench. A director briefs the CEO on a checkpoint they are standing at, and
+// objects to it in the same breath.
+service DirectorBench {
+  // Opened by the kernel (R17), the same direction and for the same reason as the
+  // resolver stream above. A bidirectional stream also turns a dropped connection
+  // into a failure signal rather than a timeout: every request outstanding on it is
+  // known-unanswered, which is what lets the fallback fire instead of the deadline.
+  rpc Brief(stream StatementRequest) returns (stream Statement);
+}
+
+message StatementRequest {
+  string request_id = 1;
+  string run_id = 2;
+  uint64 raised_at_tick = 3;
+
+  // The item stopped at the checkpoint this briefing is about.
+  string owning_item = 4;
+  uint32 cp_index = 5;
+
+  // The director being asked. A specialist is never asked: M14 keeps specialists
+  // scripted, and a statement attributed to one is a persona nobody authored.
+  string person = 6;
+
+  // What this director is authorized to read, and therefore to be shown and to
+  // cite (R23). Carried on the request rather than computed by the leg, which is
+  // the whole of "default-deny at the query layer, with no reachable unscoped
+  // variant": a leg that does not derive its own scope cannot widen it. U15's
+  // Authorization grants widen this set; nothing else may.
+  AuthorizedScope scope = 7;
+
+  string rules_ver = 8;
+}
+
+message AuthorizedScope {
+  repeated string people = 1;
+  repeated string items = 2;
+}
+
+message Statement {
+  string request_id = 1;
+
+  // Two fields rather than one paragraph. A bench that only agrees adds nothing to
+  // a decision the CEO was going to take anyway, so the objection is required — and
+  // a surface cannot render as two blocks what arrived as one.
+  string briefing = 2;
+  string objection = 3;
+
+  // Log sequences the prose points at. Every one is re-checked against the
+  // retrieved context below, and the context against the scope above, so a figure
+  // resolves back to an event the producer was authorized to read or the statement
+  // is refused (M19, R23).
+  repeated uint64 citations = 4;
+
+  // The context the statement was produced from, logged *with* the statement (M32).
+  // A re-ranked or re-queried retrieval at replay time would hand the director a
+  // different world while the log claimed fidelity.
+  RetrievedContext context = 5;
+
+  StatementProducer producer = 6;
+
+  string rules_ver = 7;
+}
+
+message StatementProducer {
+  // The director who said it. A statement is attributable or it is not a statement:
+  // the guard refuses one attributed to anybody other than the person the request
+  // named, because the citation check is against *that* person's scope.
+  string person = 1;
+
+  Kind kind = 2;
+
+  // A model identifier, empty for a scripted reply. Never a provider name, a base
+  // URL or an auth header: R6 keeps all three out of the log, the report and the
+  // cache, and this field is in all three.
+  string model_identity = 3;
+
+  enum Kind {
+    KIND_UNSPECIFIED = 0;
+    MODEL = 1;
+    // The fallback R5 sends a guard rejection, a provider error, a timeout and an
+    // exhausted ceiling to. Named so the surface can mark it rather than passing
+    // canned prose off as a briefing.
+    SCRIPTED = 2;
+  }
+}
+
+message RetrievedContext {
+  string director = 1;
+  repeated string line = 2;
+  uint64 since_seq = 3;
+  uint64 through_seq = 4;
+  repeated RetrievedEvent events = 5;
+
+  // The department's recurring draw and the load it is producing. Not an event, so
+  // it carries no sequence and is never citable — a figure a director quotes has to
+  // resolve to something, and this resolves to state rather than to a row.
+  map<string, int64> draw = 6;
+
+  // The note on the deliverable that unlocked this item, or empty.
+  string unlocking_note = 7;
+}
+
+message RetrievedEvent {
+  uint64 seq = 1;
+  uint64 tick = 2;
+  string kind = 3;
+  // One of these is always set, and that is what places the event inside a scope.
+  // An event naming neither is refused rather than admitted as company-wide.
+  string person = 4;
+  string item = 5;
+  string detail = 6;
 }
 
 message ResolverIdentity {

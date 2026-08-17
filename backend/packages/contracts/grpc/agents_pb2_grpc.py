@@ -26,7 +26,20 @@ if _version_not_supported:
 
 
 class AgentResolverStub(object):
-    """Phase 2's agent layer. Phase 1 ships a stub resolver whose only job is to prove
+    """Two legs, and the difference between them is the plan's central claim about a
+    bench: a director is a statement *producer*, never a resolver. The bench answers
+    with prose and citations; the CEO answers with a choice. So they are separate
+    services here even though one process houses both, and the shipped resolver keeps
+    its stub and its never-answers default rather than being replaced by the bench.
+
+    The transport these describe is no longer gRPC. The compose collapse deleted the
+    servicer that fronted the split, and these files stay as the *vocabulary* — the
+    same role kernel.proto's command enum plays for the gateway. What survives the
+    collapse unchanged is the direction: the kernel opens the stream and no answering
+    service holds the kernel's address, which in one process is the launcher handing
+    the kernel a producer rather than the agents surface reaching for a runtime.
+
+    Phase 2's agent layer. Phase 1 ships a stub resolver whose only job is to prove
     the pending-input contract works before Phase 2 depends on it.
     """
 
@@ -44,7 +57,20 @@ class AgentResolverStub(object):
 
 
 class AgentResolverServicer(object):
-    """Phase 2's agent layer. Phase 1 ships a stub resolver whose only job is to prove
+    """Two legs, and the difference between them is the plan's central claim about a
+    bench: a director is a statement *producer*, never a resolver. The bench answers
+    with prose and citations; the CEO answers with a choice. So they are separate
+    services here even though one process houses both, and the shipped resolver keeps
+    its stub and its never-answers default rather than being replaced by the bench.
+
+    The transport these describe is no longer gRPC. The compose collapse deleted the
+    servicer that fronted the split, and these files stay as the *vocabulary* — the
+    same role kernel.proto's command enum plays for the gateway. What survives the
+    collapse unchanged is the direction: the kernel opens the stream and no answering
+    service holds the kernel's address, which in one process is the launcher handing
+    the kernel a producer rather than the agents surface reaching for a runtime.
+
+    Phase 2's agent layer. Phase 1 ships a stub resolver whose only job is to prove
     the pending-input contract works before Phase 2 depends on it.
     """
 
@@ -73,7 +99,20 @@ def add_AgentResolverServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class AgentResolver(object):
-    """Phase 2's agent layer. Phase 1 ships a stub resolver whose only job is to prove
+    """Two legs, and the difference between them is the plan's central claim about a
+    bench: a director is a statement *producer*, never a resolver. The bench answers
+    with prose and citations; the CEO answers with a choice. So they are separate
+    services here even though one process houses both, and the shipped resolver keeps
+    its stub and its never-answers default rather than being replaced by the bench.
+
+    The transport these describe is no longer gRPC. The compose collapse deleted the
+    servicer that fronted the split, and these files stay as the *vocabulary* — the
+    same role kernel.proto's command enum plays for the gateway. What survives the
+    collapse unchanged is the direction: the kernel opens the stream and no answering
+    service holds the kernel's address, which in one process is the launcher handing
+    the kernel a producer rather than the agents surface reaching for a runtime.
+
+    Phase 2's agent layer. Phase 1 ships a stub resolver whose only job is to prove
     the pending-input contract works before Phase 2 depends on it.
     """
 
@@ -94,6 +133,88 @@ class AgentResolver(object):
             '/companyos.agents.v1.AgentResolver/Resolve',
             agents__pb2.Resolution.SerializeToString,
             agents__pb2.Decision.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
+class DirectorBenchStub(object):
+    """The bench. A director briefs the CEO on a checkpoint they are standing at, and
+    objects to it in the same breath.
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.Brief = channel.stream_stream(
+                '/companyos.agents.v1.DirectorBench/Brief',
+                request_serializer=agents__pb2.StatementRequest.SerializeToString,
+                response_deserializer=agents__pb2.Statement.FromString,
+                _registered_method=True)
+
+
+class DirectorBenchServicer(object):
+    """The bench. A director briefs the CEO on a checkpoint they are standing at, and
+    objects to it in the same breath.
+    """
+
+    def Brief(self, request_iterator, context):
+        """Opened by the kernel (R17), the same direction and for the same reason as the
+        resolver stream above. A bidirectional stream also turns a dropped connection
+        into a failure signal rather than a timeout: every request outstanding on it is
+        known-unanswered, which is what lets the fallback fire instead of the deadline.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_DirectorBenchServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'Brief': grpc.stream_stream_rpc_method_handler(
+                    servicer.Brief,
+                    request_deserializer=agents__pb2.StatementRequest.FromString,
+                    response_serializer=agents__pb2.Statement.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'companyos.agents.v1.DirectorBench', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('companyos.agents.v1.DirectorBench', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class DirectorBench(object):
+    """The bench. A director briefs the CEO on a checkpoint they are standing at, and
+    objects to it in the same breath.
+    """
+
+    @staticmethod
+    def Brief(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/companyos.agents.v1.DirectorBench/Brief',
+            agents__pb2.StatementRequest.SerializeToString,
+            agents__pb2.Statement.FromString,
             options,
             channel_credentials,
             insecure,

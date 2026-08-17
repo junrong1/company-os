@@ -554,8 +554,15 @@ def _describe(steps: tuple[tuple[str, int], ...], label: str = "") -> str:
 # =========================================================================
 
 
-def _control_character(text: str) -> str:
+def control_character(text: str) -> str:
     """The first character that must never reach a prompt, described, or "" if there is none.
+
+    Public, because `simcore.statement` applies the identical rule to *generated* prose and
+    execution decision §1 forbids a second copy of a predicate. The loader is where the rule was
+    written down and where its reasoning lives, so the other caller imports it rather than
+    restating it — a second `unicodedata.category(...).startswith("C")` in the tree is a rule two
+    units could drift on, and the drift would be invisible until one of them let a format character
+    into a prompt.
 
     Rejects every Unicode category beginning with C: control characters, *format* characters,
     surrogates, private use and unassigned codepoints. Format characters are the reason the
@@ -611,7 +618,7 @@ def _check_text(
         )
         return ""
 
-    found = _control_character(value)
+    found = control_character(value)
     if found:
         failures.add(
             f"{where}: {key} contains {found}. Authored text is one line of printable prose: "

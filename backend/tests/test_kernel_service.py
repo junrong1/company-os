@@ -25,6 +25,7 @@ from kernel import loop as loop_module
 from kernel.loop import KernelRuntime, RunLoop
 from kernel.store import LogStore, make_engine
 from simcore import compare as branching
+from simcore import pending as pend
 from simcore import snapshot as snapshotting
 from simcore import step as sim
 from simcore import time as simtime
@@ -971,6 +972,12 @@ async def test_no_store_round_trip_or_wait_happens_inside_the_lock() -> None:
         "sleep",
         "wait",
         "join",
+        # The provider call R13 names explicitly, and the bench's own entry point beside it. U10
+        # answers a statement on a worker thread with no lock held; both of these inside the lock
+        # would serialise the clock behind a network, which does not raise — the clock just runs
+        # slow, which is the failure this file's diagnostics were built to explain rather than cause.
+        "complete",
+        "_statement_producer",
     }
 
     tree = ast.parse(inspect.getsource(loop_module))
@@ -1737,11 +1744,13 @@ async def test_every_append_in_this_file_publishes_what_it_committed() -> None:
     A sequence is released only once every sequence before it has gone out, so an append that
     returns without publishing is not one lost frame — it is a hole every later frame waits behind
     for the rest of the run, with nothing raised. That makes "publish beside the append" a
-    structural property of this file rather than a habit, and the four sites are genesis,
-    `set_rate`, `_advance` and `apply_command`.
+    structural property of this file rather than a habit, and the five sites are genesis,
+    `set_rate`, `_advance`, `deliver_statement` and `apply_command`.
 
-    **A unit adding a fifth append should extend nothing here — it should publish.** This test is
-    written to pass for free in that case and to fail loudly otherwise.
+    **A unit adding a sixth append should extend the count here and publish.** The count is an
+    equality rather than a floor so that an append arriving with no publish and an append arriving
+    with no docstring both fail — U10 added `deliver_statement`, which is the fifth, and moved this
+    number with it.
     """
     import ast
     import inspect
@@ -1763,8 +1772,8 @@ async def test_every_append_in_this_file_publishes_what_it_committed() -> None:
         if isinstance(node, ast.FunctionDef) and calls(node, "submit")
     ]
 
-    assert len(appenders) == 4, (
-        f"{len(appenders)} functions append, not the four this file documents "
+    assert len(appenders) == 5, (
+        f"{len(appenders)} functions append, not the five this file documents "
         f"({', '.join(node.name for node in appenders)}). Either an append was added without a "
         "publish, or one was removed and the module docstring is now wrong"
     )
@@ -1820,3 +1829,351 @@ async def test_a_sequence_nobody_publishes_is_given_up_on_rather_than_waited_for
         "the cursor did not follow what was released, so the next frame would be held back too"
     )
     assert not run.held_back, "something is still being waited for after the bound was reached"
+
+
+# =========================================================================
+# The statement leg: the kernel asks, and the answer comes back (U10)
+# =========================================================================
+#
+# This is the delivery leg the plan's Risks section singles out: `raise_request` and
+# `receive_answer` were a tested state machine with no production caller. Everything below is
+# therefore about the *transport* rather than about the contract — the contract is
+# `test_pending_input.py`'s. What has to be true here is that a request raised inside a tick reaches
+# a producer off the tick thread, that the answer comes back through the writer and onto the wire,
+# and that none of the three failure modes a network has stops the clock.
+
+BRIEF_DIRECTOR = "dir_hr"
+BRIEF_ITEM = "wi_hiring"
+
+
+def _walk_the_ceo_to_a_briefing(runtime: KernelRuntime, run_id: str) -> None:
+    """Drive the run to "a director stopped at a checkpoint, the CEO beside them", through the
+    kernel's own surfaces.
+
+    The CEO moves by submitted input rather than by assignment to `run.state.ceo`, because the whole
+    point of these tests is the path a real run takes: the command goes through `apply_command`, the
+    tick goes through `_advance`, and the request is raised by `step()` in between.
+    """
+    from simcore.world import find_path
+
+    run = runtime.runs[run_id]
+    while run.state.items[BRIEF_ITEM].status != sim.STATUS_BLOCKED:
+        runtime._advance(run, 1)
+
+    target = run.state.seats[BRIEF_DIRECTOR]
+    held = 0
+    for _ in range(600):
+        here = run.state.ceo.tile
+        path = find_path(run.state.floor, here, target)
+        step_to = here
+        if path:
+            step_to = path[1] if path[0] == here and len(path) > 1 else path[0]
+
+        mask = 0
+        centre_x = step_to[0] * sim.MILLI + sim.MILLI // 2
+        centre_y = step_to[1] * sim.MILLI + sim.MILLI // 2
+        if run.state.ceo.x_milli < centre_x - 60:
+            mask |= sim.INPUT_RIGHT
+        elif run.state.ceo.x_milli > centre_x + 60:
+            mask |= sim.INPUT_LEFT
+        if run.state.ceo.y_milli < centre_y - 60:
+            mask |= sim.INPUT_DOWN
+        elif run.state.ceo.y_milli > centre_y + 60:
+            mask |= sim.INPUT_UP
+
+        if mask != held:
+            runtime.apply_command(
+                run_id,
+                kernel_pb2.SUBMIT_CEO_INPUT,
+                canonical.encode({"bitmask": mask, "at_tick": run.state.tick + 1}),
+            )
+            held = mask
+        runtime._advance(run, 1)
+        if sim._ceo_is_beside(run.state, run.state.people[BRIEF_DIRECTOR]):
+            return
+    raise AssertionError("the CEO never reached the director")
+
+
+def _a_scripted_statement(request) -> dict:
+    """A well-formed statement citing nothing, which is a legal statement and a simpler fixture."""
+    from simcore import statement as statements
+
+    return statements.Statement(
+        briefing="The recruiter is the constraint, not the budget.",
+        objection="Cutting the review step is how the last two mis-hires got through.",
+        citations=(),
+        producer=request.person,
+        producer_kind=statements.PRODUCER_SCRIPTED,
+        model_identity="",
+        context={"director": request.person, "line": sorted(request.authorized.people),
+                 "since_seq": 0, "through_seq": 0, "events": [], "draw": {},
+                 "unlocking_note": ""},
+    ).to_answer()
+
+
+async def _let_the_bench_answer(runtime: KernelRuntime, run_id: str) -> None:
+    """Wait for every in-flight answer task to finish. Deterministic: it awaits, never sleeps."""
+    run = runtime.runs[run_id]
+    for _ in range(50):
+        if not run.statement_tasks:
+            return
+        await asyncio.gather(*list(run.statement_tasks), return_exceptions=True)
+    raise AssertionError("the answer tasks never drained")
+
+
+async def test_a_statement_request_reaches_the_bench_and_its_answer_reaches_the_log(
+    runtime,
+) -> None:
+    asked: list[str] = []
+
+    def producer(request):
+        asked.append(request.request_id)
+        assert request.run_id == RUN
+        assert request.person == BRIEF_DIRECTOR
+        assert request.owning_item == BRIEF_ITEM
+        # The scope arrives on the request. A leg that had to derive it would be the second place
+        # the rule lived, and the two would disagree the first time an item moved between lines.
+        assert BRIEF_DIRECTOR in request.authorized.people
+        return _a_scripted_statement(request)
+
+    runtime.use_statement_producer(producer)
+    runtime.create_run(RUN, SEED)
+    _walk_the_ceo_to_a_briefing(runtime, RUN)
+    await _let_the_bench_answer(runtime, RUN)
+
+    assert len(asked) == 1, f"the bench was asked {len(asked)} times"
+
+    kinds = [envelope.kind for envelope in runtime.store.read_events(RUN)]
+    assert EventKind.REQUEST_RAISED in kinds
+    assert EventKind.INPUT_RECEIVED in kinds
+
+    # And it applies at the tick derived from the raise, not at the tick it arrived.
+    run = runtime.runs[RUN]
+    received = [
+        envelope
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind is EventKind.INPUT_RECEIVED
+    ][-1]
+    raised = [
+        envelope
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind is EventKind.REQUEST_RAISED
+        and envelope.decoded_payload().get("service") == "bench"
+    ][-1]
+    landing = int(received.decoded_payload()["tick"])
+    assert landing == int(raised.decoded_payload()["tick"]) + pend.STATEMENT_OFFSET_TICKS
+
+    runtime._advance(run, landing - run.state.tick + 1)
+    assert raised.request_id not in run.state.pending
+
+
+async def test_the_answer_reaches_a_connected_client(runtime) -> None:
+    """The fifth append site publishes, which is what the ordering cursor rests on.
+
+    An appended sequence nobody publishes is not one lost frame — it is a hole every later frame
+    waits behind for the rest of the run. So the briefing being on the wire is the same assertion as
+    the stream continuing to work afterwards.
+    """
+    runtime.use_statement_producer(_a_scripted_statement)
+    runtime.create_run(RUN, SEED)
+    queue = runtime.subscribe(RUN)
+    _walk_the_ceo_to_a_briefing(runtime, RUN)
+    await _let_the_bench_answer(runtime, RUN)
+
+    delivered = []
+    while not queue.empty():
+        delivered.append(queue.get_nowait())
+
+    kinds = [item.kind for item in delivered if hasattr(item, "kind")]
+    assert EventKind.INPUT_RECEIVED in kinds
+    assert not runtime.runs[RUN].held_back, "a sequence is still being waited for"
+
+
+async def test_a_bench_that_declines_leaves_the_request_for_its_deadline(runtime) -> None:
+    """The shipped behaviour of U10 alone, and of every keyless build (M20).
+
+    Declining is not an error. The request stays outstanding, the clock keeps its own time, and the
+    run plays exactly as it did before the bench existed.
+    """
+    runtime.use_statement_producer(lambda request: None)
+    runtime.create_run(RUN, SEED)
+    _walk_the_ceo_to_a_briefing(runtime, RUN)
+    await _let_the_bench_answer(runtime, RUN)
+
+    run = runtime.runs[RUN]
+    before = run.state.tick
+    runtime._advance(run, 60)
+
+    assert run.state.tick == before + 60, "the clock waited for the bench"
+    assert [request for request in run.state.pending.values() if request.is_statement]
+    assert not [
+        envelope
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind is EventKind.INPUT_RECEIVED
+    ]
+
+
+async def test_a_bench_that_raises_does_not_stop_the_clock(runtime) -> None:
+    """A provider failure is never a kernel failure. The task swallows it and says so.
+
+    The failure mode this closes is not an exception the operator would see — it is a task whose
+    exception nobody retrieved, taking the request with it and leaving a conversation that never
+    resolves for a reason nothing logged.
+    """
+
+    def explodes(_request):
+        raise RuntimeError("the provider is on fire")
+
+    runtime.use_statement_producer(explodes)
+    runtime.create_run(RUN, SEED)
+    _walk_the_ceo_to_a_briefing(runtime, RUN)
+    await _let_the_bench_answer(runtime, RUN)
+
+    run = runtime.runs[RUN]
+    before = run.state.tick
+    runtime._advance(run, 60)
+
+    assert run.state.tick == before + 60, "the clock stopped over a provider failure"
+    assert run.exception is None, "a bench failure was recorded against the tick loop"
+    # Nothing was appended for it either: a failed call is not a rejected answer, and inventing an
+    # ANSWER_REJECTED here would put a provider's outage in the log as a statement verdict.
+    assert not [
+        envelope
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind in (EventKind.INPUT_RECEIVED, EventKind.ANSWER_REJECTED)
+    ]
+    assert [request for request in run.state.pending.values() if request.is_statement]
+
+
+async def test_no_statement_is_asked_when_no_bench_is_composed(runtime) -> None:
+    """With no producer installed there is no dispatch at all, not a dispatch that fails."""
+    runtime.create_run(RUN, SEED)
+    _walk_the_ceo_to_a_briefing(runtime, RUN)
+
+    run = runtime.runs[RUN]
+    assert not run.statements_asked
+    assert not run.statement_tasks
+    # The request is still raised and still on the wire: a keyless build shows the pending block and
+    # then the labelled fallback, rather than showing nothing.
+    assert [request for request in run.state.pending.values() if request.is_statement]
+    # And the diagnostic still names the director, because the subject is recorded whether or not
+    # anybody was asked — "why is there no briefing" is a question a keyless build gets asked too.
+    outstanding = runtime.diagnose(RUN).to_dict()["outstanding_requests"]
+    assert [
+        entry
+        for entry in outstanding
+        if entry["service"] == "bench"
+        and entry["person"] == BRIEF_DIRECTOR
+        and entry["asked"] is False
+    ]
+
+
+async def test_diagnose_says_what_the_run_is_waiting_on(runtime) -> None:
+    """The field named after the pending-input contract answered nothing about it until now.
+
+    "Why is there no briefing" needed a log to answer. It now reports the leg, the item, the
+    director, how many ticks are left before abandonment, and whether the bench was ever asked —
+    which is also how the per-item cap becomes visible rather than merely inferable.
+    """
+    runtime.use_statement_producer(lambda request: None)
+    runtime.create_run(RUN, SEED)
+    _walk_the_ceo_to_a_briefing(runtime, RUN)
+    await _let_the_bench_answer(runtime, RUN)
+
+    outstanding = runtime.diagnose(RUN).to_dict()["outstanding_requests"]
+    statements = [entry for entry in outstanding if entry["service"] == "bench"]
+
+    assert len(statements) == 1
+    assert statements[0]["owning_item"] == BRIEF_ITEM
+    assert statements[0]["person"] == BRIEF_DIRECTOR
+    assert statements[0]["asked"] is True
+    assert 0 < statements[0]["ticks_remaining"] <= pend.STATEMENT_DEADLINE_TICKS
+
+
+async def test_a_statement_outstanding_across_a_restart_is_asked_again(runtime) -> None:
+    """The resume half of the dispatch, and the reason `outstanding_requests` carries the subject.
+
+    The question was in flight on a thread that no longer exists. Folding it back to outstanding is
+    what `pending` being a projection of the log buys; asking it again is what turns that into a
+    briefing rather than a deadline nothing explains.
+    """
+    runtime.use_statement_producer(lambda request: None)
+    runtime.create_run(RUN, SEED)
+    _walk_the_ceo_to_a_briefing(runtime, RUN)
+    await _let_the_bench_answer(runtime, RUN)
+
+    outstanding = [
+        request_id
+        for request_id, request in runtime.runs[RUN].state.pending.items()
+        if request.is_statement
+    ]
+    assert outstanding
+
+    # The process "restarts": the run is rebuilt from its log, and this time the bench answers.
+    answered: list[str] = []
+
+    def producer(request):
+        answered.append(request.request_id)
+        return _a_scripted_statement(request)
+
+    runtime.use_statement_producer(producer)
+    del runtime.runs[RUN]
+    rebuilt = runtime.resume_run(RUN)
+    assert set(rebuilt.statement_subjects) >= set(outstanding)
+
+    runtime._ask_outstanding_statements(rebuilt)
+    await _let_the_bench_answer(runtime, RUN)
+
+    assert answered == outstanding
+    assert [
+        envelope
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind is EventKind.INPUT_RECEIVED
+    ]
+
+
+async def test_a_statement_request_with_no_answerable_scope_is_left_not_raised(
+    runtime, monkeypatch
+) -> None:
+    """A payload `step()` did not write must not reach the tick thread as an exception.
+
+    `Authorized` refuses a scope naming nobody, which is what makes default-deny the value an
+    omission produces (R23) — so building a request from a hand-edited or pre-U10 bench payload can
+    raise. On this path an unhandled `ValueError` is not a refused briefing, it is a stopped clock,
+    because the dispatch happens inside `_advance`. So the request is left for its deadline and the
+    reason is logged, and inventing a scope for it is exactly what R23 forbids.
+    """
+    runtime.use_statement_producer(_a_scripted_statement)
+    runtime.create_run(RUN, SEED)
+    run = runtime.runs[RUN]
+
+    # A bench request with no scope on it, appended the way a foreign writer would have.
+    scopeless = sim.Emitted(
+        kind=EventKind.REQUEST_RAISED,
+        payload={
+            "tick": run.state.tick,
+            "service": pend.BENCH,
+            "owning_item": BRIEF_ITEM,
+            "deadline_tick": run.state.tick + pend.STATEMENT_DEADLINE_TICKS,
+            "period_index": 0,
+            "person": BRIEF_DIRECTOR,
+            "cp_index": 0,
+        },
+        request_id="55555555-5555-5555-8555-555555555555",
+    )
+    committed = runtime.writer.submit(
+        run_id=RUN,
+        emitted=[scopeless],
+        lease_handle=runtime.lease,
+        rules_ver=loop_module.RULES_VERSION,
+        tick=run.state.tick,
+    )
+
+    runtime._dispatch_statements(run, committed.envelopes)
+    await _let_the_bench_answer(runtime, RUN)
+
+    assert not run.statements_asked, "an unanswerable request was handed to the bench"
+    # And the clock is untouched: the dispatch swallowed it rather than raising into `_advance`.
+    before = run.state.tick
+    runtime._advance(run, 20)
+    assert run.state.tick == before + 20

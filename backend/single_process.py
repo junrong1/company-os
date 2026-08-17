@@ -313,6 +313,7 @@ def compose() -> tuple[KernelRuntime, InProcessKernel]:
     client = InProcessKernel(runtime)
     gateway_main.use_kernel(client)
     _publish_model_spend(gateway_main)
+    _wire_the_bench(runtime)
     mount_surfaces(gateway_main.app)
 
     # After the surfaces are imported and before anything logs. Importing a service app
@@ -386,6 +387,25 @@ def _publish_model_spend(gateway_main: Any) -> None:
 
     bench = agents_main.bench()
     gateway_main.use_spend(lambda run_id: bench.reading(run_id).to_payload())
+
+
+def _wire_the_bench(runtime: KernelRuntime) -> None:
+    """Point the kernel's statement dispatch at the agents surface's producer (U10).
+
+    The third of these, and the same shape as the other two for the same reason. The kernel raises a
+    statement request inside `step()` and has to carry it to a director; the director lives in the
+    agents service; and neither service may import the other (R4). So the launcher hands the kernel a
+    callable, exactly as it hands the gateway a kernel client and a spend reader, and neither service
+    learns the other exists.
+
+    The direction the proto describes survives the collapse intact: the kernel opens the stream, so
+    nothing in the agents service holds a kernel handle or reaches for a runtime. What was a
+    bidirectional gRPC stream between two containers is a function call between two modules that
+    still may not see each other.
+    """
+    from agents import main as agents_main
+
+    runtime.use_statement_producer(agents_main.produce_statement)
 
 
 def mount_surfaces(app: Any) -> list[Any]:

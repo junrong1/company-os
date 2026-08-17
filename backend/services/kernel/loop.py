@@ -1,6 +1,6 @@
 """The tick loop: the kernel's clock, and the only thing that appends.
 
-Nine decisions here are load-bearing, and each prevents a failure that is hard to diagnose
+Ten decisions here are load-bearing, and each prevents a failure that is hard to diagnose
 from its symptom.
 
 **One task per active run, and its lifecycle follows the run's persisted rate — not the
@@ -119,10 +119,39 @@ lock — so no clock ever waits behind it and there is no order between the two 
 That rests on one invariant, so it is stated rather than assumed: **every append site in this file
 publishes what it committed.** Per-run sequences are gapless by construction — `append_tick` reads
 the committed head and adds one, and an aborted tick commits nothing — so the held-back set always
-drains as long as nothing appends silently. There are four append sites here and each publishes;
+drains as long as nothing appends silently. There are five append sites here and each publishes;
 `test_every_append_in_this_file_publishes_what_it_committed` reads the file to keep that true.
 `RATE_CHANGED` is published for that reason as much as for its own sake: an unpublished sequence
 is a hole every later frame would wait behind forever.
+
+**The kernel asks the bench, and the asking is a dispatch rather than a call** (U10). A statement
+request is raised inside `step()` — from folded state, so strict replay reproduces it — and then
+somebody has to carry it to a director and bring the answer back. That somebody is here, and its
+shape is dictated by three rules that already existed.
+
+*R2 says no network call happens inside `step()`*, so the dispatch cannot be part of raising the
+request. It hangs off the append instead, the way `_publish` does and for the same reason: a
+`_advance` that handed its committed envelopes back for a caller to dispatch would be a rule, and
+`_advance` has callers outside this loop.
+
+*R13 says nothing slow happens inside the run lock*, and names a provider call specifically. So the
+producer runs on a worker thread with no lock held, and only the answer comes back under one — for
+the two dictionary operations `receive_answer` performs, plus the rate, which is read there because
+the rate and the tick are one fact and execution decision §2's landing-tick branch depends on both.
+
+*And R14 says the clock's worker slots are the clock's.* A statement is answered on the **default**
+limiter, never on `clock_slots`: a provider that takes its full timeout while holding a clock slot
+is a stopped clock, which is precisely the failure the disjoint limiter was introduced to prevent.
+
+The dispatch is idempotent per request id, because there are two sources for it. A request raised
+this tick arrives from `_advance`; a request that was outstanding when the process died arrives from
+the fold at resume, which is what makes a restarted kernel able to ask its question again rather
+than wait out a deadline it cannot see. Neither source may double-ask, because a second answer to
+one request is refused by the partial unique index and would reach the client as a rejection.
+
+The producer itself is installed by the launcher rather than imported, exactly as the kernel client
+and the spend reader are: R4 forbids this service from importing the agents service, and a kernel
+that reached for one would be the import-boundary failure arriving as a feature.
 """
 
 from __future__ import annotations
@@ -141,7 +170,9 @@ from kernel import lease as lease_module
 from kernel.store import LogStore, RunAlreadyTerminated, StoreWriter
 from servicekit import logging as svclog
 from simcore import log as folder
+from simcore import pending as pend
 from simcore import snapshot as snapshotting
+from simcore import statement as stmt
 from simcore import step as sim
 from simcore import time as simtime
 from simcore import verify as verifier
@@ -384,6 +415,22 @@ class RunLoop:
     exception: BaseException | None = None
     stopped: bool = False
     last_position_echo_tick: int = 0
+    #: The leg-specific half of each outstanding statement request's payload, by request id — the
+    #: director, the checkpoint and the authorized scope (U10).
+    #:
+    #: `state.pending` is the projection that matters for the simulation and it deliberately carries
+    #: none of this: adding a field to `PendingRequest.to_state()` would change the shape of a hashed
+    #: subsystem, which R27 makes a `STATE_SHAPE_VERSION` move. So the subject lives beside the run
+    #: rather than inside it, filled from the raising event live and from the fold's projection at
+    #: resume, and pruned against `state.pending` so it cannot outgrow what is outstanding.
+    statement_subjects: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: Request ids already handed to the producer. Two sources dispatch — the append and the resume
+    #: — and a second answer to one request is refused by the store's partial unique index, so it
+    #: would reach the client as a rejection rather than as a briefing.
+    statements_asked: set[str] = field(default_factory=set)
+    #: Strong references to in-flight answer tasks, for the reason stated at the top of this file:
+    #: the event loop keeps only weak ones, and a collected task stops silently.
+    statement_tasks: set[asyncio.Task] = field(default_factory=set)
 
     @property
     def achieved_multiplier_permille(self) -> int:
@@ -416,6 +463,11 @@ class KernelRuntime:
         #: worker thread needs it to get back (see `_publish`); nothing else does, which is why
         #: it is discovered rather than passed in through a constructor no caller would fill.
         self._loop: asyncio.AbstractEventLoop | None = None
+        #: What answers a statement request, installed by the launcher (U10). `None` means no bench
+        #: is composed, which is a supported mode rather than a failure: with no producer the
+        #: request is raised, published, and left for its sim-tick deadline, and the run plays
+        #: exactly as it did before the bench existed (M20).
+        self._statement_producer: Any | None = None
         #: Worker-thread slots the clock and the lease heartbeat draw from, and nothing else
         #: (R14). Grown by `ensure_loop`; never shrunk, because shrinking is where a limiter can
         #: be resized below what is already borrowed.
@@ -460,9 +512,28 @@ class KernelRuntime:
         )
         self.writer.start()
 
+    def use_statement_producer(self, producer: Any) -> None:
+        """Install what answers a statement request (U10).
+
+        Handed in by the launcher rather than imported, for the reason `use_kernel` and `use_spend`
+        exist: R4 forbids this service from importing the agents service, and the boundary is an
+        import rule rather than a transport — collapsing the deployment did not relax it.
+
+        The producer is called as `producer(request) -> dict | None`, off the tick thread and with no
+        lock held. `None` declines, which leaves the request outstanding until its deadline — the same
+        semantics the stub resolver ships with, and the reason a keyless build needs no second code
+        path.
+        """
+        self._statement_producer = producer
+
     async def start_background(self) -> None:
         self._heartbeat = asyncio.create_task(self._renew_lease(), name="kernel-lease-heartbeat")
         self.resume_all()
+        # After the runs exist, and on the event loop, which is where a task can be created. A
+        # statement outstanding when the process died is a question this kernel can still ask, and
+        # asking it is strictly better than waiting out a deadline nobody can see the reason for.
+        for run in list(self.runs.values()):
+            self._ask_outstanding_statements(run)
 
     def resume_all(self) -> list[str]:
         """Rebuild every run from its log and start the clock for the ones that were running.
@@ -614,6 +685,19 @@ class KernelRuntime:
             # this process existed.
             published_seq=int(row["head_seq"]),
         )
+        # The bench half of every request this run raised and never got an answer to. Read off the
+        # fold's projection rather than off `state.pending`, which carries no director and no scope
+        # by design — see `RunLoop.statement_subjects`.
+        #
+        # Recorded here and *asked* from `start_background`, because creating a task needs the event
+        # loop and this method does not have one by construction: it is a plain synchronous method,
+        # reached from `resume_all` and from the suite, and a `create_task` here would raise on any
+        # caller that happened not to be on the loop.
+        run.statement_subjects = {
+            request_id: dict(subject)
+            for request_id, subject in folded.outstanding_requests.items()
+            if subject.get("service") == pend.BENCH
+        }
         self.runs[run_id] = run
         return run
 
@@ -670,6 +754,16 @@ class KernelRuntime:
         if run is None:
             return
         run.stopped = True
+        # Cancelled explicitly, for the reason the tick task is: a dropped handle is collected
+        # mid-execution and the work stops silently. An in-flight briefing is also the one task here
+        # that may be sitting in a provider call, so leaving it to be garbage collected would hold a
+        # worker thread past shutdown.
+        for task in list(run.statement_tasks):
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        run.statement_tasks.clear()
+
         if run.task is not None:
             run.task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1065,9 +1159,312 @@ class KernelRuntime:
                 tick=at_tick,
             )
             self._publish(run, result.envelopes)
+            # Beside the append for the same reason the publish is: a dispatch the caller has to
+            # remember to perform is a rule, and this method has callers outside the tick loop. The
+            # request is durable by the time anybody is asked, so a producer answering a request the
+            # log does not hold is not a state this can reach.
+            self._dispatch_statements(run, result.envelopes)
             committed.extend(result.envelopes)
 
         return committed
+
+    # --- the statement leg (U10) ------------------------------------------
+
+    def _dispatch_statements(self, run: RunLoop, envelopes: list[Envelope]) -> None:
+        """Carry any statement request this append committed to the bench.
+
+        Called from a worker thread, so it does what `_publish` does: hands the work to the event
+        loop, which is the only thread that may create a task or touch a subscriber queue. Nothing
+        here waits — R13 forbids a wait on this path — and nothing raises: a bench that cannot be
+        reached leaves the request outstanding until its deadline, which is a working product.
+
+        **The subject is recorded whether or not a bench is composed.** A keyless build still raises
+        the request and still puts it on the wire, so `diagnose()` should still be able to say which
+        director the run is waiting on — and a producer installed after a run existed then has
+        something to be asked from rather than a projection that starts empty.
+        """
+        # Anything the run has stopped waiting on, dropped first. A request that reached its deadline
+        # is removed from `state.pending` by the step and would otherwise sit in both of these for
+        # the life of the process — a keyless build parked at one desk raises one request per window
+        # and abandons every one of them, so "bounded by what is outstanding" has to be enforced
+        # somewhere rather than merely claimed on the field.
+        outstanding = set(run.state.pending)
+        for stale in [key for key in run.statement_subjects if key not in outstanding]:
+            del run.statement_subjects[stale]
+        run.statements_asked &= outstanding
+
+        requests: list[stmt.StatementRequest] = []
+        for envelope in envelopes:
+            if envelope.kind is not EventKind.REQUEST_RAISED:
+                continue
+            payload = envelope.decoded_payload()
+            if payload.get("service") != pend.BENCH:
+                continue
+            request_id = envelope.request_id or str(payload.get("request_id", ""))
+            run.statement_subjects[request_id] = payload
+            asked = self._askable(run, request_id, payload)
+            if asked is not None:
+                requests.append(asked)
+
+        if requests and self._statement_producer is not None:
+            self._ask_soon(run, requests)
+
+    def _askable(
+        self, run: RunLoop, request_id: str, payload: dict[str, Any]
+    ) -> stmt.StatementRequest | None:
+        """This request as something answerable, or `None` with the reason logged.
+
+        `Authorized` refuses a scope naming nobody, which is what makes default-deny the value an
+        omission produces (R23) — and it means constructing a request from a payload can raise. That
+        exception must not travel: `_dispatch_statements` runs on the tick thread inside `_advance`,
+        so an unhandled one there is a stopped clock, and `_ask_outstanding_statements` runs inside
+        `start_background`, where it would take down every run's resume rather than one briefing.
+
+        Only a payload `step()` did not write can reach it — a hand-edited log, or a bench request
+        from a build that predates the recorded scope. Left for its deadline rather than repaired,
+        because inventing a scope here is the one thing R23 exists to prevent.
+        """
+        try:
+            return stmt.StatementRequest.from_raised(run.run_id, request_id, payload)
+        except ValueError as refused:
+            log.warning(
+                "a statement request carries no answerable scope; leaving it for its deadline",
+                extra={"run": run.run_id, "request": request_id, "error": str(refused)},
+            )
+            return None
+
+    def _ask_soon(self, run: RunLoop, requests: list[stmt.StatementRequest]) -> None:
+        """Get onto the event loop, then ask. The same hop `_publish` makes, for the same reason.
+
+        A task belongs to a loop, and `_advance` runs on a worker thread that has none. With no loop
+        anywhere — a fully synchronous caller, which the suite has — the subjects are recorded and
+        nothing is asked: there is no thread to answer on, and inventing one would put a provider
+        call on whatever thread happened to call `_advance`.
+        """
+        loop = self._loop or _the_loop_we_are_on()
+        if loop is None:
+            return
+        if _the_loop_we_are_on() is loop:
+            self._ask(run, requests)
+            return
+        try:
+            loop.call_soon_threadsafe(self._ask, run, requests)
+        except RuntimeError as exc:
+            # The loop is closed, which means the process is going down. The request is durable and
+            # a restart asks it again from `start_background`.
+            log.warning(
+                "could not reach the event loop to ask the bench",
+                extra={"run": run.run_id, "error": str(exc)},
+            )
+
+    def _ask_outstanding_statements(self, run: RunLoop) -> None:
+        """Ask again for every statement this run is still waiting on. Called on the event loop.
+
+        The resume half of the dispatch. A kernel that restarted mid-briefing folds the request back
+        to outstanding — that is what `pending` being a projection of the log buys — but the
+        question itself was in flight on a thread that no longer exists, so without this the run
+        waits out a sim-tick deadline for a reason nothing in the log explains.
+        """
+        if self._statement_producer is None:
+            return
+
+        # Over a copy, because a tick task on this run may be inserting into `statement_subjects`
+        # from a worker thread at this instant — `resume_all` starts the clocks and this runs after
+        # it. Iterating the live dict raises "dictionary changed size during iteration", which would
+        # take down `start_background` rather than lose a briefing.
+        pending_now = set(run.state.pending)
+        requests = [
+            asked
+            for request_id, subject in list(run.statement_subjects.items())
+            if request_id in pending_now
+            and (asked := self._askable(run, request_id, subject)) is not None
+        ]
+        if requests:
+            self._ask(run, requests)
+
+    def _ask(self, run: RunLoop, requests: list[stmt.StatementRequest]) -> None:
+        """Start one answer task per unasked request. On the event loop by construction."""
+        for request in requests:
+            if request.request_id in run.statements_asked:
+                continue
+            if not request.person:
+                # A bench request with no director on it is not answerable, and it is also not
+                # something `step()` can produce — so it is a tampered or hand-written log rather
+                # than a state to recover from. Logged rather than raised: the run is otherwise fine.
+                log.warning(
+                    "a statement request names no director; leaving it for its deadline",
+                    extra={"run": run.run_id, "request": request.request_id},
+                )
+                continue
+
+            run.statements_asked.add(request.request_id)
+            task = asyncio.create_task(
+                self._answer_statement(run, request),
+                name=f"statement-{run.run_id}-{request.request_id[:8]}",
+            )
+            # Strong reference held for the task's lifetime, then dropped. Without it the loop's
+            # weak reference lets a briefing be collected mid-flight, and the failure is not an
+            # exception — it is a conversation that silently never resolves.
+            run.statement_tasks.add(task)
+            task.add_done_callback(run.statement_tasks.discard)
+
+    async def _answer_statement(self, run: RunLoop, request: stmt.StatementRequest) -> None:
+        """Ask the bench, and bring the answer back through the writer.
+
+        **Both hops are on the default limiter, never `clock_slots`** (R14). The clock's limiter is
+        sized at one slot per run plus one for the heartbeat, so a provider holding one for its full
+        timeout is a run whose clock cannot get a thread — and that does not raise, it just stops
+        the simulation. A statement is exactly the kind of work the disjoint limiter exists to keep
+        off that pool.
+
+        Nothing propagates. A producer that raises, a store that refuses and a run that ended between
+        the question and the answer are all the same outcome from here: no statement this turn, and a
+        request that runs to its deadline. Raising instead would take down a task whose whole purpose
+        is to be optional.
+        """
+        try:
+            # `abandon_on_cancel=True`, and it is the difference between a shutdown that returns and
+            # one that waits out a provider timeout. anyio's default is to hold the cancellation
+            # until the thread comes back, so `stop_run`'s `task.cancel(); await task` would block on
+            # a call that has thirty seconds left in it — which is exactly what the explicit cancel
+            # was added to avoid. Abandoning is safe here because the answer is addressed by run id
+            # and `deliver_statement` already tolerates a run that has gone: a thread that outlives
+            # its run finds no run and says so.
+            answer = await anyio.to_thread.run_sync(
+                self._statement_producer, request, abandon_on_cancel=True
+            )
+        except Exception as exc:  # noqa: BLE001 - a bench failure is never a kernel failure
+            log.warning(
+                "the bench could not answer a statement request",
+                extra={
+                    "run": run.run_id,
+                    "request": request.request_id,
+                    "person": request.person,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+            return
+
+        if not answer:
+            # Declined. The shipped behaviour with no bench configured, and the same posture the
+            # stub resolver takes: the CEO is never blocked on a provider.
+            return
+
+        try:
+            await anyio.to_thread.run_sync(
+                self.deliver_statement, run.run_id, request.request_id, answer
+            )
+        except sim.CommandRejected as refused:
+            # The answer reached the kernel and the kernel would not take it: too late for its
+            # window, too large for the log, or the wrong shape. Logged at info rather than warning
+            # and carrying the sentence, because it is a refusal with a reason and not a failure —
+            # and it is *not* appended, because `ANSWER_REJECTED` is an output kind the fold expects
+            # the step to regenerate and this one nothing would. `receive_answer` explains that in
+            # full; the log's account of the request is the abandonment at its deadline.
+            log.info(
+                "a statement was refused at the kernel",
+                extra={
+                    "run": run.run_id,
+                    "request": request.request_id,
+                    "reason": str(refused),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - see above
+            log.warning(
+                "could not record a statement",
+                extra={
+                    "run": run.run_id,
+                    "request": request.request_id,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+
+    def deliver_statement(
+        self, run_id: str, request_id: str, answer: dict[str, Any]
+    ) -> list[Envelope]:
+        """Queue a statement for the tick it applies at, and append it. The fifth append site.
+
+        **Under the run's lock, released before the append** (R13). What is inside it is
+        `receive_answer` — two dictionary operations — plus the rate, and the rate is read there
+        rather than beside it because the rate and the tick are one fact: execution decision §2's
+        paused branch lands the answer at the first tick the run will reach, and a rate read a
+        quantum away from the tick would answer for a pause that had already ended.
+
+        The answer's *content* is not validated here. It is validated inside `step()`, at the landing
+        tick, by the guard both processes share — which is what makes the verdict regenerable from
+        the log rather than a claim by whichever service made it (execution decision §1). Rejecting
+        here would put the verdict on the command path, where the fold cannot reproduce it.
+
+        What `receive_answer` *does* refuse here is an answer that may not become a logged fact at
+        all — too late for its window, too large, or not encodable — and it refuses by raising, for
+        the reason its own docstring gives. Raising propagates: the caller logs the sentence.
+
+        **An answer that fails to append is un-queued.** `receive_answer` files it against the
+        landing tick before this returns, so a submit that raises would otherwise leave an answer in
+        memory that no row in the log accounts for — and it would apply at the landing tick, taking
+        `pending` away from what the log says is outstanding and the day-boundary hash with it. That
+        is the one divergence this whole contract exists to make impossible, so the rollback is not
+        tidiness.
+        """
+        run = self.runs.get(run_id)
+        if run is None:
+            raise KeyError(f"no such run: {run_id}")
+
+        with run.lock:
+            emitted = sim.receive_answer(
+                run.state, request_id, answer, paused=run.rate == 0
+            )
+            at_tick = run.state.tick
+
+        # Whatever happened to it, the question has been asked and answered once. Pruned here rather
+        # than left to grow, and pruned even for a rejection: a rejected answer clears the request
+        # from `state.pending` too, so a subject kept for it would describe nothing.
+        run.statement_subjects.pop(request_id, None)
+
+        if not emitted:
+            return []
+
+        try:
+            result = self.writer.submit(
+                run_id=run_id,
+                emitted=emitted,
+                lease_handle=self.lease,
+                rules_ver=RULES_VERSION,
+                tick=at_tick,
+            )
+        except RunAlreadyTerminated as ended:
+            # The run reached its horizon or went insolvent while the director was thinking. Nothing
+            # appends after a terminal event; the briefing is simply too late, and the store is right
+            # to refuse it.
+            self._unqueue(run, request_id, emitted)
+            log.info(
+                "a statement arrived after the run ended",
+                extra={"run": run_id, "request": request_id, "reason": str(ended)},
+            )
+            return []
+        except Exception:
+            self._unqueue(run, request_id, emitted)
+            raise
+
+        self._publish(run, result.envelopes)
+        return result.envelopes
+
+    def _unqueue(self, run: RunLoop, request_id: str, emitted: list[sim.Emitted]) -> None:
+        """Take back an answer whose append did not land, so it cannot apply anyway.
+
+        Under the run's lock, because it edits `run.state`. It is two dictionary operations, which is
+        what R13 permits inside it — and the alternative is worse than slow: live state that applies
+        an answer the log has no row for is a state hash that diverges from its own log, silently,
+        one sim-day later.
+        """
+        applies_at = int(emitted[0].payload.get("tick", 0))
+        with run.lock:
+            queued = run.state.queued_answers.get(applies_at, [])
+            remaining = [item for item in queued if item.get("request_id") != request_id]
+            if remaining:
+                run.state.queued_answers[applies_at] = remaining
+            else:
+                run.state.queued_answers.pop(applies_at, None)
 
     def _echo_position(self, run: RunLoop) -> None:
         """R33: publish the kernel's own derived CEO position for the client to compare."""
@@ -1368,6 +1765,24 @@ class KernelRuntime:
                 for item in run.state.items.values()
                 if item.status == sim.STATUS_BLOCKED
             ]
+            # What the run is waiting on, and from whom. Empty until this unit, which meant the one
+            # field on this payload named after the pending-input contract answered nothing about
+            # it — so "why is there no briefing" was a question that needed a log. It also reports
+            # the case the per-item cap produces: three statements outstanding on one item is why a
+            # fourth was not raised, and it is visible here rather than only inferable.
+            outstanding = [
+                {
+                    "request_id": request_id,
+                    "service": request.service,
+                    "owning_item": request.owning_item,
+                    "raised_at_tick": request.raised_at_tick,
+                    "deadline_tick": request.deadline_tick,
+                    "ticks_remaining": max(0, request.deadline_tick - run.state.tick),
+                    "person": str(run.statement_subjects.get(request_id, {}).get("person", "")),
+                    "asked": request_id in run.statements_asked,
+                }
+                for request_id, request in sorted(run.state.pending.items())
+            ]
 
         return Diagnosis(
             run_id=run_id,
@@ -1383,7 +1798,7 @@ class KernelRuntime:
             sim_time_lag_ticks=run.lag_ticks,
             achieved_multiplier_permille=run.achieved_multiplier_permille,
             unresolved_checkpoints=unresolved,
-            outstanding_requests=[],
+            outstanding_requests=outstanding,
             store_reachable=self._store_reachable,
             lease_held=self.lease is not None,
             terminal_reason=run.state.terminal_reason,

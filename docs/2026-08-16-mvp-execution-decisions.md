@@ -323,6 +323,178 @@ Sales did.
 
 ---
 
+## What U10 found, that U11, U12, U14 and U15 need
+
+The plan's Risks section was right: `raise_request` and `receive_answer` were a tested state machine
+with no production caller, so most of U10 is construction rather than editing. What is new is the
+whole delivery leg — the derivation inside `step()`, the third dispatch branch, the guard module, the
+line-scoped retrieval, the kernel's dispatch and its fifth append site, and the launcher's third
+handover. What is an *edit* is small: two docstrings, one cap-count helper, and the deadline becoming
+per request.
+
+### The numbers, and where they came from
+
+| Constant | Value | Reasoning |
+|---|---|---|
+| `pend.FASTEST_CLIENT_RATE` | 3 | `frontend/src/ui/Shell.tsx` offers 0, 1, 3. R18 sizes against this, not ×1. |
+| `pend.STATEMENT_ANSWER_SECONDS` | 10 | Wall-seconds the *leg* gets, at ×3. A short completion plus its context read plus two thread hops. |
+| `pend.STATEMENT_OFFSET_TICKS` | 1080 (2 sim-days) | `10 × 36 × 3`. The landing tick is `raised_at_tick + this`. |
+| `pend.STATEMENT_DEADLINE_TICKS` | 2160 (4 sim-days) | Twice the window; four times the shared one-sim-day deadline, which is R18's independence as arithmetic. |
+| `sim.STATEMENT_RANGE_MILLI` | 1900 | The client's `OPEN_RADIUS_MILLI`, compared as squared integers because no float may cross the kernel. |
+| `pend.MAX_ANSWER_PAYLOAD_BYTES` | 16 KiB | Roughly three times a full statement. See the ordering note below — it is the only bound that can stop bytes reaching the log. |
+
+**The content guard cannot bound what reaches the log, and U11 needs to know why.** `INPUT_RECEIVED`
+*is* the statement: it is appended the moment the leg answers, while `stmt.refusal` runs at the
+landing tick two sim-days later. So every per-field cap in `simcore.statement` decides whether a
+statement *stands*, and none of them decides whether it reaches the log — by the time the guard has
+an opinion the row is a permanent fact. `receive_answer` therefore bounds the encoded answer at the
+door (`MAX_ANSWER_PAYLOAD_BYTES`). U11's agents-side call site is what makes a rejected statement
+never cross the wire at all, which is the only place a bad statement can be stopped before it is
+durable.
+
+**A refusal at the door raises; a refusal at the guard is logged. The asymmetry is a replay
+requirement.** `ANSWER_REJECTED` is in the fold's *output* set, so the fold expects `step()` to
+regenerate every one of them — and it can only regenerate the ones the step derives. A refusal from
+`receive_answer` would append an output event with no `INPUT_RECEIVED` beside it, so
+`log._apply_input` has nothing to re-issue, nothing regenerates, and `_expect_exhausted` fails the
+strict comparison on a log that is a faithful record. Measured: all three of the door refusals
+produced `ReplayDiverged` before this was fixed. So they raise `CommandRejected` — which mutates
+nothing and appends nothing, exactly as `compare_options` does with
+`MAX_COMPARISON_PAYLOAD_BYTES` — and they are checked on the *live* path only, because on replay the
+answer is already a logged fact. **U11 must not add an `ANSWER_REJECTED` to a command path.** The
+refusals that may be logged are the ones `_apply_statement_answer` emits at the landing tick, inside
+the step.
+
+**The budget is the leg's, not the provider's, and U11 has to fit inside it.** `modelgw`'s shipped
+`DEFAULT_TIMEOUT_SECONDS` is 30 and `CONNECT_TIMEOUT_SECONDS` is 5, so a bench that waited out a
+provider timeout before falling back would answer at ~35 wall-seconds and miss a 10-second window.
+R5 already says a timeout goes to the scripted reply; U11 must configure the bench's own timeout
+*inside* `STATEMENT_ANSWER_SECONDS`, not beside it. A late answer is refused with a logged reason
+(`ANSWER_REJECTED` carrying `late: true`), never applied at whatever tick it arrived at.
+
+### Two clarifications against §2, neither a contradiction
+
+- §2's table says a paused run lands the answer at "the current tick". It is implemented as
+  **`state.tick + 1`**, because `step()` increments the clock before it applies queued answers, so an
+  answer filed at the tick the run is paused at is never popped. The first tick a paused run reaches
+  when it resumes is that tick plus one, and it is equally a player-determined tick.
+- The **other two legs keep the tick they have always landed at**. R17 and the plan's decision are
+  both phrased about a statement, the shipped domain model is arithmetic in-process, and the shipped
+  resolver declines — so neither carries the latency R17 is about, and moving them would change a
+  period's metric-application tick for no requirement.
+
+### The discriminator is `service`, and it had to be
+
+R1 wants a distinct request *kind*. `PendingRequest.to_state()` is inside the `pending` subsystem of
+the state hash, and R27 makes any `to_state()` shape change a `STATE_SHAPE_VERSION` move — which the
+plan's System-Wide Impact reserves for Authorization. So `service` gains a third value, `pend.BENCH`,
+read as "which leg answers this" rather than "which process". `PendingRequest.is_statement` is the
+predicate; `_apply_queued_answers` has three branches; `STATE_SHAPE_VERSION` is still 1.
+
+The same constraint is why the "already briefed" memory lives in `state.pending` rather than on the
+item. The cost is asserted rather than hidden: a CEO who stands at one desk *past* the landing tick
+without settling the checkpoint is briefed a second time, bounded at three by the per-item cap
+(`test_standing_at_a_settled_checkpoint_past_the_window_asks_again`). **U15 should fold that flag into
+the state-shape move it already owns** — it is one field on `ItemRuntime`.
+
+### The guard module, and exactly what U11 adds to it
+
+`backend/packages/simcore/statement.py`. Two call sites, one implementation (§1). The kernel's is
+`step._apply_statement_answer` → `_statement_refusal` → `stmt.refusal`, at the landing tick, so the
+verdict is an output event the fold regenerates and is therefore re-derivable from the log.
+
+    Authorized(director, people: frozenset[str], items: frozenset[str])   # refuses an empty scope
+    authorized_for(scenario, director_id, *, line_members, line_items) -> Authorized
+    StatementRequest(run_id, request_id, person, owning_item, cp_index, raised_at_tick, authorized)
+    Statement(briefing, objection, citations, producer, producer_kind, model_identity, context)
+    refusal(answer: Mapping, *, authorized: Authorized) -> str      # "" means acceptable
+    is_statement_answer(answer) -> bool
+
+**U11 adds M18's ranking predicate and M19's figure predicate into this module and calls `refusal`
+from `bench/guards.py`.** It must not write a second copy of any predicate — that is the entire
+reason the module is in `packages/`. The agents-side call site is the cheap rejection; the kernel's is
+the auditable one. `services/agents/main.py::compose_statement` is the seam U11 fills: it returns
+`(briefing, objection, citations, model_identity, producer_kind)` or `None` to decline, and U10 ships
+it returning `None`, which is why a U10-only build plays exactly as it did before.
+
+**U15 constrains `Authorized` rather than replacing it.** A grant widens `people` and `items`; that is
+why they are sets rather than a single line id. There is exactly one derivation of a scope —
+`step._authorized_scope` — and the request *carries* it, so no leg computes its own.
+
+### R23 is a three-link chain, and each link is checkable from the log alone
+
+The request records the scope; the answer records the retrieved context; the citations point into the
+context. So `refusal` checks that every context entry names a person or an item inside the scope, and
+that every cited sequence is in the context. A director can only cite what it was shown. The scope is
+**re-derived from folded state** at the landing tick rather than read off the payload, and it is
+derived from the *owning item's* line rather than from the producer the answer names — deriving it
+from the producer would make the attribution check compare a value to itself.
+
+`backend/services/agents/bench/context.py::retrieve` is the only door onto the log in `bench/`, and it
+cannot be called without an `Authorized`. `RETRIEVABLE` is an explicit per-kind table naming which
+payload keys hold a person and which holds an item; a kind nobody listed is never retrieved, and an
+entry naming neither a person nor an item in scope is dropped — including a company-wide one, because
+a company-wide fact is not this line's either. `LOOKBACK_TICKS` is three sim-days and `MAX_EVENTS` is
+`stmt.MAX_CONTEXT_EVENTS`, so a leg cannot assemble a context the kernel will then refuse for size.
+**U14's director memory reaches further than this on purpose** — a statement's working set is shorter
+than a memory — and it should reuse `Authorized` rather than inventing a second scope type.
+
+### The statement request id is not run-scoped, and U16 owns closing it
+
+`pend.statement_request_id` derives from `(director, item, cp_index, tick)` — all state — because
+`State` carries no run id. So a parent and a fork standing at the same checkpoint at the same tick
+mint the *same* id, which `test_a_fork_at_the_same_tick_mints_the_same_request_id` now asserts rather
+than leaves to be discovered. `_raise_period_consult` has had the identical property since Phase 1;
+what is new is that a statement's answer is a provider's prose rather than in-process arithmetic.
+
+It is not reachable through the kernel: an answer names the run it is for and
+`deliver_statement` looks it up in *that* run's `pending`, so nothing routes one run's answer to
+another. Pre-divergence it is also harmless, by §3's own argument — the two runs *are* the same run.
+Closing it properly needs a run identifier the fold reproduces, which is a `State` shape change, and
+it belongs with **U16**, the unit that owns fork identity (R10).
+
+### For U12
+
+The cache key wants "the authorization scope the context was drawn under" (R3). That is
+`Authorized.to_payload()`, which is already sorted and canonical-encodable, and it is already recorded
+on `REQUEST_RAISED` — so the key can be derived from the log rather than from live state. A fallback is
+still never cached (§3), and `produce_statement` returning `None` is the fallback's shape here.
+
+### What this unit touched outside its stated file list
+
+- `backend/single_process.py` gains `_wire_the_bench(runtime)`, one call beside
+  `_publish_model_spend`. The kernel may not import the agents service, so the producer is installed
+  from outside both, exactly as the kernel client and the spend reader are.
+- `backend/packages/simcore/scenario.py`: `_control_character` became **`control_character`**, one
+  rename and one call site. §1 forbids a second copy of a predicate, and `simcore.statement` applies
+  the identical Unicode-category rule to generated prose. `statement.MAX_PROSE_CHARS` is now
+  `sc.MAX_PROSE_CHARS` for the same reason — two 512s are two numbers somebody can move
+  independently, and the symptom would be an authored fallback line the guard refused.
+- `backend/tests/test_kernel_service.py`'s append-site count moved 4 → 5 (`deliver_statement`), and
+  `"complete"` and `"_statement_producer"` joined the forbidden-inside-the-lock set, which is what
+  that test's own docstring asks a unit adding a provider call to do. `test_gateway.py`'s `composed`
+  fixture also clears the statement leg's per-process log engine, for the reason it already clears the
+  spend ledger's, and gains the end-to-end test over `compose()`.
+- `backend/tests/test_contracts_generated.py`: the bidirectional-stream test now covers
+  `DirectorBench.Brief` beside `AgentResolver.Resolve`.
+
+### One more thing U11 must not assume
+
+**The retrieved context's window is closed at both ends, and the upper end is `at_tick` exclusive.**
+Retrieval runs on a worker thread an arbitrary interval after the request was raised, while the tick
+loop keeps appending — so a window that ended at "the log as it stands" would make the *logged*
+context a function of provider latency, and two fresh runs from one seed would carry different
+evidence for the same briefing with nothing comparing unequal until somebody read the two reports
+side by side. Exclusive rather than inclusive because the raising tick is not closed when the request
+is raised: a command applied at the same tick lands after the step's events.
+`test_the_retrieved_context_does_not_move_with_how_long_the_leg_took` fails if the bound is removed.
+
+`diagnose().outstanding_requests` is no longer the empty list the plan noted: it reports the leg, the
+item, the director, ticks remaining and whether the bench was ever asked — which is also how the
+per-item cap becomes visible rather than merely inferable.
+
+---
+
 ## The deferred defect register
 
 Pre-existing defects found while executing this plan, none of them in the PRD's M-list, each
@@ -377,6 +549,22 @@ serious of these: it makes every command's own outcome invisible to the client t
 leaves a permanent sequence gap behind. `_publish` is called only from the tick loop.
 See "What U3 found, that U24 needs" above for the measurement and for why the fix is transport work
 rather than a line.
+
+**`receive_answer`'s duplicate-answer rejection makes a log unreplayable.** Found by U10 while
+closing the same shape in its own new branches. `ANSWER_REJECTED` is an output kind the fold expects
+`step()` to regenerate, and the `request is None` branch of `receive_answer`
+(`backend/packages/simcore/step.py`) emits one from a *command* path with no `INPUT_RECEIVED` beside
+it — so nothing re-issues it and `_expect_exhausted` fails. **Measured: a log holding one answer and
+one duplicate folds to `ReplayDiverged: at tick 542 the log holds 1 output events the replay did not
+produce (['ANSWER_REJECTED'])`.** Reachable by any duplicate delivery, which R25 treats as the
+ordinary case.
+
+U10 deliberately did not fix it, and the reason is that the obvious fix is worse: raising instead
+would break the *fold*, because `log._apply_input` re-issues `receive_answer` for a logged
+`INPUT_RECEIVED` whose request is already gone and would then raise mid-fold — taking the report down
+with it. Closing it wants either a second refusal kind outside `OUTPUT_KINDS`, or an idempotent
+`_apply_input` that recognises an already-applied answer. U10's own branches avoid the hole by
+raising `CommandRejected` on the live path only; see "What U10 found" above.
 
 **`frontend/scripts/screenshots.mjs` disagreed with M6.** Found by U2, **closed by U3**: the harness
 now injects `dir_hr`/`wi_hiring` with the label a real day-zero raise carries, the injection is kept

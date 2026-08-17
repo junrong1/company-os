@@ -118,8 +118,13 @@ OUTPUT_KINDS = frozenset(
         EventKind.ATTRITION,
         EventKind.HIRE_ARRIVED,
         EventKind.HIRE_REFUSED,
-        # Raised by the step at a period boundary, and rejected or abandoned by the step's own
-        # validation. Both regenerate, which is what makes a tampered one detectable.
+        # Raised by the step at a period boundary, and by the step again where the CEO is standing
+        # at an open checkpoint (M17) — never from a command handler, because a request a command
+        # emitted is one the step cannot reproduce and strict replay would find it in the log with
+        # nothing regenerated to match. Rejected or abandoned by the step's own validation, which is
+        # what makes the guard's verdict re-derivable from the log rather than a claim by whichever
+        # service made it (execution decision §1). Both regenerate, which is what makes a tampered
+        # one detectable.
         EventKind.REQUEST_RAISED,
         EventKind.ANSWER_REJECTED,
         # A walk (R15). Derived: the path is `find_path` over recorded geometry and the start
@@ -301,6 +306,18 @@ def fold(
                 "owning_item": payload.get("owning_item", ""),
                 "raised_at_tick": tick,
                 "service": payload.get("service", ""),
+                # Per leg, so this reads zero for a log written before the deadline became one:
+                # a request's window is its own now, because a statement's is sized against a
+                # provider API and a period consult's against a service on a loopback (R18).
+                "deadline_tick": int(payload.get("deadline_tick", 0)),
+                # The bench leg's half of the payload, empty on a period consult. Carried into the
+                # projection rather than left on the event because this is what a *restarted* kernel
+                # dispatches from: the run is rebuilt from its log, and a statement request that
+                # folded to "outstanding" with no director and no scope would be a question nobody
+                # could ask again.
+                "person": payload.get("person", ""),
+                "cp_index": int(payload.get("cp_index", -1)),
+                "scope": payload.get("scope", {}),
             }
             logged_outputs.setdefault(tick, []).append(envelope)
             continue
@@ -468,6 +485,12 @@ def _apply_input(state: sim.State, envelope: Envelope) -> list[sim.Emitted]:
         # The answer is *in* this event, which is the whole point: replay re-queues the logged
         # answer and never opens the stream (R3). Re-issuing would make the replay depend on
         # what the service would say today rather than on what it said then.
+        #
+        # `at_tick` carries a statement's landing tick, and passing it is what keeps the two
+        # branches of execution decision §2 out of the fold. Live, the tick is derived — from the
+        # raising tick while the run ticks, from the pause while it does not. Here it is a recorded
+        # fact on an input event, so the fold reproduces both branches without knowing which fired
+        # or having to reconstruct a rate history to find out.
         return sim.receive_answer(
             state,
             envelope.request_id or payload.get("request_id", ""),

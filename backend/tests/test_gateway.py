@@ -41,7 +41,12 @@ def composed(tmp_path, monkeypatch):
     # inside `compose()`. Left over from a previous test it would still be pointed at that
     # test's store, so the spend frame this run published would be counting somebody else's
     # calls. Cleared *before* composing, because composing is what builds it.
+    #
+    # The statement leg's log reader (U10) is the same shape of per-process handle and needs the
+    # same clearing, and the consequence of forgetting is worse rather than merely different: a
+    # director would be briefed from the events of whichever store the previous test wrote.
     agents_main._LEDGER = None
+    agents_main._dispose_log_engine()
 
     runtime, client = single_process.compose()
     runtime.create_run(RUN, SEED, horizon_tick=simtime.TICKS_PER_SIM_DAY * 30)
@@ -54,6 +59,7 @@ def composed(tmp_path, monkeypatch):
     runtime.writer.stop()
     agents_main.ledger().dispose()
     agents_main._LEDGER = None
+    agents_main._dispose_log_engine()
 
 
 @pytest.fixture
@@ -1220,3 +1226,128 @@ def test_listing_runs_is_ordered_deterministically(composed) -> None:
 
     assert RUN in ids and "run-a" in ids and "run-b" in ids
     assert ids == [row["run_id"] for row in runtime.store.list_runs()], "unstable ordering"
+
+
+# =========================================================================
+# The bench leg, over the production composition (U10)
+# =========================================================================
+
+
+def test_the_launcher_wires_the_kernel_to_the_agents_surfaces_producer(composed) -> None:
+    """The third thing the launcher hands over, and the reason it has to.
+
+    The kernel raises a statement request inside `step()`; the director lives in the agents service;
+    and neither service may import the other (R4). So the wiring is a callable installed from
+    outside both, exactly as the kernel client and the spend reader are — and if it were forgotten,
+    every run would raise briefings nobody ever answered, which reads as a broken bench rather than
+    as a missing line.
+    """
+    runtime, _ = composed
+
+    assert runtime._statement_producer is agents_main.produce_statement
+
+
+def test_a_briefing_crosses_the_whole_leg_and_lands_in_the_log(composed, monkeypatch) -> None:
+    """End to end over `compose()`: the tick raises it, the agents surface answers it, the log holds it.
+
+    Every other test of this leg stubs one side. This one stubs only the *prose* — which is U11's,
+    and the one thing U10 does not build — so the store read, the line-scoped retrieval, the guard
+    both processes share, the writer and the publisher are all the shipped code. What it proves is
+    the thing the plan's Risks section says is most likely to be missed: that the transport exists.
+    """
+    from test_kernel_service import _walk_the_ceo_to_a_briefing
+
+    from simcore import statement as statements
+
+    runtime, _ = composed
+    seen: list[object] = []
+
+    def compose_prose(_request, retrieved):
+        # The context is the shipped retrieval's, drawn under the scope the request carried.
+        seen.append(retrieved)
+        return (
+            "The recruiter is the constraint.",
+            "And cutting review is how the last mis-hire got through.",
+            retrieved.citable()[:1],
+            "",
+            statements.PRODUCER_SCRIPTED,
+        )
+
+    monkeypatch.setattr(agents_main, "compose_statement", compose_prose)
+
+    async def drive() -> None:
+        _walk_the_ceo_to_a_briefing(runtime, RUN)
+        run = runtime.runs[RUN]
+        for _ in range(50):
+            if not run.statement_tasks:
+                break
+            await asyncio.gather(*list(run.statement_tasks), return_exceptions=True)
+
+    asyncio.run(drive())
+
+    assert len(seen) == 1, "the agents surface was not asked exactly once"
+    assert seen[0].director == "dir_hr"
+    assert seen[0].events, "the retrieval read nothing out of the real store"
+
+    received = [
+        envelope
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind is EventKind.INPUT_RECEIVED
+    ]
+    assert len(received) == 1
+    answer = received[0].decoded_payload()["answer"]
+    assert answer[statements.KEY_PRODUCER] == "dir_hr"
+    assert answer[statements.KEY_CONTEXT]["events"], "M32: the context is not in the log"
+
+    # And then the clock is run *to the landing tick*, because that is where the guard runs. Without
+    # this the absence of an `ANSWER_REJECTED` below would mean nothing had been checked yet rather
+    # than that the check passed — which is what it meant when this test was first written.
+    run = runtime.runs[RUN]
+    landing = int(received[0].decoded_payload()["tick"])
+    assert landing > run.state.tick, "the fixture already passed the landing tick"
+    runtime._advance(run, landing - run.state.tick)
+
+    request_id = received[0].request_id
+    assert request_id not in run.state.pending, "the statement never applied"
+    # This request's rejections only. The window is two sim-days wide, so the period consult raised
+    # at the first day boundary reaches its own one-sim-day deadline inside it and is abandoned —
+    # which is the shared deadline doing exactly what R18 says it does, on a different leg.
+    assert not [
+        envelope
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind is EventKind.ANSWER_REJECTED and envelope.request_id == request_id
+    ], "the shared guard refused a statement its own retrieval assembled"
+
+
+def test_with_no_bench_configured_the_request_is_raised_and_left(composed) -> None:
+    """M20's shape for U10 alone: the shipped `compose_statement` declines, and nothing breaks.
+
+    Declining is the whole of what a keyless build does here, and it is deliberately not the same as
+    the leg being absent — the request is raised, published, and left for its deadline, so the client
+    has a pending block to render and then a labelled fallback to replace it with (U11's surface).
+    """
+    from test_kernel_service import _walk_the_ceo_to_a_briefing
+
+    runtime, _ = composed
+
+    async def drive() -> None:
+        _walk_the_ceo_to_a_briefing(runtime, RUN)
+        run = runtime.runs[RUN]
+        for _ in range(50):
+            if not run.statement_tasks:
+                break
+            await asyncio.gather(*list(run.statement_tasks), return_exceptions=True)
+
+    asyncio.run(drive())
+
+    run = runtime.runs[RUN]
+    assert [request for request in run.state.pending.values() if request.is_statement]
+    assert not [
+        envelope
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind is EventKind.INPUT_RECEIVED
+    ]
+
+    before = run.state.tick
+    runtime._advance(run, 40)
+    assert run.state.tick == before + 40, "the clock waited for a bench that declined"
