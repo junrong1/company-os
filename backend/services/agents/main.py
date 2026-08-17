@@ -48,7 +48,7 @@ from fastapi import HTTPException
 from sqlalchemy import Engine, create_engine, func, insert, select, update
 
 import modelgw
-from contracts.envelope import Envelope
+from contracts.envelope import Envelope, EventKind
 from logschema import event_log, model_spend, runs
 from modelgw.ceiling import BoundedGateway, Ceiling, Spend, announce
 from servicekit import logging as svclog
@@ -317,16 +317,16 @@ def _read_run(run_id: str) -> list[Envelope]:
 def produce_statement(request: Any) -> dict[str, Any] | None:
     """Answer one statement request, or decline.
 
-    **Declining is the shipped behaviour of this unit, and it is the honest one.** U10 builds the
-    delivery leg: the request, the transport, the context assembly, the guards and the landing tick.
-    The persona, the prompt and the provider call are U11's, and a `None` here is exactly what the
-    kernel does with an unanswered request — nothing, until the sim-tick deadline. That is the same
-    posture `stub.StubResolver` ships with (`NEVER_ANSWERS`), for the same reason: a leg that
-    invented prose to prove its own transport would be a leg nobody could tell from a working one.
+    **Declining means one thing only now: there is no bench.** With no provider configured this
+    returns `None`, the request reaches its sim-tick deadline, and the conversation is the Phase 2
+    conversation exactly (M20). Every other outcome answers — with a briefing, or with that turn's
+    scripted reply naming the condition that fired (M21). A run that has a bench and gets silence
+    would leave the player watching a pending block expire with nothing said about why.
 
-    What is live is everything around it. The context is retrieved under the scope the request
-    carries and returned on the answer, so M32 holds the moment U11 fills in the prose: the
-    statement and the world it was drawn from enter the log in one event.
+    What is assembled here and nowhere else is the *situation*: the log is read once, and the persona,
+    the checkpoint, the guards' view of the offer and the line-scoped retrieval all come out of that
+    one read. Two reads would be two moments, and the second one would include events the first did
+    not — which is the latency-dependent context R2 forbids, arriving through a second door.
 
     **The guard runs here as well as in the kernel, and it is the same function** (execution
     decision §1). This side is the cheap rejection: a statement refused here never crosses the wire.
@@ -336,17 +336,147 @@ def produce_statement(request: Any) -> dict[str, Any] | None:
     side of a rule and a refusal on the other is exactly the drift §1 says two copies would cause,
     and the CEO would be shown a briefing whose figures had been silently edited.
 
+    **A refusal here becomes a fallback, not silence.** That is the change U11 makes to this shape: a
+    statement that ranked the options is replaced by the scripted reply, which is what R5's single
+    exit means — the player learns that the bench answered and was not usable, rather than that
+    nothing happened.
+
     A store this cannot read is a declined statement, not a raised exception. The kernel dispatches
     this off the tick thread and outside the run lock, but an exception crossing back would still be
     an exception on a path whose whole job is to be optional.
     """
     from simcore import statement as stmt
 
+    from agents.bench import guards
+
+    situation = _situation_for(request)
+    if situation is None:
+        return None
+
+    prose = compose_statement(situation)
+    if prose is None:
+        log.info(
+            "no bench configured; the statement request is left for its deadline",
+            extra={"run": request.run_id, "person": request.person},
+        )
+        return None
+
+    answer = _answer_from(situation, prose)
+    refusal = guards.refusal_of(answer, situation)
+    if not refusal:
+        return answer
+
+    if answer[stmt.KEY_PRODUCER_KIND] == stmt.PRODUCER_SCRIPTED:
+        # The scripted reply itself is refused, and there is no third thing to substitute. Detected
+        # by what was *refused* rather than by refusing twice, which matters: rebuilding a refused
+        # fallback as a `guard_refused` one would relabel a timeout as this repository's decision and
+        # lose the condition an operator needs. So the request is left to its deadline and the reason
+        # is logged loudly — a defect in this repository's own content or in the run's shape, not in
+        # anything a provider said. Not `raise`: this runs on a worker thread the kernel dispatched,
+        # where an exception is a lost briefing at best.
+        log.error(
+            "the scripted reply was itself refused; the request is left for its deadline",
+            extra={
+                "run": request.run_id,
+                "person": request.person,
+                "reason": refusal,
+                "condition": answer.get(stmt.KEY_FALLBACK, ""),
+            },
+        )
+        return None
+
+    log.info(
+        "a statement was refused before it crossed the wire; the scripted reply stands",
+        extra={"run": request.run_id, "person": request.person, "reason": refusal},
+    )
+    return _answer_from(situation, guards.fallback_prose(stmt.FALLBACK_GUARD_REFUSED))
+
+
+def compose_statement(situation: Any) -> tuple[str, str, tuple[int, ...], str, str, str] | None:
+    """The prose half: what the director says, and whether a provider said it.
+
+    Returns `(briefing, objection, citations, model_identity, producer_kind, fallback)`, or `None`
+    when there is no provider configured at all. It stays a named seam rather than an inlined call so
+    that a test can substitute prose and still run the shipped retrieval, the shipped guard and the
+    shipped transport around it — which is what `test_a_briefing_crosses_the_whole_leg_and_lands_in_the_log`
+    does, and the property it proves is worth more than the line it costs.
+
+    The gateway is built per statement rather than held. `guards._completed` explains why: the call
+    runs on a worker thread with its own event loop, and an `httpx.AsyncClient` created in the
+    launcher's loop and awaited in this one is a cross-loop bug this shape cannot have.
+    """
+    from agents.bench import guards
+
+    return guards.prose_from_provider(situation, bench())
+
+
+def _situation_for(request: Any) -> Any:
+    """Everything one statement needs, out of one read of the log, or `None`.
+
+    Every `None` here is a declined statement rather than an exception, and each has a distinct
+    reason worth logging separately: a log this process cannot read, a roster that does not describe
+    the person the request names, a person who is not a director, and an item that is not in the
+    authored catalog. Only the first is a fault; the others are all states a run can legitimately be
+    in, and the last two are M14 — a specialist stays scripted, and only a director briefs.
+    """
+    from simcore import statement as stmt
+
     from agents.bench import context as retrieval
+    from agents.bench import guards, personas
+
+    try:
+        events = _read_run(request.run_id)
+    except Exception as exc:  # noqa: BLE001 - an unreadable log is a declined statement
+        log.warning(
+            "could not read the run's log for a briefing",
+            extra={"run": request.run_id, "person": request.person, "error": str(exc)},
+        )
+        return None
+
+    genesis = next(
+        (envelope for envelope in events if envelope.kind is EventKind.GENESIS), None
+    )
+    if genesis is None:
+        log.warning("a run with no genesis event cannot be briefed", extra={"run": request.run_id})
+        return None
+    payload = genesis.decoded_payload()
+
+    persona = personas.persona_for(payload, request.person)
+    if persona is None:
+        log.warning(
+            "the roster does not describe the person this request names",
+            extra={"run": request.run_id, "person": request.person},
+        )
+        return None
+    if not persona.is_director:
+        # M14, on this side as well as in the kernel's guard. Four directors are model-backed and
+        # specialists stay scripted, so a request naming one is declined here rather than answered
+        # with a persona the scenario did not author.
+        log.info(
+            "only a director produces a statement; this request names a specialist",
+            extra={"run": request.run_id, "person": request.person},
+        )
+        return None
+
+    entry = _catalog_entry(payload, request.owning_item)
+    if entry is None:
+        log.info(
+            "the item this request is about is not in the authored catalog",
+            extra={"run": request.run_id, "item": request.owning_item},
+        )
+        return None
+
+    checkpoints = entry.get("checkpoints", [])
+    if not isinstance(checkpoints, list) or not 0 <= request.cp_index < len(checkpoints):
+        log.warning(
+            "the request names a checkpoint the catalog does not hold",
+            extra={"run": request.run_id, "item": request.owning_item, "cp": request.cp_index},
+        )
+        return None
 
     try:
         retrieved = retrieval.retrieve(
-            _read_run(request.run_id),
+            events,
             authorized=request.authorized,
             owning_item=request.owning_item,
             at_tick=request.raised_at_tick,
@@ -358,54 +488,46 @@ def produce_statement(request: Any) -> dict[str, Any] | None:
         )
         return None
 
-    prose = compose_statement(request, retrieved)
-    if prose is None:
-        log.info(
-            "no bench configured; the statement request is left for its deadline",
-            extra={"run": request.run_id, "person": request.person},
-        )
-        return None
+    return guards.Situation(
+        request=request,
+        persona=persona,
+        checkpoint=checkpoints[request.cp_index],
+        offered=stmt.Offered.from_catalog(entry, request.cp_index),
+        retrieved=retrieved,
+    )
 
-    briefing, objection, citations, model_identity, producer_kind = prose
-    answer = stmt.Statement(
+
+def _catalog_entry(genesis_payload: dict[str, Any], item_id: str) -> dict[str, Any] | None:
+    """One item's authored entry, out of the genesis catalog."""
+    catalog = genesis_payload.get("catalog", [])
+    if not isinstance(catalog, list):
+        return None
+    for entry in catalog:
+        if isinstance(entry, dict) and entry.get("id") == item_id:
+            return entry
+    return None
+
+
+def _answer_from(situation: Any, prose: tuple[str, str, tuple[int, ...], str, str, str]) -> dict[str, Any]:
+    """One statement's answer payload, with the context it was drawn from attached here.
+
+    Attached by the caller rather than returned by the prose half, deliberately: M32 records the world
+    a briefing was produced from, and a producer that chose its own evidence could record a context
+    its prose was never checked against.
+    """
+    from simcore import statement as stmt
+
+    briefing, objection, citations, model_identity, producer_kind, fallback = prose
+    return stmt.Statement(
         briefing=briefing,
         objection=objection,
         citations=tuple(citations),
-        producer=request.person,
+        producer=situation.request.person,
         producer_kind=producer_kind,
         model_identity=model_identity,
-        context=retrieved.to_payload(),
+        context=situation.retrieved.to_payload(),
+        fallback=fallback,
     ).to_answer()
-
-    refusal = stmt.refusal(answer, authorized=request.authorized)
-    if refusal:
-        # Against the scope the request *carried*, which is the scope this side was told to work
-        # under. The kernel re-derives its own from folded state, so the two agreeing is a property
-        # rather than an assumption — and when they disagree, the kernel's is the one that decides.
-        log.info(
-            "a statement was refused before it crossed the wire",
-            extra={"run": request.run_id, "person": request.person, "reason": refusal},
-        )
-        return None
-
-    return answer
-
-
-def compose_statement(
-    _request: Any, _retrieved: Any
-) -> tuple[str, str, tuple[int, ...], str, str] | None:
-    """The prose half. **U11's, and deliberately empty here.**
-
-    Returns `(briefing, objection, citations, model_identity, producer_kind)` or `None` to decline.
-    U11 replaces this body with the persona assembly, the prompt, the bounded gateway call and the
-    two output guards — calling `simcore.statement.refusal` rather than writing its own, because the
-    kernel calls the same function at answer-application time and one implementation with two call
-    sites is the only shape that cannot drift.
-
-    It is a seam rather than a `NotImplementedError`, so the transport around it is testable with a
-    scripted producer and shipping U10 alone leaves a run that plays exactly as it did before.
-    """
-    return None
 
 
 # =========================================================================

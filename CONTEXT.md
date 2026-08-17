@@ -125,8 +125,10 @@ is absent and the Run is still fully playable.
 _Avoid_: agents, the AI, the LLM
 
 **Briefing**:
-A Director's account of an open Checkpoint: prose, plus a table of figures each
-carrying the source it came from.
+A Director's account of an open Checkpoint, in their own words, naming the log
+sequences it was drawn from. Every figure in it resolves to an event, an Option or
+authored copy the Director was shown; one that resolves to nothing is refused before
+the CEO reads it.
 _Avoid_: advice, recommendation, analysis, insight
 
 **Objection**:
@@ -134,6 +136,14 @@ A required statement, from the person holding a decision and from each Departmen
 affects, naming what they expect to go wrong. A Director never ranks Options and never
 names a preferred one.
 _Avoid_: warning, feedback, opinion, concern
+
+**Scripted reply**:
+The canned line that stands where a Briefing would have been, when the Bench was
+configured and could not answer — a refused statement, a provider error, a timeout, an
+exhausted ceiling. It names which of those happened, and it is marked on every surface
+so it is never read as a Director's view. A Run with no Bench at all has no Scripted
+reply: it has no Briefing either, and the conversation is what it was before.
+_Avoid_: default, placeholder, stub, mock
 
 **Memory**:
 What a Director carries forward about their Reporting line. The CEO reads it as a

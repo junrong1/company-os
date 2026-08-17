@@ -157,10 +157,14 @@ class Recorder:
     def statement_answer(self, request: pend.PendingRequest, **overrides: object) -> dict:
         """A well-formed statement drawn from the context this request's scope permits.
 
-        Scripted, because U10 builds the delivery leg and U11 builds the producer. What is *not*
-        scripted is the context: it is retrieved through the same line-scoped query the agents
-        service uses, so a statement that cited outside its scope here would be refused for the
-        same reason it would be in production.
+        Attributed to a model now, where U10 wrote it as scripted: U11 makes a scripted statement
+        mean one specific thing — a fallback standing in for a briefing that did not arrive — and it
+        must therefore name the condition that fired. The ordinary statement these tests are about is
+        the one a provider produced, so that is what this builds.
+
+        What is not scripted either way is the context: it is retrieved through the same line-scoped
+        query the agents service uses, so a statement that cited outside its scope here would be
+        refused for the same reason it would be in production.
         """
         from agents.bench import context as retrieval
 
@@ -179,8 +183,8 @@ class Recorder:
             objection="It also removes the review step the last two mis-hires were caught by.",
             citations=retrieved.citable()[:2],
             producer=authorized.director,
-            producer_kind=stmt.PRODUCER_SCRIPTED,
-            model_identity="",
+            producer_kind=stmt.PRODUCER_MODEL,
+            model_identity="a-model-under-test",
             context=retrieved.to_payload(),
         ).to_answer()
         answer.update(overrides)
@@ -1320,7 +1324,11 @@ def test_the_guards_are_one_implementation_with_two_call_sites() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.add(node.module.split(".")[0])
 
-    assert imported <= {"__future__", "collections", "dataclasses", "typing", "simcore"}
+    # `re` joined the set with U11's two predicates, which are lexical over a closed vocabulary and
+    # need a pattern to flatten prose with. Still pure and still stdlib, which is the property this
+    # assertion is about — the list is a whitelist of what the module has needed so far, not a claim
+    # that it will never need another stdlib module.
+    assert imported <= {"__future__", "collections", "dataclasses", "re", "typing", "simcore"}
 
     # And the kernel calls it, asserted against the call graph rather than by substring. The first
     # version of this looked for `"refusal"` in `step.py`'s source, which is in a dozen comments and

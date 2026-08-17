@@ -277,6 +277,36 @@ export function describedLabel(what: string): string {
 }
 
 /**
+ * The marking for prose nobody was briefed with: a scripted reply standing in for a briefing (M21).
+ *
+ * The bench answers with a briefing and an objection, or it does not answer and a canned line stands
+ * where the briefing would have been. Rendering the second unmarked would be the more serious
+ * version of the mistake `DESCRIPTION` exists to prevent: a reader who has learned that this product
+ * means what it shows would take "I have not been able to put a briefing together" for a director's
+ * considered view of the decision in front of them.
+ *
+ * A *fourth* attribute, for the reason there are already three. `data-scripted` is a claim about who
+ * spoke; `data-described` is a claim about a capability; the two figure markings are claims about a
+ * number. The sweeps over each are supposed to be unsatisfiable by the others, and an attribute
+ * shared between two claims is how a completeness claim rots one surface at a time.
+ *
+ * `~` because it is the glyph for "approximately this, not exactly this", which is the whole of what
+ * a scripted reply is. Quiet like the others, and readable with every hue removed — the reason is
+ * spelled out beside it in words, so the glyph never has to carry the meaning alone.
+ */
+export const SCRIPTED = {
+  glyph: '~',
+  label: 'scripted, not briefed',
+  description:
+    'A canned reply standing in for a briefing that did not arrive. Nothing here is a director’s view.',
+} as const
+
+/** The scripted marking's accessible label, naming what stood in and why. */
+export function scriptedLabel(what: string): string {
+  return `${what} — ${SCRIPTED.label}`
+}
+
+/**
  * Interactive, selected. Already means "live", which is why it carries in-progress.
  *
  * 天蓝 rather than 石绿, and the split is the point. The Product Contract gives 天蓝 to

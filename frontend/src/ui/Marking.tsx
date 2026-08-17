@@ -27,9 +27,11 @@ import {
   DESCRIPTION,
   MEASURED,
   PAL,
+  SCRIPTED,
   authoredTuningLabel,
   describedLabel,
   measuredLabel,
+  scriptedLabel,
 } from '../design/tokens'
 
 export interface MarkProps {
@@ -109,6 +111,35 @@ export function Described({ of, withLabel = false }: MarkProps) {
         {DESCRIPTION.glyph}
       </span>
       {withLabel && <span className="mark__label">{DESCRIPTION.label}</span>}
+    </span>
+  )
+}
+
+/**
+ * The marking for a scripted reply standing in for a briefing (M21).
+ *
+ * Same construction, same chrome, same absence of hue, and a *fourth* attribute. It is the strongest
+ * claim of the four and the one whose absence would mislead most: the other three qualify something
+ * the reader can see is a figure or a list, while this one says that a paragraph which reads like a
+ * director's view is not one.
+ *
+ * `withLabel` defaults to *on*, unlike the other three. Those repeat per figure inside a tile, where
+ * a spelled-out label every time would be noise; this appears once, above prose the reader is about
+ * to take at face value, and the glyph alone would not stop them.
+ */
+export function Scripted({ of, withLabel = true }: MarkProps) {
+  return (
+    <span
+      className="mark"
+      data-scripted={SCRIPTED.glyph}
+      style={{ color: PAL.textFaint }}
+      title={SCRIPTED.description}
+      aria-label={scriptedLabel(of)}
+    >
+      <span className="mark__glyph" aria-hidden="true">
+        {SCRIPTED.glyph}
+      </span>
+      {withLabel && <span className="mark__label">{SCRIPTED.label}</span>}
     </span>
   )
 }

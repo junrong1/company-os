@@ -2,7 +2,7 @@ import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { AUTHORED_TUNING, DESCRIPTION, MEASURED, type MetricDef } from '../src/design/tokens'
+import { AUTHORED_TUNING, DESCRIPTION, MEASURED, SCRIPTED, type MetricDef } from '../src/design/tokens'
 import type { EventFrame, OptionDef, PersonView, RosterEntry } from '../src/net/store'
 import {
   comparePayload,
@@ -15,11 +15,14 @@ import {
   DRAW_FIGURE_KEY,
   DRAW_FIGURE_LABEL,
   DRAW_FIGURE_UNIT,
+  FALLBACK_SENTENCES,
   FROM_TRAY_COST,
   askPayload,
   askable,
   assignCost,
   assignableWork,
+  benchBlock,
+  fallbackSentence,
   IN_PERSON_COST,
   OPEN_RADIUS_MILLI,
   SWITCH_MARGIN_MILLI,
@@ -1857,4 +1860,295 @@ describe("a person's authored schema (M15, M16)", () => {
       expect(left.label).not.toBe(right.label)
     }
   })
+})
+
+// =========================================================================
+// The bench: what the director says, and when nothing stands there (M14, M21)
+// =========================================================================
+
+/** One `MODEL_SPEND` control frame, which is how the client learns a bench exists at all. */
+function benchFrame(present: boolean): EventFrame {
+  return {
+    kind: 'MODEL_SPEND',
+    run_id: 'run-1',
+    calls: 0,
+    tokens: 0,
+    cache_hits: 0,
+    max_calls: 200,
+    max_tokens: 600000,
+    lineage_calls: 0,
+    lineage_tokens: 0,
+    bench_present: present,
+    quiet: false,
+  } as unknown as EventFrame
+}
+
+function benchEvent(
+  kind: string,
+  seq: number,
+  payload: Record<string, unknown>,
+): EventFrame {
+  return {
+    kind,
+    seq: String(seq),
+    tick: '600',
+    schema_ver: 3,
+    rules_ver: 'test',
+    run_id: 'run-1',
+    command_id: '',
+    request_id: 'req-1',
+    payload: { tick: 600, service: 'bench', ...payload },
+  } as EventFrame
+}
+
+function statementAnswer(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    briefing: 'The recruiter is the constraint on this one.',
+    objection: 'And the version we have is the only one anyone has agreed to.',
+    citations: [9],
+    producer: 'dir_hr',
+    producer_kind: 'model',
+    model_identity: 'a-model-under-test',
+    context: {},
+    fallback: '',
+    ...over,
+  }
+}
+
+/** A run with a bench, an open checkpoint, and a statement request raised against it. */
+function askedAbout(item: string, person: string, cpIndex = 0): void {
+  useRunStore.getState().apply(genesisFrame())
+  useRunStore.getState().apply(benchFrame(true))
+  useRunStore.getState().apply(raisedFrame({ seq: 2, item, person }))
+  useRunStore.getState().apply(
+    benchEvent('REQUEST_RAISED', 3, {
+      owning_item: item,
+      person,
+      cp_index: cpIndex,
+      deadline_tick: 1680,
+    }),
+  )
+}
+
+function blockFor(person: string): ReturnType<typeof benchBlock> {
+  const state = useRunStore.getState()
+  return benchBlock(
+    stoppedCard(person, state.tray, state.genesis?.catalog ?? [], state.tacitLines),
+    state.statements,
+    state.spend.benchPresent,
+  )
+}
+
+describe('the bench', () => {
+  it('opens a pending block from the tick the request is raised', () => {
+    const { id, want } = itemWithCheckpoint()
+    askedAbout(id, want)
+
+    const block = blockFor(want)
+    expect(block?.status).toBe('pending')
+    // Pending is a state, not an absence: without it a fast player settles before the briefing
+    // lands and the bench is decorative.
+    expect(block?.briefing).toBe('')
+    expect(block?.because).toBe('')
+  })
+
+  it('resolves the pending block in place into the briefing and the objection', () => {
+    const { id, want } = itemWithCheckpoint()
+    askedAbout(id, want)
+    useRunStore
+      .getState()
+      .apply(benchEvent('INPUT_RECEIVED', 4, { owning_item: id, answer: statementAnswer() }))
+
+    const block = blockFor(want)
+    expect(block?.status).toBe('briefed')
+    expect(block?.briefing).toContain('recruiter')
+    // Two fields, because they arrived as two. A bench that only agrees adds nothing.
+    expect(block?.objection).toContain('agreed to')
+    expect(block?.objection).not.toBe(block?.briefing)
+    expect(block?.scripted).toBe(false)
+    expect(block?.citations).toEqual([9])
+  })
+
+  it('marks a scripted reply and says why it is standing there (M21)', () => {
+    const { id, want } = itemWithCheckpoint()
+    askedAbout(id, want)
+    useRunStore.getState().apply(
+      benchEvent('INPUT_RECEIVED', 4, {
+        owning_item: id,
+        answer: statementAnswer({
+          producer_kind: 'scripted',
+          model_identity: '',
+          fallback: 'rate_limited',
+          citations: [],
+        }),
+      }),
+    )
+
+    const block = blockFor(want)
+    expect(block?.status).toBe('scripted')
+    expect(block?.scripted).toBe(true)
+    // A sentence, not the enum: a player reading `rate_limited` learns nothing they can act on.
+    expect(block?.because).toBe(FALLBACK_SENTENCES.rate_limited)
+    expect(block?.because).not.toBe('rate_limited')
+  })
+
+  it('says nothing came back, in the kernel’s own words, when the request is refused', () => {
+    const { id, want } = itemWithCheckpoint()
+    askedAbout(id, want)
+    useRunStore.getState().apply(
+      benchEvent('ANSWER_REJECTED', 4, {
+        owning_item: id,
+        reason: 'no answer within 2160 ticks of being raised',
+        abandoned: true,
+      }),
+    )
+
+    const block = blockFor(want)
+    expect(block?.status).toBe('unanswered')
+    expect(block?.because).toContain('no answer within')
+  })
+
+  it('renders no block at all with no bench configured (M20)', () => {
+    // The whole of M20 on this surface: a keyless run is the Phase 2 conversation exactly, and a
+    // pending block that will never resolve is not "exactly".
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(benchFrame(false))
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore.getState().apply(
+      benchEvent('REQUEST_RAISED', 3, { owning_item: id, person: want, cp_index: 0 }),
+    )
+
+    expect(blockFor(want)).toBeNull()
+    // And the store still folded it, so nothing is lost if a key is configured mid-run: what the
+    // surface declines to show is a rendering decision, not a hole in the state.
+    expect(useRunStore.getState().statements[id]?.status).toBe('pending')
+  })
+
+  it('drops a statement about a checkpoint that is no longer the open one', () => {
+    // Stale rather than late. The same item raises a second checkpoint later in its life, and a
+    // briefing about the first one is not about the decision in front of the CEO.
+    const { id, want } = itemWithCheckpoint()
+    askedAbout(id, want, 1)
+
+    expect(useRunStore.getState().statements[id]?.cpIndex).toBe(1)
+    expect(blockFor(want)).toBeNull()
+  })
+
+  it('ignores a request on another leg entirely', () => {
+    // The three event kinds are shared with the period consult and the resolver, and a run has
+    // one consult per sim-day — so getting the discriminator wrong would open a block about
+    // nothing every day.
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(benchFrame(true))
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore.getState().apply(
+      benchEvent('REQUEST_RAISED', 3, { owning_item: id, person: want, service: 'domain' }),
+    )
+
+    expect(useRunStore.getState().statements[id]).toBeUndefined()
+    expect(blockFor(want)).toBeNull()
+  })
+
+  it('keeps a briefing whose request the client never saw', () => {
+    // A resume that attached mid-flight. The briefing is real and worth showing; what it cannot
+    // know is which checkpoint it was about, so the surface declines rather than guessing.
+    const { id, want } = itemWithCheckpoint()
+    useRunStore.getState().apply(genesisFrame())
+    useRunStore.getState().apply(benchFrame(true))
+    useRunStore.getState().apply(raisedFrame({ seq: 2, item: id, person: want }))
+    useRunStore
+      .getState()
+      .apply(benchEvent('INPUT_RECEIVED', 4, { owning_item: id, answer: statementAnswer() }))
+
+    const held = useRunStore.getState().statements[id]
+    expect(held?.status).toBe('briefed')
+    expect(held?.cpIndex).toBe(-1)
+    expect(blockFor(want)).toBeNull()
+  })
+
+  it('has a readable sentence for every condition the backend can log', () => {
+    // The list is the backend's `simcore.statement.FALLBACK_REASONS`. `tests/test_bench.py` reads
+    // this file and asserts the two agree, because they are in two languages and cannot be one
+    // list — this half checks that each sentence is a sentence rather than an echoed enum.
+    for (const [reason, sentence] of Object.entries(FALLBACK_SENTENCES)) {
+      expect(sentence.length).toBeGreaterThan(20)
+      expect(sentence).not.toContain(reason)
+      expect(fallbackSentence(reason)).toBe(sentence)
+    }
+    // And an unrecognised one is admitted rather than rendered blank.
+    expect(fallbackSentence('a-reason-from-a-later-build')).toContain('does not recognise')
+  })
+})
+
+describe('the bench, rendered', () => {
+  it('marks canned prose and leaves a briefing unmarked, with the settle action untouched', () => {
+    const { id, want } = itemWithCheckpoint()
+    askedAbout(id, want)
+    useRunStore.getState().apply(
+      benchEvent('INPUT_RECEIVED', 4, {
+        owning_item: id,
+        answer: statementAnswer({
+          producer_kind: 'scripted',
+          model_identity: '',
+          fallback: 'timeout',
+          citations: [],
+        }),
+      }),
+    )
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    act(() => {
+      root.render(createElement(Conversation, { personId: want }))
+    })
+
+    const bench = host.querySelector('.conversation__bench')
+    expect(bench).not.toBeNull()
+    expect(bench?.getAttribute('data-bench')).toBe('scripted')
+    // The marking, under its own attribute. Three others exist and none of them may satisfy this.
+    expect(bench?.querySelector('[data-scripted]')).not.toBeNull()
+    expect(bench?.querySelector('[data-described]')).toBeNull()
+    expect(bench?.textContent).toContain(SCRIPTED.label)
+    expect(bench?.textContent).toContain(FALLBACK_SENTENCES.timeout)
+
+    // The player is never blocked on a provider, and never blocked by one having failed. The
+    // settle action is disabled only by having no option picked — which is Phase 2's rule — so
+    // picking one with the bench in any state must enable it.
+    const option = host.querySelector('.option input') as HTMLInputElement
+    act(() => option.click())
+    const settle = host.querySelector('.conversation__decision button') as HTMLButtonElement
+    expect(settle.disabled).toBe(false)
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('renders a briefing with no scripted marking on it', () => {
+    const { id, want } = itemWithCheckpoint()
+    askedAbout(id, want)
+    useRunStore
+      .getState()
+      .apply(benchEvent('INPUT_RECEIVED', 4, { owning_item: id, answer: statementAnswer() }))
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    act(() => {
+      root.render(createElement(Conversation, { personId: want }))
+    })
+
+    const bench = host.querySelector('.conversation__bench')
+    expect(bench?.getAttribute('data-bench')).toBe('briefed')
+    expect(bench?.querySelector('[data-scripted]')).toBeNull()
+    expect(bench?.querySelector('.bench__briefing')?.textContent).toContain('recruiter')
+    // Its own element, so the reader cannot take it for more of the briefing.
+    expect(bench?.querySelector('.bench__objection')?.textContent).toContain('agreed to')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
 })

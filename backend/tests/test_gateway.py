@@ -1406,10 +1406,16 @@ def test_the_launcher_wires_the_kernel_to_the_agents_surfaces_producer(composed)
 def test_a_briefing_crosses_the_whole_leg_and_lands_in_the_log(composed, monkeypatch) -> None:
     """End to end over `compose()`: the tick raises it, the agents surface answers it, the log holds it.
 
-    Every other test of this leg stubs one side. This one stubs only the *prose* — which is U11's,
-    and the one thing U10 does not build — so the store read, the line-scoped retrieval, the guard
-    both processes share, the writer and the publisher are all the shipped code. What it proves is
-    the thing the plan's Risks section says is most likely to be missed: that the transport exists.
+    Every other test of this leg stubs one side. This one stubs only the *prose* — the one thing a
+    provider would have produced — so the store read, the persona assembly, the line-scoped
+    retrieval, the guard both processes share, the writer and the publisher are all the shipped code.
+    What it proves is the thing the plan's Risks section says is most likely to be missed: that the
+    transport exists.
+
+    Stubbing at the prose seam rather than at the gateway is deliberate, and it is why the seam is a
+    named function: everything U11 built *around* the provider call — the situation, the offer the
+    guards read, the two predicates — runs here, and a stub that ranked the options would be refused
+    by the shipped guard exactly as a model's would.
     """
     from test_kernel_service import _walk_the_ceo_to_a_briefing
 
@@ -1418,15 +1424,19 @@ def test_a_briefing_crosses_the_whole_leg_and_lands_in_the_log(composed, monkeyp
     runtime, _ = composed
     seen: list[object] = []
 
-    def compose_prose(_request, retrieved):
-        # The context is the shipped retrieval's, drawn under the scope the request carried.
-        seen.append(retrieved)
+    def compose_prose(situation):
+        # The context is the shipped retrieval's, drawn under the scope the request carried, and the
+        # situation was assembled by the shipped reader — including the persona and the offer.
+        seen.append(situation.retrieved)
+        assert situation.persona.person_id == "dir_hr", "the persona came off the genesis roster"
+        assert situation.offered.labels, "the offer came off the genesis catalog"
         return (
             "The recruiter is the constraint.",
             "And cutting review is how the last mis-hire got through.",
-            retrieved.citable()[:1],
+            situation.retrieved.citable()[:1],
+            "a-model-under-test",
+            statements.PRODUCER_MODEL,
             "",
-            statements.PRODUCER_SCRIPTED,
         )
 
     monkeypatch.setattr(agents_main, "compose_statement", compose_prose)

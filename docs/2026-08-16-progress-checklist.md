@@ -141,8 +141,8 @@ pushed the office off the screen.
 
 ## Phase 5 — the MVP (`docs/plans/2026-08-16-001-feat-company-os-mvp-plan.md`)
 
-Twenty-five units in six phases. **Thirteen are done: Phases A and B are complete, and Phase C is
-half built.** Execution paused here by decision, with the tree clean and both suites green — not
+Twenty-five units in six phases. **Twelve are done: Phases A and B are complete, and Phase C has the
+bench itself.** Execution paused here by decision, with the tree clean and both suites green — not
 blocked. The plan's open questions and everything execution resolved or found are in
 [`docs/2026-08-16-mvp-execution-decisions.md`](2026-08-16-mvp-execution-decisions.md), which also
 carries the deferred defect register.
@@ -165,20 +165,21 @@ carries the deferred defect register.
 | U6. The scenario format, the loader, and the company that moves into it | `[x]` | Two passes: `1a01b44` the format, loader, `default.toml`, `schema.md` and 98 tests; `8bbb91f` the wiring, the genesis identity, the three guard sites, and the constants deleted from six modules |
 | U7. Choosing a scenario, and seeing what it says | `[x]` | The name threaded through the gateway body, the `KernelClient` protocol, the launcher and `create_run`; `GET /scenarios`; `ashcroft.toml`, a second company of nine; the picker on the start screen; a person's responsibility and tools on the conversation surface under a third marking. The genesis payload did not move, so no golden fixture did either |
 
-**Phase C — the bench.** Half built.
+**Phase C — the bench.** The bench itself is built; only CI and the cache are left.
 
 | Unit | Status | Evidence |
 |---|---|---|
 | U8. The model gateway | `[x]` | `fbecec1` — two wires, eight providers, a key type that cannot be printed |
 | U9. The ceiling and its counter | `[x]` | `084b529` — 200 calls / 600k tokens per run, DDL 3, the one measured HUD figure |
 | U10. The statement contract | `[x]` | `86176c8` — the delivery leg that had no caller, servicer or client; the request derived inside `step()`; four bugs its own review pass caught |
-| U11. Four directors who brief, object, and never rank | `[ ]` | Unblocked. The guard module and the agents-side call site are in place awaiting its predicates |
-| U12. Caching on the situation | `[ ]` | Unblocked by U11 |
-| U13. Continuous integration for the keyless path | `[ ]` | Blocked on U11. **There is still no `.github/workflows`** |
+| U11. Four directors who brief, object, and never rank | `[x]` | The two predicates in `simcore/statement.py`, `Offered` with an adapter per process, personas and prompts off the genesis roster and catalog, one fallback exit naming its condition, a fourth marking, and the pending block. 73 new backend tests plus 12 client ones |
+| U12. Caching on the situation | `[ ]` | Unblocked by U11 — the assembled prompt exists, and there is one provider call site to wrap |
+| U13. Continuous integration for the keyless path | `[ ]` | **Unblocked, and overdue.** U11 was its last dependency, and there is still no `.github/workflows` |
 
 **Phases D, E, F.** Not started. U14 and U16 are unblocked; U15, U17–U23 and U25 sit behind them.
 U14's `Panels.tsx` half no longer collides with anything — U7 put the person's schema on the
-conversation rather than in the panel rail.
+conversation rather than in the panel rail, and U11's bench block is its own section below the
+decision card.
 
 **One fix outside the plan.** `a69c304` — a command's events were never published to a connected
 client. `_publish` had one caller inside the tick loop and published only what that batch returned,
@@ -186,7 +187,7 @@ so a client learned its own effects as a sequence gap on a later tick. Pre-exist
 and taken as its own unit rather than deferred because it sat under U10, U15, U16 and U25 — four
 units that would have passed their tests and not worked live.
 
-### What thirteen units found that no test was failing on
+### What the shipped units found that no test was failing on
 
 Every shipped unit but one turned up a live defect on its path. The pattern is worth keeping:
 
@@ -207,10 +208,20 @@ Every shipped unit but one turned up a live defect on its path. The pattern is w
 - U7 is the exception that proves the pattern: it found no live defect, because U6 had left it a
   tripwire — a test asserting the scenarios directory offered exactly one company, with a docstring
   saying a second one was U7's. It failed on the first run, which is what it was for.
+- `Offered`'s two readings of one authored checkpoint disagreed on the first company they were
+  compared over: the genesis-catalog reading admitted `0`, because `catalog_to_state` writes
+  `draw_delta: 0` where the state's `effect` simply has no key. A director could have written "0" and
+  had it resolve to authored content. Found by U11 writing the cross-adapter equality test before any
+  behaviour depended on it, and it is now parametrised over every shipped company.
+- Two of U11's own early tests passed for the wrong reason. A "a tick resolves to its sim-day" test
+  used tick 540 — day 2 — and both `1` and `2` are authored option deltas on that checkpoint, so it
+  passed on the option figures while claiming to prove the day lookup. This is the second unit to hit
+  it (U5 found the metric its own stated verification rested on was near-insensitive), which suggests
+  asking every unit *why* each new assertion fails when the behaviour is removed.
 
 ---
 
-## MVP PRD — M1–M67 as of twelve units
+## MVP PRD — M1–M67 as of twelve units of the MVP plan
 
 Requirements this plan has moved are marked with the unit that moved them.
 
@@ -234,7 +245,11 @@ Requirements this plan has moved are marked with the unit that moved them.
 **The bench (M14–M22)**
 - [x] M17 opening a checkpoint in person raises one statement request — **U10**
 - [x] M22 no metric moves between the request and the statement — **U10**
-- [ ] M14, M18, M19, M20, M21 — **U11**. `services/agents/stub.py` still declines every request; there is no persona, prompt or provider call yet
+- [x] M14, M18, M19, M20, M21 — **U11**. A director briefs and objects as two fields; a statement that
+  prefers an option, ranks them, or compares two of them against each other is refused before the CEO
+  sees it; a figure that resolves to no event, option or authored line is refused; every provider
+  failure takes one exit naming its closed-enum condition; and with no key configured the conversation
+  is the Phase 2 conversation exactly, asserted from both sides of the wire
 - [x] M15, M16 — **U6** puts responsibility, tools, MCP servers and skills on the wire per person; **U7** renders them on the conversation surface under a `described, not wired up` marking, with nothing in the section to click. A third marking attribute rather than a reuse of either figure marking, so a tool list cannot satisfy R27's sweep over numbers
 
 **The model gateway (M23–M30)**
@@ -243,7 +258,7 @@ Requirements this plan has moved are marked with the unit that moved them.
 - [ ] M30 the keyless path proven in CI — U13; **there is still no `.github/workflows`**
 
 **Determinism (M31–M35)**
-- [x] M31 a statement replays exactly — **U10**, strict replay passes because the request is derived inside `step()` rather than read from the log
+- [x] M31 a statement replays exactly — **U10**, strict replay passes because the request is derived inside `step()` rather than read from the log. Still true with the bench live: **U11**'s guards are lexical over a closed vocabulary precisely because their refusal is an output event the fold regenerates
 - [x] M32 the retrieved context is logged and identical on replay — **U10**, after it caught its own window being latency-dependent
 - [x] M35 a comparison branch is never written to the store — and **U5** now proves the clock cannot be starved by one
 - [ ] M33, M34 — U12, U19
@@ -277,15 +292,18 @@ Across four completed plans, 28 units: 23 `[x]`, 5 `[~]` with a named gap, none 
 simulation half of the product is built and covered by four suites plus golden vectors across two
 languages, and the daylight visual system is complete on top of it.
 
-The MVP plan is **13 of 25 units in**, with Phases A and B complete and Phase C half built. Of the
-PRD's 67 requirements, roughly 8 were met when that plan was written and about 35 are met now — M13
-is the one U7 closed, and M15 and M16 stopped being half-met. The
-suites went from 699 backend tests to **1,095**, and the client from 404 to **479**.
+The MVP plan is **12 of 25 units in**, with Phases A and B complete and Phase C holding the bench
+itself. Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about 40 are
+met now — M13 is the one U7 closed, M15 and M16 stopped being half-met, and U11 closed the five the
+bench is made of. The suites went from 699 backend tests to **1,127**, and the client from 404 to
+**491**.
 
-What remains is still concentrated where the plan said it would be. The bench's *contract and
-transport* exist now — which was the plan's single biggest risk, and the unit most likely to be
-"estimated as an edit" — but the four directors who actually brief and object do not, and neither
-does anything behind them: memory, Authorization, persistent forks, the Universe, the report. The
-one thing genuinely overdue against the plan's own reasoning is **CI**: U13 is blocked on U11, so
-the path most users take is still proven only by hand, and the `tsc` failure `2c38686` fixed is what
-that costs.
+What remains is still concentrated where the plan said it would be, but the shape has changed. The
+bench was the plan's single biggest risk and the unit most likely to be "estimated as an edit"; its
+contract, its transport and now the four directors who actually brief and object all exist, and no
+event payload, schema version or golden fixture moved to get there. What does not exist is everything
+behind it: memory, Authorization, persistent forks, the Universe, the report.
+
+The one thing genuinely overdue against the plan's own reasoning is **CI**, and it has run out of
+excuses — U13 was blocked on U11 and is not blocked on anything now. The path most users take is still
+proven only by hand, and the `tsc` failure `2c38686` fixed is what that costs.
