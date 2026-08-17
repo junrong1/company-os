@@ -144,9 +144,49 @@ def test_the_default_scenario_loads_from_the_scenarios_directory() -> None:
     assert company.title
 
 
-def test_the_default_scenario_is_the_only_one_the_directory_offers_yet() -> None:
-    """A second file is U7's, and this is what would notice one arriving unannounced."""
-    assert sc.available() == ("default",)
+def test_the_directory_offers_both_shipped_companies() -> None:
+    """U6 pinned this at `("default",)` so a second file could not arrive unannounced. U7 is
+    the announcement: `ashcroft.toml` is the second company, and the only thing that made it
+    reachable was writing it — no loader change, no registry, no code (M13)."""
+    assert sc.available() == ("ashcroft", "default")
+
+
+@pytest.mark.parametrize("name", sc.available(), ids=lambda name: name)
+def test_every_shipped_scenario_loads(name: str) -> None:
+    """Parametrised over the directory rather than over a list written here.
+
+    So a third file is covered by this suite the moment it lands, which is the same claim the
+    format makes to an author: adding a company is a file. A list of names in the test would be
+    the one piece of code that a new scenario *did* require.
+    """
+    company = sc.load(name)
+
+    assert company.scenario_id == name
+    assert company.schema_version == sc.SCENARIO_SCHEMA_VERSION
+    assert company.hash_version == sc.SCENARIO_HASH_VERSION
+    assert company.title and company.content_hash
+
+
+def test_the_second_company_is_a_different_company() -> None:
+    """Not a copy with the names changed: a different roster, different work, different hash.
+
+    Worth asserting because the cheapest way to satisfy "a second scenario is selectable" is a
+    duplicate of the first, and a duplicate would prove the plumbing while proving nothing about
+    whether a scenario can express a company the shipped one is not.
+    """
+    shipped = sc.load_default()
+    second = sc.load("ashcroft")
+
+    assert second.content_hash != shipped.content_hash
+    assert {person.id for person in second.people}.isdisjoint(
+        {person.id for person in shipped.people}
+    )
+    assert {item.id for item in second.items}.isdisjoint({item.id for item in shipped.items})
+    # The four lines are fixed and both staff all four (M11); the draws behind them are not.
+    assert {dept.id for dept in second.departments} == {
+        dept.id for dept in shipped.departments
+    }
+    assert sum(second.draws.values()) != sum(shipped.draws.values())
 
 
 def test_the_roster_is_the_one_the_ported_parity_suite_asserts_against() -> None:

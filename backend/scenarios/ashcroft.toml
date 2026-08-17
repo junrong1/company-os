@@ -1,0 +1,478 @@
+# A second company, and the proof that adding one is a file rather than a change (M13).
+#
+# Nothing in the code knows this file exists. It is here because the loader resolves a
+# name inside this directory and the gateway takes that name at run creation — so what
+# made this company reachable was dropping it next to default.toml.
+#
+# It is deliberately not a smaller Northwind. A press runs on other people's deadlines:
+# the money is committed a season before it arrives, the work is seasonal rather than
+# recurring, and the decisions on offer trade a relationship against an hour. Same eight
+# rooms, same four lines, a company that plays differently inside them.
+
+schema = 1
+id = "ashcroft"
+title = "Ashcroft Press"
+summary = "An independent publisher of nine: two seasons a year, a returns pile nobody owns, and royalty statements still typed by hand."
+
+# --- the four reporting lines -------------------------------------------------
+#
+# Sized the same way default.toml's are: each draw sits above what its own authored
+# decisions can remove, so Manual work cannot bottom out at the moment the saving
+# lands. Operations' decisions take up to 61 h/mo against a draw of 95, Sales' 42
+# against 80, Care's 25 against 55, People's 18 against 40.
+#
+# Their sum, 270, is where Manual work starts — a smaller company than Northwind's 340,
+# and a smaller one to move.
+
+[[department]]
+id = "admin"
+director = "dir_ops"
+draw_hours_per_month = 95
+
+[[department]]
+id = "sales"
+director = "dir_rights"
+draw_hours_per_month = 80
+
+[[department]]
+id = "support"
+director = "dir_care"
+draw_hours_per_month = 55
+
+[[department]]
+id = "hr"
+director = "dir_people"
+draw_hours_per_month = 40
+
+# --- the roster ---------------------------------------------------------------
+#
+# Nine people against Northwind's ten, and the accounting desk is again where the two
+# questions come apart: Ivo sits in accounting because that is where the ledger is, and
+# reports to Operations because royalties are a production deadline before they are a
+# payment.
+
+[[person]]
+id = "dir_rights"
+name = "Nadia Fontaine"
+initials = "NF"
+title = "Rights & Sales Director"
+room = "sales"
+manager = ""
+rank = "director"
+seat_slot = 2
+responsibility = "Sells the list to the trade, licenses the rights abroad, and signs off every discount over 45%."
+tools = ["Rights tracker", "Trade order book", "Frankfurt contact list"]
+mcp_servers = ["rights-tracker", "sales-reporting"]
+skills = ["rights-licensing", "discount-approval", "list-positioning"]
+deflection = "That one is not mine to answer, and a guess from me would travel further than it should. Ask me why the list looks like this, what I do off the process, what I sign, or what slows me down."
+
+[person.voice]
+why = "The list is built two seasons ahead, so every yes I give is against a forecast nobody can check for eighteen months."
+exception = "For the three agents we cannot afford to lose I agree terms on the phone and paper it afterwards. It has never gone wrong, which is not the same as safe."
+axis = "Discounts and rights are mine. Print numbers are Bernard's, and we argue about them twice a season."
+bottleneck = "Rebuilding the rights tracker by hand after every fair. Two full days, four times a year."
+
+[[person]]
+id = "stf_trade"
+name = "Callum Byrne"
+initials = "CB"
+title = "Trade Sales Coordinator"
+room = "sales"
+manager = "dir_rights"
+rank = "staff"
+seat_slot = 0
+responsibility = "Keeps every title's metadata correct wherever the trade reads it, and turns the wholesalers' orders into print numbers."
+tools = ["Trade order book", "Metadata spreadsheet", "Wholesaler portals"]
+mcp_servers = ["metadata-feed", "trade-portal"]
+skills = ["metadata-maintenance", "order-consolidation", "print-number-forecasting"]
+deflection = "I would only be repeating what someone told me. Ask me why the metadata works this way, where I go off-script, what I decide, or where my week goes."
+
+[person.voice]
+why = "Every wholesaler wants the same eleven fields in a different shape, so I keep one spreadsheet and retype it into four portals."
+exception = "When a review lands I push the metadata update straight to the portals without waiting for Helen to confirm the reprint. If I waited, the review would be cold."
+axis = "I set the reorder quantity under 500 copies myself. Over that it is Bernard's."
+bottleneck = "The retyping. Twenty-two hours a month, and one typo turns into a wrong price at the till."
+
+[[person]]
+id = "stf_events"
+name = "Yuki Mori"
+initials = "YM"
+title = "Events & Festivals"
+room = "sales"
+manager = "dir_rights"
+rank = "staff"
+seat_slot = 1
+responsibility = "Books the festival slots and the shop signings, and gets author, stock and bookseller to the same town on the same day."
+tools = ["Events calendar", "Festival submissions folder", "Author travel sheet"]
+mcp_servers = ["events-calendar"]
+skills = ["festival-submissions", "author-scheduling", "event-stock-planning"]
+deflection = "Not my corner of it, I am afraid. Ask me why the season runs the way it does, what I do that is not written down, what is mine to call, or what actually eats the time."
+
+[person.voice]
+why = "Festivals decide their programmes six months out, so I submit before we know whether the book will be finished."
+exception = "I hold back twenty copies of every new title in my own cupboard for events. Officially that stock is sold."
+axis = "Anything under £400 of author travel I book without asking. It is the only way to catch a cheap fare."
+bottleneck = "Chasing three parties for one date. Most of a week per festival."
+
+[[person]]
+id = "dir_ops"
+name = "Bernard Adeyemi"
+initials = "BA"
+title = "Operations Director"
+room = "admin"
+manager = ""
+rank = "director"
+seat_slot = 0
+responsibility = "Owns the print schedule, the cash it commits, and every date between a finished manuscript and a book in a warehouse."
+tools = ["Print schedule", "Cashflow model", "Printer quotes folder"]
+mcp_servers = ["print-schedule", "finance-ledger"]
+skills = ["print-buying", "cashflow-planning", "schedule-recovery"]
+deflection = "You would want someone closer to it than me. Ask me why the schedule is shaped like this, what I do outside the process, what I decide, or where it jams."
+
+[person.voice]
+why = "Print is the only cost we commit before we know the demand, so the schedule is really a series of bets placed nine months early."
+exception = "If a printer offers a gap in their press I take it and move our schedule to fit, even when the book is not signed off."
+axis = "Print runs, printers and the schedule are mine. What goes on the list is Nadia's."
+bottleneck = "Reconciling the printer invoices against the quotes. Nobody else can do it, so it waits for me."
+
+[[person]]
+id = "stf_prod"
+name = "Helen Marsh"
+initials = "HM"
+title = "Production Coordinator"
+room = "admin"
+manager = "dir_ops"
+rank = "staff"
+seat_slot = 1
+responsibility = "Walks each book from copyedit to press, and holds the freelance editors, designers and proofreaders to their dates."
+tools = ["Production tracker", "Freelancer contact sheet", "Proof log"]
+mcp_servers = ["production-tracker", "document-store"]
+skills = ["schedule-tracking", "freelancer-briefing", "proof-management"]
+deflection = "I could not tell you, and I would rather not invent it. Ask me why production runs this way, what the exceptions are, what I decide, or what holds me up."
+
+[person.voice]
+why = "Freelancers work for four publishers at once, so a date I set is really a place in someone else's queue."
+exception = "I keep two proofreaders who are not on the approved list because they turn work around in three days. I book them as design."
+axis = "I move any internal date by up to a week without asking. Press dates I cannot touch."
+bottleneck = "Finding a freelancer who is free. Every book starts with the same four phone calls."
+
+[[person]]
+id = "stf_royalty"
+name = "Ivo Petrov"
+initials = "IP"
+title = "Royalties Administrator"
+room = "accounting"
+manager = "dir_ops"
+rank = "staff"
+seat_slot = 0
+responsibility = "Builds every author's royalty statement twice a year from the sales data, and answers the queries the statements produce."
+tools = ["Sales ledger", "Contract file", "Statement spreadsheet"]
+mcp_servers = ["finance-ledger", "contract-store"]
+skills = ["royalty-calculation", "contract-interpretation", "statement-preparation"]
+deflection = "That sits outside the ledger, so I would be guessing. Ask me why the statements work this way, what I do that is not in the process, what I decide, or where the time goes."
+
+[person.voice]
+why = "Every contract has its own rates and its own thresholds, so a statement is read from the contract rather than computed from a rule."
+exception = "Where a contract is ambiguous I use the rate that favours the author, and I do not flag it. Arguing would cost more than the difference."
+axis = "Anything under £50 of difference I settle myself rather than open a query."
+bottleneck = "The statement season. Six weeks twice a year where I do nothing else, and about forty hours a month of it is retyping."
+
+[[person]]
+id = "dir_care"
+name = "Sofia Iglesias"
+initials = "SI"
+title = "Customer Care Lead"
+room = "support"
+manager = ""
+rank = "director"
+seat_slot = 0
+responsibility = "Owns everything a bookseller, a reader or an author asks after publication, and decides what a complaint costs to settle."
+tools = ["Shared inbox", "Returns log", "Stock enquiry access"]
+mcp_servers = ["support-inbox", "inventory"]
+skills = ["complaint-resolution", "bookseller-relations", "goodwill-authorisation"]
+deflection = "I would be speaking for someone else there. Ask me why the queue works this way, what we do off the record, what I can authorise, or what fills the day."
+
+[person.voice]
+why = "Booksellers order on sale-or-return, so half of what we call a sale is a loan we find out about later."
+exception = "For the twelve shops that actually hand-sell us I credit the return before the box arrives. It is not in any policy."
+axis = "Goodwill up to £200 is mine. Above that it is Bernard's, and by then the shop has told everyone."
+bottleneck = "The returns paperwork. Every box is a separate claim, typed twice."
+
+[[person]]
+id = "stf_returns"
+name = "Dev Anand"
+initials = "DA"
+title = "Returns & Claims"
+room = "support"
+manager = "dir_care"
+rank = "staff"
+seat_slot = 1
+responsibility = "Opens every returned box, decides what is resaleable, and puts the credit through against the right invoice."
+tools = ["Returns log", "Credit note book", "Warehouse manifest"]
+mcp_servers = ["inventory", "finance-ledger"]
+skills = ["returns-grading", "credit-notes", "warehouse-reconciliation"]
+deflection = "Not something that reaches my desk. Ask me why returns work like this, what I do that nobody wrote down, what is mine to judge, or where it all goes."
+
+[person.voice]
+why = "A return has to be matched to the invoice it came from, and the shops send the books back without the paperwork."
+exception = "Anything with a scuffed corner I grade as resaleable and put back in the pile. Strictly it should be pulped."
+axis = "I decide resaleable or not, and nobody checks me. That judgement is worth about £30,000 a year."
+bottleneck = "Matching boxes to invoices. Twenty-five hours a month of paper."
+
+[[person]]
+id = "dir_people"
+name = "Margit Halvorsen"
+initials = "MH"
+title = "People Lead"
+room = "hr"
+manager = ""
+rank = "director"
+seat_slot = 0
+responsibility = "Carries the whole of people for nine staff and forty freelancers: hiring, contracts, payment terms and whatever else lands."
+tools = ["Contract templates", "Freelancer register", "Payroll portal"]
+mcp_servers = ["contract-store", "payroll"]
+skills = ["freelance-contracting", "onboarding", "payment-terms"]
+deflection = "That is not a question for this desk. Ask me why onboarding runs this way, what the exceptions are, what I decide, or what takes the time."
+
+[person.voice]
+why = "Forty freelancers on nine staff means most of the company is not employed by it, and the process was written for the nine."
+exception = "For anyone who has worked with us before I let them start before the contract comes back signed. Everyone does it; nobody has agreed it."
+axis = "Rates for freelancers are mine, up to the band Bernard set two years ago. Nobody has revisited the band."
+bottleneck = "Onboarding. Eighteen hours a month re-collecting the same details from people we have used for years."
+
+# --- the work -----------------------------------------------------------------
+
+[[item]]
+id = "wk_freelance"
+title = "Onboard a freelancer once, not every time"
+brief = "Forty freelancers, and each new commission re-collects the same bank details, address and rate. {Hours_word} hours a month of it."
+room = "hr"
+want = "dir_people"
+effort_hours = 16
+friction = "Working out which of the forty are actually still active."
+output_title = "Freelancer register and onboarding pack"
+output_kind = "Process map"
+unlocks = []
+visit_meeting = false
+final = false
+effect = { visibility = 6 }
+requires = { items = [] }
+
+[[item.checkpoint]]
+at_percent = 40
+kind = "approval"
+label = "Approval"
+prompt = "A standing register would end the re-collection, but it means holding bank details for people we may not use again this year. Do we build it?"
+tacit = "...eleven of the forty have not worked for us in two years and are still on the list. I keep them because taking someone off feels like telling them they are finished."
+
+[[item.checkpoint.option]]
+label = "Build the full register"
+detail = "Everyone on it, details held and reused. The saving lands in full, and so does the data we are now keeping."
+note = "Standing freelancer register built"
+effect = { cash = -8, draw = -18, leadTime = -1, morale = 2 }
+
+[[item.checkpoint.option]]
+label = "Active freelancers only"
+detail = "Anyone used in the last twelve months. Two thirds of the saving, and a much shorter list to defend."
+note = "Register limited to freelancers used in the last year"
+effect = { cash = -5, draw = -12, morale = 1 }
+
+[[item.checkpoint.option]]
+label = "Leave it as it is"
+detail = "Keep re-collecting. Nothing new is held, and nothing changes."
+note = "Onboarding left unchanged"
+effect = { morale = -2 }
+
+[[item]]
+id = "wk_royalties"
+title = "Royalty statements without the retyping"
+brief = "Twice a year Ivo rebuilds every statement from the sales ledger and the contract file by hand. The contracts all differ, so nobody has tried to automate it."
+room = "accounting"
+want = "stf_royalty"
+effort_hours = 26
+friction = "Reading two hundred contracts to find how many rate structures there really are."
+output_title = "Royalty rate structures, and what a system would have to hold"
+output_kind = "Automation candidate"
+unlocks = []
+visit_meeting = false
+final = false
+effect = { visibility = 9 }
+requires = { items = [] }
+
+[[item.checkpoint]]
+at_percent = 35
+kind = "info"
+label = "What the contracts say"
+prompt = "Two hundred contracts, and they use nine rate structures between them — not two hundred. Seven of the nine are the same shape with different numbers. How do we treat the last two?"
+tacit = "...the two odd ones are our best-selling authors, and both were agreed by the founder over lunch. Neither has a signed version anyone can find."
+
+[[item.checkpoint.option]]
+label = "Model all nine"
+detail = "Nothing is a special case. Slower to build, and the statement season ends."
+note = "All nine rate structures modelled"
+effect = { cash = -12, visibility = 4 }
+
+[[item.checkpoint.option]]
+label = "Model seven, hand-do two"
+detail = "The two odd contracts stay manual. Most of the saving, none of the argument."
+note = "Seven structures modelled, two kept manual"
+effect = { cash = -6, visibility = 2, morale = 1 }
+
+[[item.checkpoint]]
+at_percent = 70
+kind = "decision"
+label = "Decision"
+prompt = "Statements can go out automatically, or Ivo can keep reading each one before it leaves. Reading them is what he has always done."
+tacit = "...I catch about four wrong statements a season, and every one of them is wrong in the author's favour. If I stop reading, we will pay those and never know."
+
+[[item.checkpoint.option]]
+label = "Send automatically"
+detail = "The whole season disappears. So does the check that has been catching the errors."
+note = "Statements sent without a manual check"
+effect = { draw = -40, leadTime = -2, morale = -3 }
+
+[[item.checkpoint.option]]
+label = "Automate, and Ivo reviews the exceptions"
+detail = "Anything outside the seven standard shapes stops for a person. Most of the saving, and the check survives where it earns its keep."
+note = "Automated with a manual review of exceptions"
+effect = { cash = -4, draw = -28, leadTime = -1, morale = 3 }
+
+[[item.checkpoint.option]]
+label = "Keep reading every one"
+detail = "The build pays for itself in accuracy and nothing else. The season stays."
+note = "Every statement still read by hand"
+effect = { draw = -8, morale = 1 }
+
+[[item]]
+id = "wk_returns"
+title = "Take the paper out of returns"
+brief = "Every returned box is matched to its invoice by hand, then typed again as a credit note. Two people touch it and both retype it."
+room = "support"
+want = "stf_returns"
+effort_hours = 20
+friction = "The warehouse manifests and our invoices do not use the same reference."
+output_title = "Returns matching: where the two references come apart"
+output_kind = "Process map"
+unlocks = []
+visit_meeting = true
+final = false
+effect = { visibility = 7 }
+requires = { items = [] }
+
+[[item.checkpoint]]
+at_percent = 55
+kind = "decision"
+label = "Decision"
+prompt = "We can match returns automatically if the warehouse puts our invoice number on the manifest. They will do it — for a fee, or if we accept their reference instead of ours."
+tacit = "...if we take their reference, Sofia loses the ability to credit a shop before the box arrives. She does that for the twelve shops that actually sell us, and none of them know it is a favour."
+
+[[item.checkpoint.option]]
+label = "Pay for our reference"
+detail = "The warehouse carries our invoice number. Everything downstream keeps working, and it is an annual cost."
+note = "Warehouse carries our invoice reference, for a fee"
+effect = { cash = -14, draw = -25, leadTime = -1 }
+
+[[item.checkpoint.option]]
+label = "Adopt their reference"
+detail = "Free, and it lands fastest. Credits can no longer be raised before the box is scanned."
+note = "Warehouse reference adopted"
+effect = { draw = -22, leadTime = -2, morale = -4 }
+
+[[item.checkpoint.option]]
+label = "Keep matching by hand"
+detail = "No cost, no change, and the paperwork stays with Dev."
+note = "Manual returns matching retained"
+effect = { morale = -1 }
+
+[[item]]
+id = "wk_metadata"
+title = "One place for a title's metadata"
+brief = "Eleven fields per title, four portals, one spreadsheet in the middle. A price fixed here is wrong at a till somewhere for a fortnight."
+room = "sales"
+want = "stf_trade"
+effort_hours = 22
+friction = "Two portals have no way to load a file; someone has to type into them."
+output_title = "Metadata feed specification"
+output_kind = "Automation candidate"
+unlocks = ["wk_list"]
+visit_meeting = true
+final = false
+effect = { visibility = 10 }
+requires = { items = [] }
+
+[[item.checkpoint]]
+at_percent = 45
+kind = "decision"
+label = "Decision"
+prompt = "A single feed can push to the two portals that accept one. The other two stay manual either way. Do we build the feed, or standardise the spreadsheet first?"
+tacit = "...the spreadsheet has a column the portals do not: the date I promised a bookseller. Build a feed off the portals' fields and that column has nowhere to live."
+
+[[item.checkpoint.option]]
+label = "Build the feed"
+detail = "Two portals go automatic this season. The promised-date column has to go somewhere, and nobody has said where."
+note = "Metadata feed built for the two portals that accept one"
+effect = { cash = -18, draw = -22, leadTime = -1, morale = -1 }
+
+[[item.checkpoint.option]]
+label = "Standardise the spreadsheet first"
+detail = "One agreed shape before any automation. Half the saving now, and the feed gets easier later."
+note = "Spreadsheet standardised ahead of any feed"
+effect = { draw = -10, visibility = 4, morale = 2 }
+
+[[item.checkpoint.option]]
+label = "Leave it with Callum"
+detail = "It works because he is careful. It stops working the week he is away."
+note = "Metadata left as a manual process"
+effect = { morale = -2 }
+
+[[item]]
+id = "wk_list"
+title = "Decide next season's list"
+brief = "Twelve books can be printed and eighteen are wanted. Everything mapped so far feeds the argument: what the trade will take, what production can carry, and what the cash allows."
+room = "sales"
+want = "dir_rights"
+effort_hours = 30
+friction = "Nadia and Bernard cost the same list differently and both are right."
+output_title = "Next season's list, and what it commits"
+output_kind = "Improvement plan"
+unlocks = []
+visit_meeting = false
+final = true
+effect = { visibility = 12 }
+requires = { visibility = 40, items = ["wk_metadata"] }
+
+[[item.checkpoint]]
+at_percent = 60
+kind = "decision"
+label = "Decision"
+prompt = "Twelve slots, eighteen books. Choose what decides the cut, because the criterion picks the list."
+tacit = "...four of the eighteen are by authors who would leave if they were cut, and two of those four have never earned out. Nobody has ever written that down, and every list has quietly protected them."
+
+[[item.checkpoint.option]]
+label = "Cut by forecast revenue"
+detail = "The list the numbers defend. Two long-standing authors do not make it, and both will hear why from someone else."
+note = "List cut by forecast revenue"
+effect = { cash = 40, draw = -20, morale = -5 }
+
+[[item.checkpoint.option]]
+label = "Protect the backlist authors"
+detail = "The four stay, and two books the trade actually asked for wait a season."
+note = "Backlist authors protected in the cut"
+effect = { cash = 12, morale = 6, visibility = 3 }
+
+[[item.checkpoint.option]]
+label = "Cut by what production can carry"
+detail = "Twelve books Helen can actually get through press on time. Fewer heroics, and a list nobody argues is exciting."
+note = "List sized to production capacity"
+effect = { cash = 20, leadTime = -3, draw = -12, morale = 2 }
+
+# --- what the company was already doing ---------------------------------------
+#
+# Seeded at 40%, which is `wk_freelance`'s own first checkpoint — so Margit is holding
+# an unsettled approval on the first frame the client draws (M6), the same way Northwind
+# opens on the HR director.
+
+[[seeded_assignment]]
+item = "wk_freelance"
+person = "dir_people"
+done_percent = 40
