@@ -350,6 +350,48 @@ export function emptySpend(): SpendView {
 }
 
 // =========================================================================
+// The bench (M14, M21)
+// =========================================================================
+
+/**
+ * How far one statement has got. A closed set, and every member is a state the surface must render.
+ *
+ * `pending` is not a spinner. It is the state the block spends most of its life in on a real
+ * provider, and the settle action stays enabled throughout it — a player is never blocked on a
+ * model, which is the difference between a bench and a modal dialog.
+ */
+export type StatementStatus = 'pending' | 'briefed' | 'scripted' | 'unanswered'
+
+/**
+ * What the bench has said about one raised checkpoint.
+ *
+ * **Keyed by item, with the checkpoint index carried rather than in the key.** One item has at most
+ * one open checkpoint at a time, so the item is enough to find a statement — and holding `cpIndex`
+ * on the value lets the surface refuse to render a briefing about the *previous* checkpoint of the
+ * same item, which is the only way this can go stale. `INPUT_RECEIVED` carries `owning_item` and not
+ * `cp_index`, so keying on the pair would have needed a second map from request id, and a join
+ * nobody reads is a join that goes wrong quietly.
+ *
+ * `fallback` is the closed-enum condition the backend logged; `reason` is the kernel's sentence for a
+ * statement it refused or abandoned. They are separate fields because they come from different
+ * events and only one is ever set — a fallback *arrived*, and a rejection means nothing did.
+ */
+export interface StatementView {
+  personId: string
+  cpIndex: number
+  status: StatementStatus
+  briefing: string
+  objection: string
+  /** Log sequences the prose points at. Rendered as provenance, not as links (nothing resolves yet). */
+  citations: number[]
+  /** One of the backend's `FALLBACK_REASONS`, or empty for a briefing a model produced. */
+  fallback: string
+  /** Why nothing stands here at all, in the kernel's words. Empty unless `status` is `unanswered`. */
+  reason: string
+  atTick: bigint
+}
+
+// =========================================================================
 // Branch comparisons
 // =========================================================================
 //
@@ -508,6 +550,14 @@ export interface RunStore {
    * events and rebuilds this from them (R18, R19).
    */
   answers: Record<string, AnsweredQuestion[]>
+  /**
+   * What the bench has said, keyed by item id. See `StatementView`.
+   *
+   * Folded out of the events rather than held in the conversation's component state, for the reason
+   * `answers` is: a briefing has to survive walking away, coming back, and a reload — the reload
+   * replays the log and rebuilds this from it.
+   */
+  statements: Record<string, StatementView>
   /** Where the wire last said the CEO is. What the stage's prediction seeds from. */
   ceo: CeoView
   /** The last position echo, or `null` before one has arrived. Reconciled against, not drawn. */
@@ -550,6 +600,7 @@ function emptyRun(): Omit<
     tacitLines: {},
     comparisons: {},
     answers: {},
+    statements: {},
     ceo: { xMilli: 0, yMilli: 0, facing: 'down' },
     ceoEcho: null,
     diverged: false,
@@ -762,6 +813,45 @@ function readSpend(frame: ControlFrame): SpendView {
 /** A ceiling, or `null` for an unlimited one — and for anything unreadable. */
 function toBound(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null
+}
+
+/**
+ * Which leg a pending-input event belongs to. `simcore.pending.BENCH`, spelled once.
+ *
+ * The three event kinds the bench uses are shared with the domain consult and the resolver, so this
+ * string is the whole discriminator — and a run's period consults outnumber its briefings, so getting
+ * it wrong would open a block on the conversation every sim-day about nothing.
+ */
+const BENCH_SERVICE = 'bench'
+
+/**
+ * One statement, read off an answer payload.
+ *
+ * Defensive in the same way `readSpend` is: every field is coerced and a missing one becomes empty
+ * rather than `undefined` reaching the surface. `producer_kind` is what decides `briefed` against
+ * `scripted`, and it is read rather than inferred from `fallback` being non-empty — the backend's
+ * guard already requires the two to agree, so reading the one that means it keeps this from being a
+ * second, weaker copy of that rule.
+ */
+function readStatement(
+  answer: Record<string, unknown>,
+  opened: StatementView | undefined,
+  tick: bigint,
+): StatementView {
+  const citations = answer.citations
+  return {
+    personId: toStr(answer.producer) || (opened?.personId ?? ''),
+    cpIndex: opened?.cpIndex ?? -1,
+    status: toStr(answer.producer_kind) === 'scripted' ? 'scripted' : 'briefed',
+    briefing: toStr(answer.briefing),
+    objection: toStr(answer.objection),
+    citations: Array.isArray(citations)
+      ? citations.filter((seq): seq is number => typeof seq === 'number').map(Math.trunc)
+      : [],
+    fallback: toStr(answer.fallback),
+    reason: '',
+    atTick: tick,
+  }
 }
 
 function applyEvent(set: Setter, get: Getter, frame: EventFrame, seq: bigint): void {
@@ -984,6 +1074,68 @@ function applyEvent(set: Setter, get: Getter, frame: EventFrame, seq: bigint): v
       patch.answers = {
         ...state.answers,
         [personId]: [said, ...(state.answers[personId] ?? [])],
+      }
+    }
+  }
+
+  // --- the bench --------------------------------------------------------
+  //
+  // Three events, one entry. The request opens a pending block, the answer resolves it in place, and
+  // a rejection resolves it into a stated absence. All three carry `owning_item` and `service`, and
+  // `service` is what keeps a period consult's request — which uses the same three kinds — from
+  // opening a block on the conversation.
+  if (frame.kind === 'REQUEST_RAISED' && toStr(payload.service) === BENCH_SERVICE) {
+    const owning = toStr(payload.owning_item)
+    if (owning !== '') {
+      patch.statements = {
+        ...state.statements,
+        [owning]: {
+          personId: toStr(payload.person),
+          cpIndex: toInt(payload.cp_index, -1),
+          status: 'pending',
+          briefing: '',
+          objection: '',
+          citations: [],
+          fallback: '',
+          reason: '',
+          atTick: tick,
+        },
+      }
+    }
+  }
+
+  if (frame.kind === 'INPUT_RECEIVED' && toStr(payload.service) === BENCH_SERVICE) {
+    const owning = toStr(payload.owning_item)
+    const answer = payload.answer
+    // Against the entry the request opened, so a briefing whose request the client never saw — a
+    // resume that started mid-flight — still renders. `cpIndex` falls back to the one on the entry,
+    // and to -1 when there is no entry at all: the surface then declines to show it rather than
+    // guessing which checkpoint it was about.
+    const opened = state.statements[owning]
+    if (owning !== '' && isRecord(answer)) {
+      patch.statements = {
+        ...state.statements,
+        [owning]: readStatement(answer, opened, tick),
+      }
+    }
+  }
+
+  if (frame.kind === 'ANSWER_REJECTED' && toStr(payload.service) === BENCH_SERVICE) {
+    const owning = toStr(payload.owning_item)
+    const opened = state.statements[owning]
+    if (owning !== '' && opened !== undefined) {
+      patch.statements = {
+        ...state.statements,
+        [owning]: {
+          ...opened,
+          status: 'unanswered',
+          // The kernel's own sentence, not one written here. A guard refusal and an abandonment
+          // both land in this branch and they are genuinely different things to a player — "the
+          // bench said something we would not show you" against "nothing arrived in time" — and the
+          // reason is the only place that distinction exists on the wire.
+          reason: toStr(payload.reason),
+          atTick: tick,
+        },
       }
     }
   }

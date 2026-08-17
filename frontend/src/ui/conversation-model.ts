@@ -19,7 +19,15 @@
  */
 
 import { type Direction, type MetricDef, directionOf } from '../design/tokens'
-import type { CatalogEntry, OptionDef, PersonView, RosterEntry, TrayEntry } from '../net/store'
+import type {
+  CatalogEntry,
+  OptionDef,
+  PersonView,
+  RosterEntry,
+  StatementStatus,
+  StatementView,
+  TrayEntry,
+} from '../net/store'
 
 /** Within this, a conversation opens. The prototype's `TALK_RANGE`, in milli-tiles. */
 export const OPEN_RADIUS_MILLI = 1900
@@ -564,4 +572,130 @@ export function askPayload(personId: string, question: string): Record<string, u
 /** Whether a typed question is worth sending at all. */
 export function askable(question: string): boolean {
   return question.trim() !== ''
+}
+
+// =========================================================================
+// The bench (M14, M21)
+// =========================================================================
+
+/**
+ * What the surface renders where a briefing goes.
+ *
+ * The decision the model makes is *whether there is anything to render at all*, which is where two
+ * requirements meet and would otherwise be settled in JSX. M20 says a run with no key configured is
+ * the Phase 2 conversation exactly — so with no bench, there is no block, not even an empty one. And
+ * a statement about the previous checkpoint of the same item is stale rather than late, so it is
+ * dropped rather than shown against a decision it was never about.
+ */
+export interface BenchBlock {
+  status: StatementStatus
+  /** Who was asked. The surface names them, because "the bench" is not a person. */
+  personId: string
+  briefing: string
+  objection: string
+  citations: number[]
+  /**
+   * Why canned prose stands here, or why nothing does. Empty for a briefing.
+   *
+   * A sentence rather than the enum: the enum is the wire's contract and the log's record, and a
+   * player reading `rate_limited` learns nothing they can act on.
+   */
+  because: string
+  /** The prose is canned and must carry the scripted marking (M21). */
+  scripted: boolean
+}
+
+/**
+ * A player-readable sentence per logged condition (M21).
+ *
+ * Keyed by the backend's `simcore.statement.FALLBACK_REASONS`, which is the closed set that reaches
+ * the log and the exported report. `tests/test_bench.py` reads *this file* and asserts every member
+ * of that set appears here — the two lists are in two languages and cannot be one list, so the check
+ * runs from the side that owns the vocabulary.
+ *
+ * Each sentence says what happened and, where an operator can act, what to look at. None of them
+ * blames the company: a director who could not be reached is a fact about this software, and dressing
+ * it up as reticence would be the product lying about itself.
+ */
+export const FALLBACK_SENTENCES: Record<string, string> = {
+  guard_refused:
+    'Their answer came back arguing for one of the options, or quoting a figure that resolves to nothing. It was not shown to you.',
+  ceiling_reached:
+    'This run has spent its model budget. Raise the ceiling to hear the rest of the bench; the run continues either way.',
+  timeout: 'The model did not answer in time.',
+  unreachable: 'The model could not be reached. Check the base URL and that the server is up.',
+  rate_limited: 'The provider is rate limiting this run. It will be asked again at the next decision.',
+  auth_rejected: 'The provider rejected the API key.',
+  invalid_request: 'The provider refused the request itself — usually a model name it does not have.',
+  provider_error: 'The provider failed on its side.',
+  malformed_response: 'The model answered in a shape this build could not read.',
+  empty_response: 'The model answered with nothing in it.',
+  gateway_fault: 'This build broke while asking. That one is ours, not the provider’s.',
+}
+
+/** The sentence for a condition, or an honest admission that this build does not recognise it. */
+export function fallbackSentence(reason: string): string {
+  return (
+    FALLBACK_SENTENCES[reason] ??
+    `The bench could not answer, and this build does not recognise why (${reason}).`
+  )
+}
+
+/**
+ * The block for the decision in front of the CEO, or `null` when there is nothing to show.
+ *
+ * `benchPresent` comes from the spend frame, which arrives on connect — so a keyless run has been
+ * told there is no bench long before the CEO can walk to a desk. Defaulting to absent is deliberate:
+ * the failure it prevents is a keyless run flashing a pending block that will never resolve, and the
+ * cost of being wrong the other way is a briefing that appears a moment later than it could.
+ */
+export function benchBlock(
+  card: StoppedCard | null,
+  statements: Record<string, StatementView>,
+  benchPresent: boolean,
+): BenchBlock | null {
+  if (card === null || !benchPresent) return null
+
+  const statement = statements[card.itemId]
+  if (statement === undefined) return null
+  // Stale rather than late. A statement carries the checkpoint it was raised against, and the same
+  // item raises a second checkpoint later in its life.
+  if (statement.cpIndex !== card.cpIndex) return null
+
+  if (statement.status === 'pending') {
+    return {
+      status: 'pending',
+      personId: statement.personId,
+      briefing: '',
+      objection: '',
+      citations: [],
+      because: '',
+      scripted: false,
+    }
+  }
+
+  if (statement.status === 'unanswered') {
+    return {
+      status: 'unanswered',
+      personId: statement.personId,
+      briefing: '',
+      objection: '',
+      citations: [],
+      // The kernel's sentence, passed through. It is the only place the wire says whether the bench
+      // was refused or simply never answered, and both are worth telling the player apart.
+      because: statement.reason,
+      scripted: false,
+    }
+  }
+
+  const scripted = statement.status === 'scripted'
+  return {
+    status: statement.status,
+    personId: statement.personId,
+    briefing: statement.briefing,
+    objection: statement.objection,
+    citations: statement.citations,
+    because: scripted ? fallbackSentence(statement.fallback) : '',
+    scripted,
+  }
 }

@@ -20,15 +20,17 @@ import { CompareAffordance } from './Comparison'
 import type { CompareSender } from './comparison-model'
 import { OptionConsequence } from './Consequence'
 import type { CommandSender } from './Panels'
-import { Described } from './Marking'
+import { Described, Scripted } from './Marking'
 import {
   type AssignableItem,
+  type BenchBlock,
   type PersonSchema,
   type StoppedCard,
   askPayload,
   askable,
   assignCost,
   assignableWork,
+  benchBlock,
   conversationHeader,
   personSchema,
   resolvePayload,
@@ -77,6 +79,11 @@ export function Conversation({ personId, onCommand, onCompare }: ConversationPro
   const answers = useRunStore((state) =>
     personId === null ? EMPTY_ANSWERS : (state.answers[personId] ?? EMPTY_ANSWERS),
   )
+  // Subscribed narrowly and combined outside the selector, rather than calling `stoppedCard` a
+  // second time inside one: the card is already selected above, and a selector that rebuilt it
+  // would do the tray scan twice per render for one value.
+  const statements = useRunStore(useShallow((state) => state.statements))
+  const benchPresent = useRunStore((state) => state.spend.benchPresent)
 
   // Genesis is written once and never replaced, so these are stable by reference and need no
   // shallow comparison.
@@ -87,6 +94,11 @@ export function Conversation({ personId, onCommand, onCompare }: ConversationPro
   // rather than subscribed to: the schema is scenario content, and a scenario is immutable for
   // the life of the run.
   const schema = useMemo(() => personSchema(personId, roster ?? {}), [personId, roster])
+
+  const bench = useMemo(
+    () => benchBlock(stopped, statements, benchPresent),
+    [stopped, statements, benchPresent],
+  )
 
   // Encoded to strings before it reaches the equality check, the way the panels do it: a
   // selector that returned the item objects would hand back fresh references on every call and
@@ -147,6 +159,11 @@ export function Conversation({ personId, onCommand, onCompare }: ConversationPro
           onCompare={onCompare}
         />
       )}
+
+      {/* Below the decision, never above it. The options are what the CEO walked over for and what
+          they can act on; a briefing is what they read while deciding. Above the card it would put
+          a paragraph — often a pending one — between the player and the only buttons on the panel. */}
+      {bench !== null && <Bench block={bench} name={header.name} />}
 
       {/* Only when they are free. Offering to hand new work to someone standing at a decision
           would invite the CEO to walk away from the thing they were summoned for. */}
@@ -383,6 +400,75 @@ function Decision({
         inPerson
         onCompare={onCompare}
       />
+    </section>
+  )
+}
+
+/**
+ * What the director says about the decision in front of the CEO (M14, M21).
+ *
+ * **Four states, one block, resolving in place.** The pending state is the one it spends most of its
+ * life in against a real provider, and it is a stated line rather than a spinner — a spinner says
+ * "wait", and the whole point is that the CEO is not waiting: the settle action on the card above is
+ * never disabled by anything here. Without the pending state a fast player settles before the
+ * briefing lands and the bench is decorative, and a slow provider reads as a broken panel.
+ *
+ * **The briefing and the objection are two blocks, because they arrived as two fields.** A bench that
+ * only agrees adds nothing to a decision the CEO was going to take anyway, so the objection is
+ * required — and rendering it as a second paragraph of the briefing would let the reader skim past
+ * the half that costs them something.
+ *
+ * **Canned prose carries the marking, and the reason is spelled out in words beside it.** Strip every
+ * hue from this panel and a scripted reply is still distinguishable from a briefing: the glyph, the
+ * label and the sentence all say so, and `data-scripted` is what the suite reads. That property is
+ * the whole reason the marking is a component rather than three lines of JSX.
+ */
+function Bench({ block, name }: { block: BenchBlock; name: string }) {
+  return (
+    <section className="conversation__bench" data-bench={block.status}>
+      <h3>
+        What {name} says
+        {block.scripted && <Scripted of={`what stands in for ${name}'s briefing`} />}
+      </h3>
+
+      {block.status === 'pending' && (
+        <p className="bench__pending" style={{ color: PAL.textFaint }}>
+          {name} is putting it together. Decide without them if you would rather.
+        </p>
+      )}
+
+      {block.status === 'unanswered' && (
+        <p className="bench__absent" style={{ color: PAL.textFaint }}>
+          Nothing came back from {name}. {block.because}
+        </p>
+      )}
+
+      {block.briefing !== '' && (
+        <>
+          <p className="bench__briefing">{block.briefing}</p>
+          {/* Labelled, because the objection is the half a reader would otherwise take for more of
+              the briefing — and it is the half that argues against what they are about to do. */}
+          <p className="bench__objection">
+            <span className="bench__label">Their objection</span>
+            {block.objection}
+          </p>
+        </>
+      )}
+
+      {block.because !== '' && block.status === 'scripted' && (
+        <p className="bench__because" style={{ color: PAL.textFaint }}>
+          {block.because}
+        </p>
+      )}
+
+      {/* Provenance, not links: nothing in this build resolves a sequence to its event yet — that is
+          the report's job (M55) — so these render as what they are, which is the evidence the
+          briefing was checked against. */}
+      {block.citations.length > 0 && (
+        <p className="bench__citations" style={{ color: PAL.textFaint }}>
+          Drawn from {block.citations.map((seq) => `#${seq}`).join(', ')}
+        </p>
+      )}
     </section>
   )
 }

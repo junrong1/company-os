@@ -205,6 +205,23 @@ describe('the composition', () => {
     expect(SHELL_CSS).toContain(".person[data-waiting='1']")
   })
 
+  it('gives the bench block no hue in any of its four states (M21, R36)', () => {
+    // The newest marking's rule, asserted where a hue would be added. A briefing is not a warning
+    // and a scripted reply is not an error: strip every colour from this block and a canned line
+    // must still be distinguishable from a director's view, which the glyph, the label and the
+    // sentence beside them carry. A hue here would move that distinction into something a reader
+    // has to see in colour to get.
+    const start = SHELL_CSS.indexOf('.conversation__bench')
+    expect(start).toBeGreaterThan(-1)
+    const block = SHELL_CSS.slice(start, SHELL_CSS.indexOf('.conversation__work', start))
+    expect(block.length).toBeGreaterThan(200)
+
+    expect(block).not.toMatch(/#[0-9a-fA-F]{3,6}/)
+    for (const hue of ['--zhuhong', '--cuilv', '--tianlan', '--chutaofenhong', '--tacit']) {
+      expect(block, `the bench block spends ${hue}`).not.toContain(hue)
+    }
+  })
+
   it('keeps the chrome compact enough to leave the office room', () => {
     // Not a pixel budget — a type-scale one. Nothing in the chrome is bigger than a metric's
     // own figure, so the band that describes the office cannot be taller than the office
