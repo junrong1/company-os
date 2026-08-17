@@ -479,3 +479,49 @@ field shape, then cross-references — because a cross-reference check reading a
 its own type check would report an invented failure about the real one. A phase-one refusal says so
 explicitly, so an author who fixes the first batch is not surprised by a second. Nothing is
 constructed in either phase.
+
+---
+
+## The command-publish defect, closed — and two holes beside it
+
+Fixed in `a69c304`, as its own unit rather than deferred, because it sat under every remaining unit
+that derives an event from a command: U10's statement answers, U15's authorizations, U16's forks,
+U25's decisions panel. Four more units would have passed their tests and not worked live.
+
+**It reached further than the register recorded.** `set_rate`'s `RATE_CHANGED` and `create_run`'s
+`GENESIS` were never published either — found by following the "every append publishes" invariant
+rather than by looking for them. `RATE_CHANGED` has had a live reducer branch at
+`frontend/src/net/store.ts:792` that **nothing had ever reached**, so a client's rate only ever came
+from its initial resume.
+
+The invariant is now structural rather than habitual: a test walks `loop.py`'s AST and requires every
+function that submits to the writer to also publish. That is why `_advance` publishes each quantum
+beside its own append instead of returning a batch for its caller to publish — a return value a
+caller must remember to pass on is a rule, and `_advance` has callers outside the tick loop.
+
+### Two holes it did not close, and one thing it enables
+
+**A connect can still lose events.** `backend/services/gateway/main.py:361-373` sends the resume
+backlog and *then* subscribes, so anything appended between the backlog read and the subscribe is
+delivered by neither. The publish fix neither creates nor closes this. It wants the subscribe to
+happen first and the backlog to be filtered against what the subscription already delivered.
+
+**Nothing auto-reconnects on `sequenceGap`.** The client detects a gap and shows its banner, and the
+server-side remedy exists (`read_events(after_seq=…)` returns the lost sequences), but recovery waits
+for the *next* reconnect rather than happening immediately. So the publish-failure path — bounded at
+`PUBLISH_HELD_BACK_BOUND = 256`, which converts a permanently silent stream into a detectable gap —
+leans on a recovery that is not automatic.
+
+**`_echo_position` is now correctable, and deliberately still not corrected.** Its register entry
+stands, but the two hard parts are now present: the loop handle is recorded, and there is a proven
+thread-crossing pattern. What remains is a control-frame variant of the crossing — a `POSITION_ECHO`
+carries no sequence, so it must *skip* the ordering rather than go through it — plus the call-site
+swap. The payload is already assembled inside the lock, which is the part that had to stay.
+
+### An orchestration note worth recording
+
+This agent was told the tree was its own, and it was not: U6 pass 2 was live in the same checkout,
+edited the same test file, and committed mid-task, moving the agent's baseline HEAD. It absorbed that
+by taking every measurement in a throwaway worktree at the old HEAD, which is the right instinct, but
+it cost effort and a false suspicion of its own change. Two agents in one checkout need their file
+sets checked against each other even when one of them is "just" a fix.
