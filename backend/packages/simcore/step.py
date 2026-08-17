@@ -1180,7 +1180,44 @@ def _statement_refusal(
             "director was thinking"
         )
 
-    return stmt.refusal(answer, authorized=authorized)
+    offered = _offered_at(state, request.owning_item, item.assignee)
+    if offered is None:
+        # The CEO settled the checkpoint from the tray while the director was thinking. A briefing
+        # about a decision already taken is refused rather than shown: there is nothing left for it
+        # to inform, and M18's and M19's predicates would be checked against options that are no
+        # longer on offer — which is a guard adjudicating a question nobody asked.
+        return (
+            "the checkpoint this statement is about is no longer open; it was settled while the "
+            "director was thinking, so there is no decision left for a briefing to inform"
+        )
+
+    return stmt.refusal(answer, authorized=authorized, offered=offered)
+
+
+def _offered_at(state: State, item_id: str, assignee: str) -> stmt.Offered | None:
+    """The checkpoint this item is stopped at, as the guards need to see it, or `None`.
+
+    **Derived here rather than read off the request, for the same reason the scope is.** The leg
+    builds its own from the genesis catalog and rejects early; this is the reading that decides, and
+    it comes from folded state so a tampered payload cannot widen what a statement may say. The two
+    agree because the catalog is a projection of exactly this authored content — `Offered` owns both
+    adapters so that agreement is one file's problem rather than two services'.
+
+    The index lives on the *person*, not the item: `cp_index` is where the assignee stopped, which is
+    also how `_open_checkpoint_in_line` finds a checkpoint to brief on in the first place. `None`
+    means there is no open checkpoint any more.
+    """
+    person = state.people.get(assignee)
+    if item_id not in state.items or person is None or person.cp_index < 0:
+        return None
+    # `.get` rather than `scenario.item`, which raises: an item created at runtime is not in the
+    # authored catalog, and a hiring item reaching here would take the clock down rather than decline
+    # a briefing. Those items carry no checkpoints, so `cp_index` is already `-1` for them — this is
+    # the guard for the case that stops being true.
+    spec = state.scenario.items_by_id.get(item_id)
+    if spec is None or not 0 <= person.cp_index < len(spec.checkpoints):
+        return None
+    return stmt.Offered.from_checkpoint(spec, person.cp_index)
 
 
 def _authorized_scope(state: State, director_id: str) -> stmt.Authorized:
