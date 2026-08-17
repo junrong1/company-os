@@ -713,3 +713,48 @@ edited the same test file, and committed mid-task, moving the agent's baseline H
 by taking every measurement in a throwaway worktree at the old HEAD, which is the right instinct, but
 it cost effort and a false suspicion of its own change. Two agents in one checkout need their file
 sets checked against each other even when one of them is "just" a fix.
+
+---
+
+## Where this stopped, and the order to resume in
+
+Twelve of twenty-five units, paused by decision with the tree clean and both suites green. Status per
+unit is in [`docs/2026-08-16-progress-checklist.md`](2026-08-16-progress-checklist.md); this is only
+the sequencing, because the dependency graph is no longer the plan's phase order.
+
+**Unblocked right now, and mutually disjoint enough to run in parallel:**
+
+- **U11** (four directors who brief and object) — the critical path. U10 left the guard module at
+  `simcore/statement.py` with the agents-side call site already live in `produce_statement`; U11 adds
+  M18's ranking predicate and M19's citation predicate *into that module*, plus the personas, the
+  prompts, the fallback content and the client's pending block. It gates U12 and U13.
+- **U16** (persistent forks) — file set is disjoint from U11's. It also inherits two findings: U9
+  left `lineage_root_id` set at creation needing only the parent's root copied at fork, and U10 found
+  `statement_request_id` is not run-scoped, so a parent and a fork at one tick mint the same id.
+- **U7** (choosing a scenario) — small, gates nothing, and everything it needs is ready
+  (`available()`, `resolve()`, and a `MINIMAL` scenario in `test_scenario.py`). It collides with
+  U11 on `Conversation.tsx` and U14 on `Panels.tsx`, so run it alone or first.
+
+**Then:** U14 behind U11 (both write `test_bench.py`), U12 and U13 behind U11, U15 behind U14, and
+U17/U18/U19/U25 behind U16. Phase F last, as the plan has it.
+
+**The one thing overdue against the plan's own reasoning is U13.** "The path most users take is the
+path CI proves" — and there is still no `.github/workflows`, so nothing verifies the keyless path or
+the first command. U13 is blocked on U11 only for its bench-suite job; its keyless job and its compose
+smoke job could run today. The `tsc` failure fixed in `2c38686` — a type error that sat in the tree
+while `npm test` stayed green, because vitest does not typecheck — is what the absence costs.
+
+### Orchestration notes worth carrying forward
+
+- **Five agents died mid-response on oversized tool calls**, one of them twice at the same point.
+  Instruct implementers to build large files in successive edits rather than one write. U6 was
+  eventually split into two passes for this reason, and the split turned out to cost nothing the plan
+  cared about: its reason for coupling the data move to the schema extension was to avoid
+  regenerating golden fixtures twice, and a loader with no callers regenerates them zero times.
+- **Two agents in one checkout need their file sets checked against each other**, including when one
+  of them is "just" a fix. Twice, two agents ended up in one test file; both times it was
+  recoverable by staging a single hunk, but both cost a false suspicion first.
+- **The most valuable thing a unit produced was usually not its deliverable.** Ask implementers for
+  the defects they found and deliberately did not fix, and for the plan claims that turned out to be
+  wrong — U2 disproved R16's expectation, U5 found the metric U5's own stated verification rests on is
+  near-insensitive, and U10 found four bugs by reviewing its own work.
