@@ -1,6 +1,6 @@
 """The tick loop: the kernel's clock, and the only thing that appends.
 
-Eight decisions here are load-bearing, and each prevents a failure that is hard to diagnose
+Nine decisions here are load-bearing, and each prevents a failure that is hard to diagnose
 from its symptom.
 
 **One task per active run, and its lifecycle follows the run's persisted rate — not the
@@ -76,6 +76,53 @@ falling behind means the clock runs slower than requested and the lag is reporte
 **Nothing is published before it is durable** (R20). A committed transaction can still roll back
 after power loss, so publishing before appending would leave the client's rendered world ahead
 of the authoritative log with nothing able to detect the divergence.
+
+**Every append publishes what it committed, and the order is decided on the event loop rather
+than by whichever thread got there first.** `_publish` used to have one caller — the tick loop —
+so a command's own events reached a connected client only as the *sequence gap* some later tick
+revealed. Measured on a live run: a hand-off answered `produced_seq: [3, 4]` and the client's
+applied sequence stayed at 2 until the director's arrival forty wall seconds later, then jumped to
+6 with the gap banner showing. Both dropped events were the assignment and the walk it caused,
+which is the whole of what makes delegation visible.
+
+Two things make that transport work rather than a missing line, and they are separate problems.
+
+*The thread boundary.* `apply_command` runs on a Starlette worker thread and `_advance` on an
+anyio one, while every subscriber queue is an `asyncio.Queue` belonging to the event loop — and
+`asyncio.Queue` is not thread-safe. So delivery is marshalled with `loop.call_soon_threadsafe`,
+which is the documented way in and the cheapest one: a deque append and, only when the loop is
+idle, one byte down its self-pipe. Not `run_coroutine_threadsafe`, which wants a coroutine there
+is no need for and hands back a future the committing thread would have to either discard or
+*wait* on — and waiting on the command path is what R13 forbids. The loop handle is recorded by
+`subscribe` and `ensure_loop`, both of which are on the loop by construction: the first hands out
+the loop-bound queue, the second calls `create_task`. (`_echo_position` still enqueues from a
+worker thread with no such hop. That is its own entry in the deferred defect register and is
+deliberately not fixed here.)
+
+*The ordering, which is the hard half.* `_advance` releases its lock before appending, so a
+command's mutation can happen after a tick's and its append can still land first — publish in
+whatever order the threads observe their own commits and sequence 4 goes out ahead of 3. The
+client treats a hole as a resync trigger, so a publish that ignored order would manufacture the
+very gap it was added to close. Order is therefore not left to thread scheduling: every committing
+thread hands its envelopes to the loop, and the loop alone decides. It holds back anything above
+`published_seq + 1` and releases only the contiguous run below it. One strictly increasing sequence
+per run reaches the wire whatever order the threads arrive in.
+
+The cursor sits behind a lock of its own, and the reason is worth stating because the lock does
+almost nothing in deployment: funnelling every committer onto the loop already makes the ordering
+single-threaded, so `publish_lock` covers only the two cases where the funnel is absent — a caller
+with no event loop at all, which the suite has, and the instant a loop is first recorded while
+another thread is inside. It is emphatically **not** `run.lock`: it is held for a few dictionary
+operations and a non-blocking enqueue, takes nothing else, and nothing inside it can want the run's
+lock — so no clock ever waits behind it and there is no order between the two to get wrong.
+
+That rests on one invariant, so it is stated rather than assumed: **every append site in this file
+publishes what it committed.** Per-run sequences are gapless by construction — `append_tick` reads
+the committed head and adds one, and an aborted tick commits nothing — so the held-back set always
+drains as long as nothing appends silently. There are four append sites here and each publishes;
+`test_every_append_in_this_file_publishes_what_it_committed` reads the file to keep that true.
+`RATE_CHANGED` is published for that reason as much as for its own sake: an unpublished sequence
+is a hole every later frame would wait behind forever.
 """
 
 from __future__ import annotations
@@ -200,6 +247,37 @@ CLOCK_SLOTS_BESIDES_RUNS = 1
 #: costs a warning rather than a restart loop.
 CLOCK_STALL_SECONDS = 5.0
 
+#: How many committed envelopes may wait for an earlier sequence before the publisher stops
+#: waiting for it and puts what it holds on the wire anyway.
+#:
+#: The valve exists because the alternative failure is silent and permanent. The held-back set
+#: drains as long as every committed sequence is published, which every append site here does —
+#: but `writer.submit` gives up on its own commit after 30 seconds and raises while the append may
+#: still land, and that one case leaves a sequence nobody will ever publish. Waiting for it would
+#: mean a stream that goes quiet for the rest of the run with nothing raised. Releasing instead
+#: costs a gap, and a gap has a remedy the client already ships: `sequenceGap` shows the banner and
+#: a reconnect resumes from the applied sequence.
+#:
+#: **The number only has to clear the legitimate maximum**, which is small and bounded by the
+#: single writer: a sequence is held only while an *earlier* commit is in flight between
+#: `writer.submit` returning and the loop running its callback, and the writer serialises commits,
+#: so what can pile up behind one is a batch's worth rather than a run's. 256 is two orders of
+#: magnitude above anything measured and still trips inside a minute on a real hole.
+PUBLISH_HELD_BACK_BOUND = 256
+
+
+def _the_loop_we_are_on() -> asyncio.AbstractEventLoop | None:
+    """The running loop, or `None` on a thread that has none.
+
+    A worker thread and the event loop are told apart here rather than by a flag a caller passes,
+    because the caller does not always know: `set_rate` is reached from the tick loop's own awaited
+    path, from a synchronous FastAPI route, and from a test, and each is a different answer.
+    """
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
 
 @dataclass(slots=True)
 class Diagnosis:
@@ -278,6 +356,29 @@ class RunLoop:
     achieved_ticks: int = 0
     #: Set when no subscriber has been attached since this instant.
     idle_since: float | None = field(default_factory=time.monotonic)
+    #: The highest sequence handed to this run's subscribers — the point the wire is caught up
+    #: to, whether or not anybody was listening. Initialised to the run's head, because that is
+    #: where a reconnecting client's resume leaves off too.
+    #:
+    #: **Read and written on the event loop only**, which is what makes the ordering lock-free.
+    #: See `_publish`.
+    published_seq: int = 0
+    #: Committed envelopes waiting for an earlier sequence, by sequence. Non-empty only while a
+    #: commit is in flight from another thread; see `PUBLISH_HELD_BACK_BOUND` for the one case
+    #: that would otherwise leave something here forever.
+    held_back: dict[int, Envelope] = field(default_factory=dict)
+    #: The publisher's own lock, over `published_seq` and `held_back` and nothing else.
+    #:
+    #: **Not `lock`, and the two must never be confused.** `lock` guards `run.state` and the tick
+    #: loop takes it dozens of times a batch, so R13's "nothing slow inside it" applies; this one
+    #: is held for a few dictionary operations and a non-blocking enqueue, by publishers only, and
+    #: nothing inside it takes `lock` — so there is no order between them to get wrong.
+    #:
+    #: Nearly always uncontended, because `_publish` normally funnels the ordering onto the event
+    #: loop and the loop is one thread. What it closes is the case where there is no loop to funnel
+    #: onto — a synchronous caller, which the suite has — and the moment one is recorded while
+    #: another thread is already inside.
+    publish_lock: threading.Lock = field(default_factory=threading.Lock)
     subscribers: set[asyncio.Queue] = field(default_factory=set)
     task: asyncio.Task | None = None
     exception: BaseException | None = None
@@ -310,6 +411,11 @@ class KernelRuntime:
         self._outcomes: dict[str, dict[str, dict[str, Any]]] = {}
         self._heartbeat: asyncio.Task | None = None
         self._store_reachable = True
+        #: The event loop every subscriber queue belongs to, recorded by `subscribe` and
+        #: `ensure_loop` — the two methods that are on it by construction. A publish from a
+        #: worker thread needs it to get back (see `_publish`); nothing else does, which is why
+        #: it is discovered rather than passed in through a constructor no caller would fill.
+        self._loop: asyncio.AbstractEventLoop | None = None
         #: Worker-thread slots the clock and the lease heartbeat draw from, and nothing else
         #: (R14). Grown by `ensure_loop`; never shrunk, because shrinking is where a limiter can
         #: be resized below what is already borrowed.
@@ -469,7 +575,7 @@ class KernelRuntime:
             grid=(state.floor.cols, state.floor.rows),
             horizon_tick=state.horizon_tick,
         )
-        self.writer.submit(
+        appended = self.writer.submit(
             run_id=run_id,
             emitted=genesis,
             lease_handle=self.lease,
@@ -479,6 +585,11 @@ class KernelRuntime:
 
         run = RunLoop(run_id=run_id, state=state)
         self.runs[run_id] = run
+        # Genesis, to the subscribers that cannot exist yet — nobody can subscribe to a run whose
+        # creation has not returned. Published anyway, because the invariant the publisher's
+        # ordering rests on is that *every* append here publishes, and an exception carved out for
+        # the one append that happens to be unobserved is an exception somebody has to keep true.
+        self._publish(run, appended.envelopes)
         return run
 
     def resume_run(self, run_id: str) -> RunLoop:
@@ -492,7 +603,17 @@ class KernelRuntime:
             events, at_live_head=True, through_tick=int(row["current_tick"])
         )
 
-        run = RunLoop(run_id=run_id, state=folded.state, rate=int(row["rate"]))
+        run = RunLoop(
+            run_id=run_id,
+            state=folded.state,
+            rate=int(row["rate"]),
+            # The wire starts caught up to the log, not at zero: a resumed run's first frame is
+            # the first thing it appends *after* the resume, and a client attaching to it resumes
+            # from this same head. Starting at zero would hold every one of those frames back
+            # waiting for sequences that were published — or were nobody's to publish — before
+            # this process existed.
+            published_seq=int(row["head_seq"]),
+        )
         self.runs[run_id] = run
         return run
 
@@ -509,6 +630,10 @@ class KernelRuntime:
         once, and the symptom would be a run whose clock is simply slower than the others'.
         """
         run = self.runs[run_id]
+        # Recorded here for the same reason the limiter is sized here: this is a place guaranteed
+        # to be on the event loop, because `create_task` below has nowhere else to run. `_advance`
+        # publishes from a worker thread and needs the handle to get back.
+        self._loop = asyncio.get_running_loop()
         self.clock_slots.total_tokens = max(
             self.clock_slots.total_tokens, len(self.runs) + CLOCK_SLOTS_BESIDES_RUNS
         )
@@ -603,6 +728,11 @@ class KernelRuntime:
             rules_ver=RULES_VERSION,
             tick=effective_tick,
         )
+        # A change of speed is something a connected client should see, and `RATE_CHANGED` has a
+        # reducer branch waiting for it that nothing ever reached. It is also load-bearing for the
+        # publisher rather than merely nice: an appended sequence that is never published is a hole
+        # the ordering cursor would wait behind for the rest of the run.
+        self._publish(run, appended.envelopes)
         log.info(
             "rate changed",
             extra={"run": run_id, "tick": effective_tick, "rate": rate, "was": previous},
@@ -612,8 +742,16 @@ class KernelRuntime:
     # --- subscriptions ----------------------------------------------------
 
     def subscribe(self, run_id: str) -> asyncio.Queue:
-        """Attach a read-only subscriber. Has no effect on simulation state (R18)."""
+        """Attach a read-only subscriber. Has no effect on simulation state (R18).
+
+        The queue it hands back belongs to the caller's event loop, so this is also where that
+        loop is recorded: it is the moment the runtime acquires something a worker thread must not
+        touch directly, and a publisher reaching it from off the loop needs the handle. Recorded
+        here as well as in `ensure_loop` because a paused run has no tick task and can still be
+        subscribed to and commanded.
+        """
         run = self.runs[run_id]
+        self._loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue(maxsize=1024)
         run.subscribers.add(queue)
         run.idle_since = None
@@ -628,7 +766,136 @@ class KernelRuntime:
             run.idle_since = time.monotonic()
 
     def _publish(self, run: RunLoop, envelopes: list[Envelope]) -> None:
-        """Deliver to subscribers. Called only after the append has committed (R20)."""
+        """Hand committed envelopes to the run's subscribers. Called after the append (R20).
+
+        **Every append site in this file calls this, and calling it is not optional.** The
+        ordering below releases a sequence only once every sequence before it has gone out, so an
+        append that returns without publishing is a hole every later frame waits behind. Four
+        sites: genesis, `set_rate`, `_advance` and `apply_command`.
+
+        **This is the thread boundary.** `_advance` runs on an anyio worker thread and
+        `apply_command` on a Starlette one; subscriber queues are `asyncio.Queue`, which is not
+        thread-safe. So the delivery is handed to the loop with `call_soon_threadsafe` — a deque
+        append and, when the loop is idle, one byte down its self-pipe. Not
+        `run_coroutine_threadsafe`: there is no coroutine to run, and its future would leave the
+        committing thread choosing between discarding it and waiting on it, and waiting here is
+        what R13 forbids.
+
+        The inline branch is not a shortcut, it is the same guarantee by a shorter route: when the
+        caller is already the loop, scheduling would only defer the identical call, and the
+        ordering state stays single-threaded either way.
+
+        With no loop recorded there is nothing loop-bound to be unsafe about — `subscribe` records
+        one before it hands out a queue — so the ordering runs on the calling thread. That is the
+        path a synchronous test takes, and it is the one `run.publish_lock` exists for: it is the
+        only path on which two threads can reach the cursor.
+
+        **A publish that fails must not fail the append.** The events are durable by the time this
+        runs, the run has moved on, and the client's remedy for a missing frame is the resync it
+        already ships. So nothing here propagates: a raise would otherwise turn a committed command
+        into a 500, or kill the tick task and stop the clock over an undelivered frame.
+        """
+        if not envelopes:
+            return
+
+        loop = self._loop
+        if loop is None or _the_loop_we_are_on() is loop:
+            self._sequence_and_deliver(run, tuple(envelopes))
+            return
+
+        try:
+            loop.call_soon_threadsafe(self._sequence_and_deliver, run, tuple(envelopes))
+        except RuntimeError as exc:
+            # The loop is closed, which means the process is going down; the events are in the log
+            # and no client is reading. Logged rather than raised, because the append succeeded.
+            log.warning(
+                "could not reach the event loop to publish; the events are durable and a "
+                "reconnect resumes from the sequence",
+                extra={"run": run.run_id, "error": str(exc)},
+            )
+
+    def _sequence_and_deliver(self, run: RunLoop, envelopes: tuple[Envelope, ...]) -> None:
+        """Release the contiguous run of committed sequences, and hold back the rest.
+
+        **This is the ordering guarantee, and it is the whole of it.** `_advance` releases the run
+        lock before it appends, so a command's mutation can happen after a tick's while its append
+        lands first — and the client treats any hole as a resync trigger, so publishing in the
+        order threads happen to observe their commits would manufacture the gap this was written to
+        close. Nothing here depends on which thread arrived first: anything above `published_seq`
+        is parked, and only the unbroken run from `published_seq + 1` upwards goes out. Since each
+        call starts where the last one finished, the frames a run's subscribers see are one
+        strictly increasing sequence with no hole in it.
+
+        **Under the publisher's own lock, never the run's.** In deployment this is redundant:
+        `_publish` funnels every off-loop caller onto the event loop, and the loop is one thread. It
+        is here for the two cases where that funnel does not exist — a caller with no event loop at
+        all, which the suite has, and the instant a loop is first recorded while another thread is
+        already inside. Leaving those uncovered would make the ordering claim above true of
+        deployment and false of the code, which is not a distinction worth relying on. It is a
+        different lock from `run.lock` for a reason R13 makes concrete: this one is held for a few
+        dictionary operations and a non-blocking enqueue and takes nothing else, so no clock waits
+        behind it, and nothing inside it can want the run's lock.
+
+        Delivery happens inside the lock as well, so what reaches the wire is in cursor order and
+        not merely computed in it — releasing the lock first would let two threads compute correct
+        batches and then hand them over backwards.
+
+        The cursor advances **before** delivery, deliberately. If delivery raises, the frame is
+        lost and the client sees a gap it already knows how to recover from; leaving the cursor
+        behind instead would hold every later frame back forever, which is a stream that goes
+        quiet with nothing raised.
+        """
+        try:
+            with run.publish_lock:
+                self._release_what_is_ready(run, envelopes)
+        except Exception as exc:  # noqa: BLE001 - a publish never fails what is already durable
+            log.error(
+                "could not publish a run's events; they are durable and a reconnect resumes "
+                "from the sequence",
+                extra={"run": run.run_id, "error": f"{type(exc).__name__}: {exc}"},
+            )
+
+    def _release_what_is_ready(self, run: RunLoop, envelopes: tuple[Envelope, ...]) -> None:
+        """Park what is early, hand over the unbroken run. Called under `run.publish_lock`."""
+        for envelope in envelopes:
+            if envelope.seq > run.published_seq:
+                run.held_back[envelope.seq] = envelope
+
+        ready: list[Envelope] = []
+        while (following := run.published_seq + 1) in run.held_back:
+            ready.append(run.held_back.pop(following))
+            run.published_seq = following
+
+        if len(run.held_back) > PUBLISH_HELD_BACK_BOUND:
+            ready.extend(self._stop_waiting_for_a_lost_sequence(run))
+
+        if ready:
+            self._deliver(run, ready)
+
+    def _stop_waiting_for_a_lost_sequence(self, run: RunLoop) -> list[Envelope]:
+        """Give up on a sequence that is never coming, and say so.
+
+        Reachable through one door: `writer.submit` abandons its own commit after 30 seconds and
+        raises while the append may still land, so its caller never publishes what the store
+        nonetheless holds. Waiting for that sequence forever means a stream that goes silent for
+        the rest of the run with nothing raised — strictly worse than a gap, which the client
+        detects and recovers from. See `PUBLISH_HELD_BACK_BOUND` for the size.
+        """
+        released = [run.held_back.pop(seq) for seq in sorted(run.held_back)]
+        run.published_seq = released[-1].seq
+        log.warning(
+            "a committed sequence was never published, so the events behind it are being "
+            "released with a gap; the client detects it and a reconnect resumes from there",
+            extra={
+                "run": run.run_id,
+                "released": len(released),
+                "through_seq": run.published_seq,
+            },
+        )
+        return released
+
+    def _deliver(self, run: RunLoop, envelopes: list[Envelope]) -> None:
+        """Fan one ordered batch out to every subscriber."""
         for envelope in envelopes:
             for queue in list(run.subscribers):
                 try:
@@ -693,8 +960,16 @@ class KernelRuntime:
             # borrow all forty of its slots and leave the clock waiting for a thread — which does
             # not raise and does not appear as lag until the catch-up clamp binds. A disjoint
             # limiter is not a larger allowance, it is one commands cannot reach into.
+            #
+            # The batch publishes its own quanta as it commits them, rather than handing them
+            # back here to be published together. Two reasons, and the second is the load-bearing
+            # one. A batch is up to 120 quanta, so publishing at the end delays a client's frames
+            # by the whole batch for no gain. And the publisher's ordering rests on every append
+            # publishing what it committed — a return value the caller has to remember to pass on
+            # is a rule, while a publish beside the append is a fact, and `_advance` has callers
+            # outside this loop.
             try:
-                envelopes = await anyio.to_thread.run_sync(
+                await anyio.to_thread.run_sync(
                     self._advance, run, batch, limiter=self.clock_slots
                 )
             except Exception:
@@ -710,13 +985,18 @@ class KernelRuntime:
                 # for and the tick is what actually happened.
                 run.progress_tick = run.state.tick
                 run.progress_at = time.monotonic()
-            self._publish(run, envelopes)
 
     def _advance(self, run: RunLoop, ticks: int) -> list[Envelope]:
         """Run `ticks` quanta, appending each one in its own transaction.
 
-        One transaction per tick (R21), through the single writer (R35). Returns the committed
-        envelopes so the caller can publish them — after they are durable, never before.
+        One transaction per tick (R21), through the single writer (R35). Each quantum is published
+        as soon as it is durable and never before, and the committed envelopes are returned as
+        well, for the callers that assert on what a batch produced.
+
+        **Publishing beside the append rather than through the return value** is what makes "every
+        append publishes" a fact instead of a convention every caller has to honour — and
+        `_advance` has callers outside the tick loop, including in the suite, which is precisely
+        where a forgotten publish would leave a sequence nobody ever puts on the wire.
 
         **The lock is taken once per quantum and released before the append** (R13). Per quantum
         because a partly advanced batch is a consistent state, so there is nothing to gain from
@@ -731,6 +1011,10 @@ class KernelRuntime:
         commands enqueued onto the tick loop rather than applied from the request thread, which
         is a different design and not this one. What is closed here is the one that corrupts: two
         threads inside `run.state` at the same instant.
+
+        The *transport* consequence of that window is closed, though, and separately: two threads
+        committing on one run can reach `_publish` in either order, and it releases sequences in
+        sequence order regardless. See `_sequence_and_deliver`.
 
         The tick each append is stamped with is read under the lock, so a command applied at
         tick 100 is recorded at tick 100 rather than at whatever the clock reached while its
@@ -780,6 +1064,7 @@ class KernelRuntime:
                 rules_ver=RULES_VERSION,
                 tick=at_tick,
             )
+            self._publish(run, result.envelopes)
             committed.extend(result.envelopes)
 
         return committed
@@ -1000,6 +1285,13 @@ class KernelRuntime:
             # to refuse; what was wrong is that the refusal reached the client as an opaque 500
             # instead of the sentence it already carries.
             raise sim.CommandRejected(str(ended)) from None
+
+        # The events this command produced, to the client that issued it. Nothing did this before,
+        # so a command's own outcome reached its client only as the sequence gap a later tick
+        # exposed — and a hand-off's walk, which is the delegation itself, was never rendered at
+        # all. This runs on the request thread, so it hops to the event loop and is ordered
+        # against the tick loop's own commits there; see `_publish`.
+        self._publish(run, result.envelopes)
 
         self._outcomes.setdefault(run_id, {})
         return result.envelopes

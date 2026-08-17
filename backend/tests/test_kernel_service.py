@@ -164,17 +164,24 @@ async def test_events_are_appended_and_published(runtime) -> None:
 
 
 async def test_nothing_is_published_before_it_is_durable(runtime) -> None:
-    """R20, asserted structurally.
+    """R20, asserted structurally, at every place that publishes.
 
     Publishing before appending would leave the client's rendered world ahead of the
     authoritative log with nothing able to detect the divergence.
+
+    It used to read `_run_loop`, which published a batch after `_advance` handed it back. The
+    publish moved *into* the append sites — `_advance` publishes each quantum as it commits it and
+    `apply_command` publishes its own events, which is what stops a command's outcome reaching its
+    client only as a sequence gap. So the same property is now asserted where the appends are, and
+    at both of them rather than at the one that happened to exist.
     """
     import inspect
 
-    source = inspect.getsource(KernelRuntime._run_loop)
-    publish_at = source.index("self._publish")
-    advance_at = source.index("self._advance")
-    assert advance_at < publish_at, "publish happens before the append returns"
+    for owner in (KernelRuntime._advance, KernelRuntime.apply_command):
+        source = inspect.getsource(owner)
+        assert source.index("self.writer.submit") < source.index("self._publish"), (
+            f"{owner.__name__} publishes before its append returns"
+        )
 
 
 # =========================================================================
@@ -1403,3 +1410,413 @@ async def test_a_comparison_is_the_same_comparison_after_the_move(runtime, monke
         "the branches stopped somewhere other than the comparison bound, so 'same bound' is "
         "asserted against the wrong thing"
     )
+
+
+# =========================================================================
+# A command's own events reach the client that issued it, in order
+# =========================================================================
+#
+# `_publish` had one caller — the tick loop — so a command's events were appended, returned to
+# the gateway, and never put on the wire. The client learned about them as a *sequence gap* on
+# some later tick. Measured on a live run through `single_process.py`: a hand-off answered
+# `produced_seq: [3, 4]` and the client's applied sequence stayed at 2 until the director's
+# arrival forty wall seconds later, then jumped to 6 with the gap flag set.
+#
+# Every assertion below is on **the frames a subscriber actually received**, never on what
+# `apply_command` returned. The defect was invisible precisely because the return value was
+# always right: the events existed, were correct, were logged, and rendered when injected. Only
+# the transport was missing, so only the transport is asserted.
+
+
+def _drain(queue: asyncio.Queue) -> list:
+    """Everything a subscriber can read right now, in the order the publisher wrote it."""
+    frames = []
+    while True:
+        try:
+            frames.append(queue.get_nowait())
+        except asyncio.QueueEmpty:
+            return frames
+
+
+def _an_envelope_at(seq: int):
+    """One envelope at a chosen sequence, for the publisher tests that need a hole in the run.
+
+    Built rather than appended, because what is under test is what the publisher does with a
+    sequence it has been handed — and the situations that produce a hole (a store commit the writer
+    stopped waiting for) cannot be appended into existence.
+    """
+    from contracts.envelope import build
+
+    return build(
+        seq=seq,
+        tick=seq,
+        kind=EventKind.METRICS_APPLIED,
+        rules_ver="test",
+        payload={"tick": seq},
+        run_id=RUN,
+    )
+
+
+def _event_seqs(frames: list) -> list[int]:
+    """The sequences of the event frames, in arrival order.
+
+    `POSITION_ECHO` is filtered out rather than tolerated: it is a control frame carrying derived
+    state and no sequence at all, which is why the client applies it outside the sequence guard.
+    Including it here would make "in sequence order" a claim about two different things.
+    """
+    return [frame.seq for frame in frames if not isinstance(frame, dict)]
+
+
+def _assert_one_rising_sequence(seqs: list[int], description: str) -> None:
+    """No gap and no inversion — the two things the client cannot recover from silently.
+
+    The client's rule is exact: a frame at `applied + 1` is applied, a lower one is dropped as a
+    resume replay, and anything higher sets `sequenceGap` and shows the banner. So "ordered" here
+    means contiguous *and* rising, which is one statement about `range`.
+    """
+    assert seqs, f"{description}: the client received no events at all"
+    assert seqs == list(range(seqs[0], seqs[0] + len(seqs))), (
+        f"{description}: the client received {seqs[:12]}… which is not one rising contiguous "
+        "sequence. A hole is a gap the client cannot tell from a lost event, and an inversion is "
+        "a hole for as long as it lasts"
+    )
+
+
+async def _a_ticking_run_with_a_client(runtime) -> tuple[RunLoop, asyncio.Queue]:
+    """A run at the base rate with its clock running and one subscriber attached.
+
+    The base rate rather than `LOAD_RATE`, and a long horizon: what these tests need is a clock
+    that is genuinely running while a command is applied, not one that is running fast.
+    """
+    runtime.create_run(RUN, SEED, horizon_tick=simtime.TICKS_PER_SIM_DAY * 200)
+    queue = runtime.subscribe(RUN)
+    runtime.ensure_loop(RUN)
+    # Long enough for the loop to reach its cadence and publish at least one tick, so what
+    # follows is measured against a live stream rather than a cold one.
+    await asyncio.sleep(0.2)
+    return runtime.runs[RUN], queue
+
+
+async def test_a_commands_events_reach_a_connected_client_with_no_sequence_gap(runtime) -> None:
+    """The defect itself, asserted on the wire rather than on the return value.
+
+    Before the fix the command's sequences were simply absent from everything the subscriber
+    received, and the frames around them were *not* contiguous — the client's own gap test fires
+    on exactly that.
+    """
+    run, queue = await _a_ticking_run_with_a_client(runtime)
+
+    produced = await anyio.to_thread.run_sync(
+        lambda: runtime.apply_command(
+            RUN,
+            kernel_pb2.ASSIGN_WORK,
+            canonical.encode({"item": "wi_ap_map", "via_manager": True}),
+        )
+    )
+    assert len(produced) == 2, "a hand-off produces the assignment and the walk it causes"
+
+    received: list = []
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        received.extend(_drain(queue))
+        if {envelope.seq for envelope in produced} <= set(_event_seqs(received)):
+            break
+
+    seqs = _event_seqs(received)
+    for envelope in produced:
+        assert envelope.seq in seqs, (
+            f"{envelope.kind.name} at sequence {envelope.seq} was appended and returned to the "
+            "caller but never reached the connected client"
+        )
+    _assert_one_rising_sequence(seqs, "a hand-off on a ticking run")
+
+
+async def test_a_handoff_reaches_a_client_while_the_walk_is_still_in_progress(runtime) -> None:
+    """M62: a live run shows delegation as a walk, and the walk *is* the delegation.
+
+    This is the sharp one, because it is the assertion the plan's verification rests on and the
+    one that was false in a way nothing showed. U3's verification was half a live one: the walk
+    **home**, produced by the step when the director arrives, travelled the real wire and
+    rendered; the walk **out**, produced by the command, was dropped. So the visible half was the
+    consequence of the delegation and the invisible half was the delegation.
+
+    Arrival is not good enough and that is the whole point of the timing assertion. The walk is
+    over a hundred ticks long — several wall seconds at the base rate — so a frame that arrives
+    "eventually" arrives after the figure has already crossed the floor, which is the forty
+    seconds U3 measured. What is asserted is that the client holds the walk while the director is
+    still on it, with most of the path left to draw.
+    """
+    run, queue = await _a_ticking_run_with_a_client(runtime)
+
+    produced = await anyio.to_thread.run_sync(
+        lambda: runtime.apply_command(
+            RUN,
+            kernel_pb2.ASSIGN_WORK,
+            canonical.encode({"item": "wi_ap_map", "via_manager": True}),
+        )
+    )
+    walk = next(e for e in produced if e.kind is EventKind.STAFF_MOVED)
+    payload = walk.decoded_payload()
+    director = payload["person"]
+    started_at = int(payload["start_tick"])
+    full_walk = simtime.walk_duration_ticks(len(payload["path"]))
+    assert full_walk > 4 * simtime.TICKS_PER_WALL_SECOND_AT_BASE_RATE, (
+        f"the hand-off walk is only {full_walk} ticks, so 'while the walk is in progress' is not "
+        "a meaningful window on this floor plan and this test proves nothing"
+    )
+
+    received: list = []
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        received.extend(_drain(queue))
+        if walk.seq in _event_seqs(received):
+            break
+
+    # Read the instant the frame is in hand, not afterwards: the director keeps walking while the
+    # assertions run, so a later read would answer a question about the test's own duration.
+    elapsed = run.state.tick - started_at
+    walker = run.state.person(director)
+
+    assert walk.seq in _event_seqs(received), (
+        f"the walk that is the delegation ({director} carrying {payload['item']}) never reached "
+        "the client. It was appended at sequence "
+        f"{walk.seq} and returned to the caller, which is what made this invisible"
+    )
+    assert walker.state == sim.STATE_WALKING and walker.path, (
+        f"{director} had already finished the walk by the time the client heard about it — "
+        f"{elapsed} of {full_walk} ticks gone. That is U3's measurement, not a fix"
+    )
+    assert elapsed < full_walk // 2, (
+        f"the client received the walk {elapsed} ticks into a {full_walk}-tick walk; more than "
+        "half of it was already over, so the figure would jump rather than cross the floor"
+    )
+    _assert_one_rising_sequence(_event_seqs(received), "the walk that is the delegation")
+
+
+async def test_commands_beside_a_ticking_clock_interleave_into_one_rising_sequence(
+    runtime,
+) -> None:
+    """The ordering half, which is the one that is delicate rather than incidental.
+
+    `_advance` releases the run's lock before it appends, so a command's mutation can happen after
+    a tick's and its append can still land first — and both threads then race to publish. A
+    publisher that put frames out in the order the threads observed their own commits would emit
+    sequence 4 before 3, which the client cannot tell from a lost event: it sets `sequenceGap` and
+    shows the banner. So the naive fix manufactures the gap it was written to close, and it does it
+    only under contention, which is exactly the kind of failure that ships.
+
+    U4's harness, U4's load and U4's window, deliberately. Eighty commands paced against a rate-3
+    clock over two seconds is two threads committing on one run continuously for the whole window —
+    enough collisions to have inverted, where a single command would be luck either way. What is
+    read is the subscriber's queue, drained concurrently, so the claim is about frames on the wire
+    and not about the two lists the kernel happened to return.
+    """
+    runtime.create_run(RUN, SEED, horizon_tick=simtime.TICKS_PER_SIM_DAY * 200)
+    run = runtime.runs[RUN]
+    queue = runtime.subscribe(RUN)
+    runtime.set_rate(RUN, LOAD_RATE)
+    runtime.ensure_loop(RUN)
+    await asyncio.sleep(0.4)
+
+    received: list = []
+
+    async def read_the_client() -> None:
+        # Drained continuously rather than at the end: the subscriber queue holds 1024 frames and
+        # a full one drops the subscriber, which would end the measurement early and silently.
+        while True:
+            received.extend(_drain(queue))
+            await asyncio.sleep(0.005)
+
+    reader = asyncio.create_task(read_the_client(), name="a-client-reading")
+    try:
+        _, _, _, delivered = await _clock_under(
+            runtime,
+            run,
+            lambda: runtime.apply_command(
+                RUN,
+                kernel_pb2.SUBMIT_CEO_INPUT,
+                canonical.encode({"bitmask": 1, "at_tick": run.state.tick + 30}),
+            ),
+            paced=True,
+        )
+    finally:
+        reader.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await reader
+    received.extend(_drain(queue))
+
+    assert delivered >= 2 * COMMANDS_PER_SECOND, (
+        f"only {delivered} commands were issued over the window, which is too few collisions for "
+        "this to have failed before the ordering was fixed"
+    )
+    seqs = _event_seqs(received)
+    assert len(seqs) > delivered, (
+        f"the client received {len(seqs)} events against {delivered} commands, so the tick loop "
+        "was not publishing alongside them and nothing was interleaved"
+    )
+    _assert_one_rising_sequence(
+        seqs, f"{delivered} commands against a rate-{LOAD_RATE} clock"
+    )
+
+
+async def test_a_publish_that_raises_leaves_the_command_applied_and_the_append_durable(
+    runtime, monkeypatch
+) -> None:
+    """A frame that cannot be delivered is a frame, not a failed command.
+
+    The append has already committed by the time anything is published, and the client's remedy for
+    a missing frame is the resume it already ships. So a raising delivery must cost exactly one
+    frame: not a 500 on a command that succeeded, and not a stream that goes quiet for the rest of
+    the run because the publisher is still waiting for a sequence nobody will send.
+
+    That second half is the one worth stating. The cursor advances *before* delivery precisely so a
+    lost frame becomes a gap — which the client detects and recovers from — rather than a hole every
+    later frame queues behind, which is silent.
+    """
+    run, queue = await _a_ticking_run_with_a_client(runtime)
+
+    def the_socket_went_away(self, run, envelopes):
+        raise RuntimeError("the subscriber's queue is gone")
+
+    monkeypatch.setattr(KernelRuntime, "_deliver", the_socket_went_away)
+    _drain(queue)
+
+    produced = await anyio.to_thread.run_sync(
+        lambda: runtime.apply_command(
+            RUN,
+            kernel_pb2.ASSIGN_WORK,
+            canonical.encode({"item": "wi_ap_map", "via_manager": True}),
+        )
+    )
+
+    assert len(produced) == 2, "the command was refused because its publish failed"
+    logged = {envelope.seq for envelope in runtime.store.read_events(RUN)}
+    assert {envelope.seq for envelope in produced} <= logged, "the append did not survive"
+    assert not _event_seqs(_drain(queue)), "a delivery that raised delivered something anyway"
+
+    # The client's remedy, exercised rather than asserted about: a resume asking for everything
+    # after the last sequence it applied returns the frames it missed.
+    first_lost = min(envelope.seq for envelope in produced)
+    resumed = runtime.store.read_events(RUN, after_seq=first_lost - 1)
+    assert {envelope.seq for envelope in produced} <= {e.seq for e in resumed}, (
+        "the events lost to a failed publish are not recoverable by resume, which is the only "
+        "remedy the client has"
+    )
+
+    # And the stream is not stalled behind the frames that were lost. Asserted through a second
+    # command rather than by waiting for the clock: at the base rate the next event a tick emits
+    # can be a hundred quanta away, so a wait would be measuring the scenario's event density.
+    monkeypatch.undo()
+    after = await anyio.to_thread.run_sync(
+        lambda: runtime.apply_command(
+            RUN,
+            kernel_pb2.SUBMIT_CEO_INPUT,
+            canonical.encode({"bitmask": 1, "at_tick": run.state.tick + 30}),
+        )
+    )
+    arrived: list[int] = []
+    for _ in range(100):
+        await asyncio.sleep(0.02)
+        arrived.extend(_event_seqs(_drain(queue)))
+        if {envelope.seq for envelope in after} <= set(arrived):
+            break
+
+    assert {envelope.seq for envelope in after} <= set(arrived), (
+        "nothing reached the client after a failed publish, so the ordering cursor is waiting "
+        "behind the lost sequence — a stream that goes quiet with nothing raised is strictly "
+        "worse than the gap a lost frame leaves"
+    )
+    assert min(arrived) > max(envelope.seq for envelope in produced), (
+        "a frame at or below a lost sequence was delivered, so the cursor did not move past it"
+    )
+
+
+async def test_every_append_in_this_file_publishes_what_it_committed() -> None:
+    """The invariant the ordering rests on, enforced rather than remembered.
+
+    A sequence is released only once every sequence before it has gone out, so an append that
+    returns without publishing is not one lost frame — it is a hole every later frame waits behind
+    for the rest of the run, with nothing raised. That makes "publish beside the append" a
+    structural property of this file rather than a habit, and the four sites are genesis,
+    `set_rate`, `_advance` and `apply_command`.
+
+    **A unit adding a fifth append should extend nothing here — it should publish.** This test is
+    written to pass for free in that case and to fail loudly otherwise.
+    """
+    import ast
+    import inspect
+
+    from kernel import loop as loop_module
+
+    def calls(node, attribute: str) -> bool:
+        return any(
+            isinstance(inner, ast.Call)
+            and isinstance(inner.func, ast.Attribute)
+            and inner.func.attr == attribute
+            for inner in ast.walk(node)
+        )
+
+    tree = ast.parse(inspect.getsource(loop_module))
+    appenders = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and calls(node, "submit")
+    ]
+
+    assert len(appenders) == 4, (
+        f"{len(appenders)} functions append, not the four this file documents "
+        f"({', '.join(node.name for node in appenders)}). Either an append was added without a "
+        "publish, or one was removed and the module docstring is now wrong"
+    )
+    silent = [node.name for node in appenders if not calls(node, "_publish")]
+    assert not silent, (
+        "these append without publishing what they committed, which leaves a sequence the "
+        "publisher waits behind forever: " + ", ".join(silent)
+    )
+
+
+async def test_a_sequence_nobody_publishes_is_given_up_on_rather_than_waited_for(
+    runtime, monkeypatch
+) -> None:
+    """The one door into a permanent hole, and what it costs when somebody walks through it.
+
+    Holding a sequence back until the one before it arrives is right while that one is in flight
+    and wrong forever if it never was. `writer.submit` abandons its own commit after thirty
+    seconds and raises while the append may still land, so its caller never publishes what the
+    store nonetheless holds — and every later frame would then queue behind a sequence that is
+    never coming. A stream that goes quiet with nothing raised is worse than a gap, because a gap
+    is what the client detects and recovers from.
+
+    The hole is manufactured rather than waited for: a thirty-second store timeout is not
+    something to reproduce, and what is under test is the publisher's behaviour when it exists.
+    """
+    monkeypatch.setattr(loop_module, "PUBLISH_HELD_BACK_BOUND", 4)
+    runtime.create_run(RUN, SEED)
+    run = runtime.runs[RUN]
+    queue = runtime.subscribe(RUN)
+
+    lost = run.published_seq + 1
+    bound = loop_module.PUBLISH_HELD_BACK_BOUND
+    behind = [_an_envelope_at(lost + offset) for offset in range(1, bound + 2)]
+
+    # One at a time, so the wait is observable before the bound is crossed.
+    for envelope in behind[:bound]:
+        runtime._publish(run, [envelope])
+    assert not _event_seqs(_drain(queue)), (
+        "frames were released while an earlier sequence was still outstanding, which is the "
+        "inversion the ordering exists to prevent"
+    )
+    assert len(run.held_back) == bound
+
+    runtime._publish(run, behind[bound:])
+
+    released = _event_seqs(_drain(queue))
+    assert released == sorted(released), f"released {released}, which is not in sequence order"
+    assert released == [envelope.seq for envelope in behind], (
+        f"released {released} rather than everything behind the hole, {[e.seq for e in behind]}"
+    )
+    assert lost not in released, "the sequence that was never committed was invented"
+    assert run.published_seq == max(released), (
+        "the cursor did not follow what was released, so the next frame would be held back too"
+    )
+    assert not run.held_back, "something is still being waited for after the bound was reached"
