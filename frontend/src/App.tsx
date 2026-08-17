@@ -2,9 +2,11 @@ import { useCallback, useEffect, useState } from 'react'
 import './App.css'
 import {
   GatewayUnreachable,
+  type ScenarioChoice,
   type ServiceStatus,
   createRun,
   fetchGatewayStatus,
+  fetchScenarios,
 } from './net/gateway'
 import { useRunStore } from './net/store'
 import { rememberRunInLocation, runIdFromLocation } from './net/runid'
@@ -25,11 +27,26 @@ import { Shell } from './ui/Shell'
 /** How long to wait for the gateway to create a run before saying it did not answer. */
 const CREATE_RUN_TIMEOUT_MS = 10_000
 
+/**
+ * The name the backend gives its shipped company, used only to *preselect* it in the picker.
+ *
+ * Never used as a value to send when the list has not arrived. "We could not ask which companies
+ * exist" and "the user chose the shipped one" are different states, and collapsing them would have
+ * the client assert a name it never learned — which is wrong the first time a deployment's default
+ * is called something else.
+ */
+const SHIPPED_SCENARIO = 'default'
+
 export default function App() {
   const [runId, setRunId] = useState(() =>
     typeof window === 'undefined' ? null : runIdFromLocation(window.location.search),
   )
   const [status, setStatus] = useState<ServiceStatus | null>(null)
+  const [scenarios, setScenarios] = useState<ScenarioChoice[]>([])
+  // Empty means no choice has been made — the server picks. It stays empty for as long as the
+  // list has not arrived, so a backend that cannot list its companies still starts a run of
+  // whichever one it considers its own default.
+  const [chosen, setChosen] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [starting, setStarting] = useState(false)
 
@@ -53,6 +70,22 @@ export default function App() {
         setError(cause instanceof GatewayUnreachable ? cause.message : String(cause))
       })
 
+    // Its own failure path, and deliberately a quiet one: the choice is an offer, and a
+    // backend that cannot list its companies can still start a run of the shipped one. Raising
+    // this as the page's error would replace a working start button with a diagnostic.
+    fetchScenarios(controller.signal)
+      .then((offered) => {
+        setScenarios(offered)
+        // Preselect the shipped company where it is on offer, and otherwise the first one that
+        // would actually load — so the button never starts by submitting a name the server has
+        // already said it will refuse.
+        const playable = offered.filter((entry) => entry.loadable)
+        if (playable.length === 0) return
+        const shipped = playable.find((entry) => entry.id === SHIPPED_SCENARIO)
+        setChosen((shipped ?? playable[0]).id)
+      })
+      .catch(() => setScenarios([]))
+
     return () => controller.abort()
   }, [runId])
 
@@ -66,7 +99,7 @@ export default function App() {
     const controller = new AbortController()
     const timeout = window.setTimeout(() => controller.abort(), CREATE_RUN_TIMEOUT_MS)
 
-    createRun({}, controller.signal)
+    createRun({ scenario: chosen }, controller.signal)
       .then((run) => {
         // Cleared before attaching, not after: the store still holds the finished run, and the
         // shell would render its terminal banner and its old floor over the new run until the
@@ -91,7 +124,7 @@ export default function App() {
         window.clearTimeout(timeout)
         setStarting(false)
       })
-  }, [reset])
+  }, [reset, chosen])
 
   if (runId !== null) return <Shell key={runId} runId={runId} onStartRun={start} />
 
@@ -102,6 +135,11 @@ export default function App() {
         <p className="sub">
           Start a run, or open <code>?run=&lt;id&gt;</code> to attach to one.
         </p>
+
+        {scenarios.length > 0 && (
+          <Companies chosen={chosen} offered={scenarios} onChoose={setChosen} />
+        )}
+
         <button type="button" onClick={start} disabled={starting}>
           {starting ? 'Starting…' : 'Start a run'}
         </button>
@@ -149,5 +187,58 @@ export default function App() {
 
       {!status && !error && <p className="sub">contacting gateway…</p>}
     </main>
+  )
+}
+
+/**
+ * Which company to start.
+ *
+ * Radios rather than a select, because the choice is between two descriptions and a select
+ * shows one line of one of them. What separates these companies is the summary — nine people
+ * against ten, a returns pile against a duplicate order entry — and a picker that hid it would
+ * be asking somebody to choose between two names.
+ *
+ * A file the loader refuses is shown disabled with its reason. It cannot be started, and it
+ * would be worse to omit it: the author of a scenario that will not load is exactly the person
+ * standing in front of this list, and a silently missing file reads as a file that never saved.
+ */
+function Companies({
+  chosen,
+  offered,
+  onChoose,
+}: {
+  chosen: string
+  offered: ScenarioChoice[]
+  onChoose: (id: string) => void
+}) {
+  return (
+    <fieldset className="companies">
+      <legend>Company</legend>
+      {offered.map((entry) => (
+        <label key={entry.id} className="company" data-loadable={entry.loadable}>
+          <input
+            type="radio"
+            name="scenario"
+            value={entry.id}
+            checked={chosen === entry.id}
+            disabled={!entry.loadable}
+            onChange={() => onChoose(entry.id)}
+          />
+          <span className="company__body">
+            <span className="company__title">{entry.title ?? entry.id}</span>
+            {entry.loadable ? (
+              <>
+                <span className="company__summary">{entry.summary}</span>
+                <span className="company__size">
+                  {entry.people} people · {entry.items} pieces of work
+                </span>
+              </>
+            ) : (
+              <span className="company__refusal">{entry.refusal}</span>
+            )}
+          </span>
+        </label>
+      ))}
+    </fieldset>
   )
 }

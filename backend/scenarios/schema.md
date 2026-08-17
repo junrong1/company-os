@@ -6,7 +6,25 @@ and adding one needs no code change — drop `acme.toml` next to `default.toml` 
 created against `acme`.
 
 `default.toml` is the shipped company and the best thing to read alongside this document. Every
-rule below is one you can see obeyed there.
+rule below is one you can see obeyed there. `ashcroft.toml` is the second, and it is here to be
+the proof rather than a variation: nothing in the code knows it exists.
+
+## Choosing one
+
+By name, at run creation, and never by path:
+
+```bash
+curl -s http://127.0.0.1:8800/scenarios
+curl -s -X POST http://127.0.0.1:8800/runs \
+  -H 'content-type: application/json' -d '{"scenario":"ashcroft"}'
+```
+
+The client's start screen lists the same thing — title, summary and size — so a file dropped in
+this directory is on offer the next time that page loads. A name is checked against a closed
+character set *before the filesystem is touched*, so it cannot contain a path separator, a dot or
+a drive letter; a file that will not load is listed with its refusal rather than hidden, because
+the person reading that list is usually the person who just wrote the file. Omitting the name is
+how you ask for `default`.
 
 ## What is yours to author, and what the rules fix
 

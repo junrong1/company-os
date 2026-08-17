@@ -1076,6 +1076,162 @@ def test_creating_the_same_run_id_twice_returns_the_first_run(api) -> None:
     assert second["run_id"] == "run-idem"
 
 
+# =========================================================================
+# Choosing which company the run is of (M13)
+# =========================================================================
+
+
+def _genesis_of(client, run_id: str) -> dict:
+    """The genesis payload of a run, as a client attaching to it would read it.
+
+    Off the log rather than off the runtime's `State`, because what U7 has to prove is that the
+    chosen company reached *the wire* — a run whose in-memory state was right and whose genesis
+    was not would leave the client drawing the wrong office.
+    """
+    first = client.read_events(run_id, after_seq=0)[0]
+    assert first.kind == EventKind.GENESIS
+    return canonical.decode(first.payload)
+
+
+def test_a_run_created_without_naming_a_scenario_is_of_the_shipped_company(api, composed) -> None:
+    """The default is the absence of a choice, not a value the client has to know to send.
+
+    Every caller written before scenarios existed omits the field, and each one has to keep
+    getting Northwind rather than an error about an unnamed company.
+    """
+    _, client = composed
+    body = api.post("/runs", json={"run_seed": 5}).json()
+
+    assert body["scenario"] == "default"
+
+    genesis = _genesis_of(client, body["run_id"])
+    assert genesis["scenario"]["id"] == "default"
+    assert "dir_sales" in genesis["roster"], "the shipped roster is not the one that loaded"
+
+
+def test_a_second_scenario_is_selectable_and_produces_a_different_company(api, composed) -> None:
+    """M13, end to end and by the route a client uses.
+
+    The loader could already do this after U6; nothing could reach it. What is asserted here is
+    that naming the second file at creation produces the *other* company — a different roster on
+    the wire, not the same run with a different label.
+    """
+    _, client = composed
+    body = api.post("/runs", json={"run_seed": 5, "scenario": "ashcroft"}).json()
+
+    assert body["created"] is True
+    assert body["scenario"] == "ashcroft"
+
+    genesis = _genesis_of(client, body["run_id"])
+
+    assert genesis["scenario"]["id"] == "ashcroft"
+    assert "dir_ops" in genesis["roster"], "the second company's roster did not reach the wire"
+    assert "dir_sales" not in genesis["roster"], "the shipped roster leaked into another company"
+    assert [entry["id"] for entry in genesis["catalog"]][0].startswith("wk_")
+
+
+def test_two_runs_of_two_companies_are_live_in_one_process(api, composed) -> None:
+    """One process ticks many runs, and the scenario is per-run state rather than a global.
+
+    The failure this forbids is the one `scenario.py` names as the reason the company is carried
+    on `State`: a module-level "the scenario" would answer for whichever file was loaded last, so
+    the older run would silently start being a run of the newer run's company.
+    """
+    _, client = composed
+    first = api.post("/runs", json={"run_seed": 11, "scenario": "default"}).json()
+    second = api.post("/runs", json={"run_seed": 11, "scenario": "ashcroft"}).json()
+
+    assert "dir_sales" in _genesis_of(client, first["run_id"])["roster"]
+    assert "dir_ops" in _genesis_of(client, second["run_id"])["roster"]
+
+    # And the first is still itself after the second was created, which is the ordering a
+    # last-one-wins global would fail on. Read off the live runtime rather than off the log,
+    # because the log's genesis was written before the second run existed and could not move.
+    runtime = gateway_main._kernel.runtime
+    assert runtime.runs[first["run_id"]].state.scenario.scenario_id == "default"
+    assert runtime.runs[second["run_id"]].state.scenario.scenario_id == "ashcroft"
+
+
+def test_an_unknown_scenario_is_refused_with_the_names_that_do_resolve(api) -> None:
+    response = api.post("/runs", json={"run_seed": 5, "scenario": "northwynd"})
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "northwynd" in detail
+    assert "default" in detail and "ashcroft" in detail, (
+        "a refusal that does not list the names that would have worked leaves a caller guessing"
+    )
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["../default", "/etc/passwd", "sub/default", "default.toml", "..", "C:\\default"],
+    ids=["parent", "absolute", "separator", "suffix", "dots", "drive"],
+)
+def test_a_name_that_could_leave_the_directory_is_refused(api, name: str) -> None:
+    """R9's path rule, at the surface that accepts the name from outside.
+
+    The check is on the *name*, before any filesystem access, so none of these depend on whether
+    the file they point at happens to exist — which is what makes the rule hold on a machine
+    whose disk does not look like this one's.
+    """
+    response = api.post("/runs", json={"run_seed": 5, "scenario": name})
+
+    assert response.status_code == 400
+    assert "scenario" in response.json()["detail"].lower()
+
+
+def test_an_empty_scenario_field_means_the_shipped_company(api) -> None:
+    """A form that posts its untouched field asks for `""`, and must not be told it is unknown."""
+    body = api.post("/runs", json={"run_seed": 5, "scenario": "   "}).json()
+
+    assert body["created"] is True
+    assert body["scenario"] == "default"
+
+
+def test_the_scenarios_route_lists_what_a_run_can_be_created_against(api) -> None:
+    """A picker cannot offer what it cannot list, which is the other half of M13.
+
+    Listed with title, summary and size, because a name alone is not a choice a person can make.
+    """
+    body = api.get("/scenarios").json()
+
+    by_id = {entry["id"]: entry for entry in body["scenarios"]}
+    assert set(by_id) == {"default", "ashcroft"}
+    assert all(entry["loadable"] for entry in by_id.values())
+    assert by_id["ashcroft"]["title"] == "Ashcroft Press"
+    assert by_id["ashcroft"]["summary"]
+    assert by_id["ashcroft"]["people"] == 9
+    assert by_id["default"]["people"] == 10
+
+    # Every listed name is one creation actually accepts. A catalogue that offered a name the
+    # creation route refused would be worse than no catalogue.
+    for name in by_id:
+        assert api.post("/runs", json={"scenario": name}).status_code == 200
+
+
+def test_a_scenario_that_will_not_load_is_listed_with_its_refusal(api, tmp_path, monkeypatch)\
+        -> None:
+    """One bad file cannot hide the good ones, on a directory anyone can drop a file into.
+
+    The entry stays and carries the reason, because an author who mistyped a key needs to see the
+    refusal — not a file that silently vanished from the list.
+    """
+    from simcore import scenario as sc
+
+    directory = tmp_path / "scenarios"
+    directory.mkdir()
+    (directory / "default.toml").write_bytes((sc.SCENARIO_DIR / "default.toml").read_bytes())
+    (directory / "broken.toml").write_text('schema = 1\nid = "broken"\ntitle = "Broken"\n')
+    monkeypatch.setattr(sc, "SCENARIO_DIR", directory)
+
+    by_id = {entry["id"]: entry for entry in api.get("/scenarios").json()["scenarios"]}
+
+    assert by_id["default"]["loadable"] is True
+    assert by_id["broken"]["loadable"] is False
+    assert "department" in by_id["broken"]["refusal"]
+
+
 def test_a_created_run_advances_its_own_clock(composed) -> None:
     """The other half of the gap: `ensure_loop` had no production caller at all.
 

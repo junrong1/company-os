@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createRun, fetchGatewayStatus, GatewayUnreachable } from '../src/net/gateway'
+import {
+  createRun,
+  fetchGatewayStatus,
+  fetchScenarios,
+  GatewayUnreachable,
+} from '../src/net/gateway'
 import { rememberRunInLocation, runIdFromLocation } from '../src/net/runid'
 
 /**
@@ -133,6 +138,36 @@ describe('createRun', () => {
     expect(JSON.parse(String(init.body))).toEqual({ run_id: 'run-fixed', run_seed: 7 })
   })
 
+  it('names a company when one was chosen', async () => {
+    // Typed parameters so the recorded calls carry types, rather than being cast back.
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify(createdBody), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createRun({ scenario: 'ashcroft' })
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(String(init.body))).toEqual({ scenario: 'ashcroft' })
+  })
+
+  it('sends no company at all when the choice is empty, so the server picks the shipped one', async () => {
+    // The default is the *absence* of the field rather than the string "default". A client
+    // that spelled the default out would be a second place the shipped company is named, and
+    // the two would disagree the first time the backend's default moved.
+    const fetchMock = vi.fn(
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify(createdBody), { status: 200 }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createRun({ scenario: '' })
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(String(init.body))).toEqual({})
+  })
+
   it('attaches to a run that already exists rather than erroring', async () => {
     // The run id is its own idempotency key, so a retry whose first response was never seen
     // must not end up with two runs and must not look like a failure.
@@ -182,6 +217,76 @@ describe('createRun', () => {
     )
 
     await expect(createRun()).rejects.toThrow('502')
+  })
+})
+
+describe('fetchScenarios', () => {
+  it('lists the companies a run can be created against', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              scenarios: [
+                { id: 'ashcroft', title: 'Ashcroft Press', loadable: true, people: 9, items: 5 },
+                { id: 'default', title: 'Northwind Components', loadable: true, people: 10 },
+              ],
+            }),
+            { status: 200 },
+          ),
+      ),
+    )
+
+    const offered = await fetchScenarios()
+
+    expect(offered.map((entry) => entry.id)).toEqual(['ashcroft', 'default'])
+    expect(offered[0].title).toBe('Ashcroft Press')
+  })
+
+  it('keeps a scenario that will not load, with its reason', async () => {
+    // The server does not filter these out and neither does this. An author whose file is
+    // refused is exactly the person reading the list, and a dropped entry reads as a file that
+    // never saved rather than as one with a mistake in it.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              scenarios: [{ id: 'broken', loadable: false, refusal: 'no department is declared' }],
+            }),
+            { status: 200 },
+          ),
+      ),
+    )
+
+    const [entry] = await fetchScenarios()
+
+    expect(entry.loadable).toBe(false)
+    expect(entry.refusal).toContain('department')
+  })
+
+  it('reports an unreachable gateway rather than an empty list', async () => {
+    // The caller decides that an unlistable backend still gets a start button. It cannot decide
+    // that if "none offered" and "could not ask" arrive as the same value.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('Failed to fetch')
+      }),
+    )
+
+    await expect(fetchScenarios()).rejects.toBeInstanceOf(GatewayUnreachable)
+  })
+
+  it('tolerates a body with no scenarios array', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify({}), { status: 200 })),
+    )
+
+    await expect(fetchScenarios()).resolves.toEqual([])
   })
 })
 

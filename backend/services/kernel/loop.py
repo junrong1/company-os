@@ -171,6 +171,7 @@ from kernel.store import LogStore, RunAlreadyTerminated, StoreWriter
 from servicekit import logging as svclog
 from simcore import log as folder
 from simcore import pending as pend
+from simcore import scenario as sc
 from simcore import snapshot as snapshotting
 from simcore import statement as stmt
 from simcore import step as sim
@@ -635,8 +636,25 @@ class KernelRuntime:
 
     # --- runs -------------------------------------------------------------
 
-    def create_run(self, run_id: str, run_seed: int, horizon_tick: int | None = None) -> RunLoop:
-        state, genesis = sim.new_run(run_seed=run_seed, horizon_tick=horizon_tick)
+    def create_run(
+        self,
+        run_id: str,
+        run_seed: int,
+        horizon_tick: int | None = None,
+        scenario: str | None = None,
+    ) -> RunLoop:
+        """Create a run of the named company, or of the shipped one.
+
+        **A name, not a path, and not a `Scenario`.** The loader resolves a name inside the
+        scenarios directory and refuses anything that could leave it *before* touching the
+        filesystem (R9), so the rule holds by construction as long as nothing above here is
+        allowed to hand down a path. A caller that could pass a `Scenario` object would be a
+        caller that could have loaded it from anywhere.
+        """
+        company = sc.load_default() if scenario is None else sc.load(scenario)
+        state, genesis = sim.new_run(
+            run_seed=run_seed, horizon_tick=horizon_tick, scenario=company
+        )
 
         self.store.create_run(
             run_id=run_id,

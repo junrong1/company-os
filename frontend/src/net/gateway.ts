@@ -66,6 +66,49 @@ export async function fetchGatewayStatus(signal?: AbortSignal): Promise<ServiceS
 }
 
 // =========================================================================
+// Which company to run
+// =========================================================================
+
+/**
+ * One company a run could be created against.
+ *
+ * `loadable` is false for a file in the scenarios directory that the loader refuses, and the
+ * entry is still here — with the reason — rather than filtered out by the server. An author who
+ * mistyped a key needs to see why their file is not on offer, and a list that quietly dropped it
+ * would read as the file never having been saved.
+ */
+export interface ScenarioChoice {
+  id: string
+  title?: string
+  summary?: string
+  people?: number
+  items?: number
+  loadable: boolean
+  refusal?: string
+}
+
+/**
+ * The companies this backend can start a run of.
+ *
+ * Unreachable is not the same as none: the caller shows the start button either way, because a
+ * run with no scenario named is a run of the shipped company and that path does not need this
+ * list. So a failure here costs the choice, not the ability to begin.
+ */
+export async function fetchScenarios(signal?: AbortSignal): Promise<ScenarioChoice[]> {
+  let response: Response
+  try {
+    response = await fetch(`${GATEWAY_BASE}/scenarios`, { signal })
+  } catch (cause) {
+    throw new GatewayUnreachable(cause)
+  }
+
+  if (!response.ok) throw new GatewayUnreachable(`unexpected status ${response.status}`)
+
+  const body = (await response.json()) as { scenarios?: ScenarioChoice[] }
+  return Array.isArray(body.scenarios) ? body.scenarios : []
+}
+
+// =========================================================================
 // Starting a run
 // =========================================================================
 
@@ -78,6 +121,8 @@ export interface CreatedRun {
   terminal_reason: string
   head_seq: number
   active: boolean
+  /** Which company it is a run of. `default` when the request named none. */
+  scenario?: string
   /**
    * False when the id already existed and this call returned that run instead.
    *
@@ -107,12 +152,16 @@ export class RunNotCreated extends Error {
  * to begin.
  */
 export async function createRun(
-  options: { runId?: string; runSeed?: number } = {},
+  options: { runId?: string; runSeed?: number; scenario?: string } = {},
   signal?: AbortSignal,
 ): Promise<CreatedRun> {
   const body: Record<string, unknown> = {}
   if (options.runId !== undefined) body.run_id = options.runId
   if (options.runSeed !== undefined) body.run_seed = options.runSeed
+  // A name, never a path — the backend resolves it inside its own scenarios directory and
+  // refuses anything that could leave it. Omitted means the shipped company, which is what
+  // every caller written before the choice existed keeps asking for.
+  if (options.scenario !== undefined && options.scenario !== '') body.scenario = options.scenario
 
   let response: Response
   try {

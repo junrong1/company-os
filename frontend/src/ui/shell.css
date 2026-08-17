@@ -892,6 +892,56 @@
 
 .conversation__cost { margin: 0; font-size: 11px; line-height: 1.45; }
 
+/* What a person is responsible for, and what they are described as having (M15, M16).
+ *
+ * Quiet on purpose. It is context for the decision under it, not a competitor for it: muted
+ * text, no hue of its own, and the lists set in the mono face so a tool name reads as a name
+ * from a file rather than as a control. Nothing in here is interactive, and nothing in here
+ * should look like it is. */
+
+.conversation__schema {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+}
+
+.schema__responsibility {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.schema__list { display: flex; flex-direction: column; gap: 3px; }
+
+.schema__list h4 {
+  margin: 0;
+  color: var(--text-faint);
+  font: 750 10px/1 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.schema__list ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.schema__list li {
+  border: 1px solid var(--rule);
+  padding: 2px 6px;
+  color: var(--text-muted);
+  font: 11px/1.3 var(--mono);
+}
+
+.schema__note { margin: 0; font-size: 10px; line-height: 1.45; }
+
 .conversation__work {
   display: flex;
   flex-direction: column;

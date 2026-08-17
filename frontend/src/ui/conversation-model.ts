@@ -162,6 +162,59 @@ export interface ConversationHeader {
   itemId: string
 }
 
+/** One authored list on a person's schema, and what to call it on screen. */
+export interface SchemaList {
+  key: 'tools' | 'mcpServers' | 'skills'
+  label: string
+  entries: string[]
+}
+
+/**
+ * What a person is described as being and having (M15), for the surface that shows it.
+ *
+ * `null` when the roster has nothing to say — a run that predates the fields, or a hire who
+ * arrived at runtime and whom no scenario authored. Null rather than an object of empty
+ * strings, so the caller renders nothing at all rather than a heading over a blank.
+ */
+export interface PersonSchema {
+  responsibility: string
+  lists: SchemaList[]
+}
+
+/** The headings, in the order they read: what they do, what they have, what they know. */
+const SCHEMA_LABELS: ReadonlyArray<{ key: SchemaList['key']; label: string }> = [
+  { key: 'tools', label: 'Tools' },
+  { key: 'mcpServers', label: 'MCP servers' },
+  { key: 'skills', label: 'Skills' },
+]
+
+/**
+ * A person's authored schema, or `null` if they have none.
+ *
+ * Here rather than in the component for the same reason everything else in this file is: what
+ * counts as "has a schema" is a rule, and a rule asserted through a rendered panel is a rule
+ * asserted through three layers of markup. An empty list is dropped rather than rendered as an
+ * empty heading — a person with no MCP servers is not a person with an empty MCP server list.
+ */
+export function personSchema(
+  personId: string | null,
+  roster: Record<string, RosterEntry>,
+): PersonSchema | null {
+  if (personId === null) return null
+
+  const entry = roster[personId]
+  if (entry === undefined) return null
+
+  const lists = SCHEMA_LABELS.map(({ key, label }) => ({
+    key,
+    label,
+    entries: entry[key] ?? [],
+  })).filter((list) => list.entries.length > 0)
+
+  if (entry.responsibility === '' && lists.length === 0) return null
+  return { responsibility: entry.responsibility, lists }
+}
+
 /**
  * The conversation header for a person, or `null` when there is nothing to talk to.
  *
