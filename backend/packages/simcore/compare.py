@@ -70,7 +70,6 @@ from typing import Any
 
 from contracts.envelope import EventKind
 from simcore import effects, lifecycle, snapshot
-from simcore import items as work
 from simcore import step as sim
 from simcore import time as simtime
 
@@ -92,9 +91,14 @@ STOP_BOUND = "bound"
 #:
 #: Twice the horizon this product designs for, which is itself sized against the decision
 #: supply — nine authored checkpoints, "a little over two days per decision". A run far beyond
-#: that is burn with nothing left to decide, and a comparison of one is not worth the seconds
-#: it would cost: the branches are stepped synchronously inside a request, on the same worker
-#: pool every other run's clock ticks on.
+#: that is burn with nothing left to decide, and a comparison of one is not worth the seconds it
+#: would cost: the branches are stepped synchronously inside a request, holding the GIL for the
+#: whole of it.
+#:
+#: This is the bound on *one* comparison's cost and it is the only one that shortens a comparison.
+#: How many may run at once is a separate question and a separate limiter, in the kernel service
+#: where the tick loop it competes with lives (`loop.BRANCH_SLOTS`, R14) — a library that has no
+#: log and no clock is the wrong place to ration the clock's worker pool.
 #:
 #: A branch that reaches this stops and says so, rather than the comparison being refused. A
 #: refusal would make a legitimately long run uncomparable; stopping early and reporting the
@@ -294,7 +298,13 @@ def _branch_from(
     *,
     in_person: bool,
 ) -> BranchSummary:
-    """Run one option from an already-taken fork."""
+    """Run one option from an already-taken fork.
+
+    `restore` here cannot fail on a torn read: `_capture_of` returns only a snapshot it has
+    already restored once, and a `Snapshot` is immutable bytes. A `SnapshotInvalid` out of this
+    line would mean the round-trip has genuinely lost a field, which is a bug to see rather than
+    to retry past.
+    """
     branch = snapshot.restore(fork)
     fork_tick = branch.tick
 
@@ -485,7 +495,7 @@ CAPTURE_ATTEMPTS = 3
 
 
 def _capture_of(state: sim.State) -> snapshot.Snapshot:
-    """A snapshot of this state, taken while the run may be moving underneath it.
+    """A snapshot of this state, proved restorable, taken while the run may be moving.
 
     `snapshot.restore` re-hashes what it rebuilt and refuses a mismatch, so the round-trip is
     its own correctness argument — and it is the reason this is a round-trip rather than a
@@ -494,20 +504,45 @@ def _capture_of(state: sim.State) -> snapshot.Snapshot:
     this guard already, each time by a subsystem that looked complete.
 
     **The retry is here because the parent is not standing still.** `capture` reads the state
-    twice — once to hash it, once to encode it — and walks several dicts while doing so, and the
-    kernel holds no lock between the command path and the tick loop. A tick landing in the
-    middle produces either a snapshot that fails its own hash check (`SnapshotInvalid`) or a
-    `RuntimeError` from a dict that changed size mid-iteration. Neither is `CommandRejected`, so
-    without this both escape as an opaque 500 for something the client did nothing wrong to
-    cause.
+    twice — once to hash it, once to encode it — and walks several dicts while doing so. A tick
+    landing in the middle produces either a `RuntimeError` from a dict that changed size
+    mid-iteration, or — the commoner case by far — a `Snapshot` whose recorded hash describes a
+    state its encoded bytes no longer contain. Neither is `CommandRejected`, so without this
+    both escape as an opaque 500 for something the client did nothing wrong to cause.
 
-    Retrying is safe precisely because a capture mutates nothing: a torn read is discarded and
-    the next attempt starts fresh. Exhausting the attempts is reported as a refusal with a
+    **The retry spans the whole round-trip, and that placement is the fix rather than a tidy-up.**
+    The first version retried `capture` alone, which cannot see the second failure mode at all:
+    `capture` returns a torn snapshot without raising, and the tear is only detected later, by
+    `restore` inside `_branch_from`, where no `except` covers it. Three attempts were therefore
+    spent on a call that had already succeeded, and the intermittent `SnapshotInvalid` this guard
+    was written to absorb went straight past it. Restoring here is what makes the failure
+    *detectable in the place that can retry it*.
+
+    So the returned snapshot is one that has been restored once already, and that is a stronger
+    promise than "captured": a `Snapshot` is immutable bytes and `restore` is a pure function of
+    them, so a restore that succeeded once succeeds every time. `_branch_from` restores the same
+    snapshot per option and cannot fail on a torn read.
+
+    The proof copy is thrown away rather than handed to the first branch. A branch mutates the
+    state it runs, so reusing this one would make the proof and the first option share an object
+    — and "every branch forks from the same state" would then hold for all but one of them,
+    which is the failure that would be least visible.
+
+    It costs one extra restore per comparison — about 0.6ms against the second or so the branches
+    spend — so the price of proving it is under a thousandth of the price of doing it. Paying it
+    unconditionally, rather than only when the parent might be moving, is deliberate: this function
+    cannot know whether its caller handed it a private copy, and a guard that has to be told when
+    to run is a guard that will one day not be told.
+
+    Retrying is safe precisely because neither half mutates the parent: a torn read is discarded
+    and the next attempt starts fresh. Exhausting the attempts is reported as a refusal with a
     reason, which is the honest answer — the run really is moving too fast to photograph.
     """
     for attempt in range(CAPTURE_ATTEMPTS):
         try:
-            return snapshot.capture("branch", state, through_seq=0)
+            taken = snapshot.capture("branch", state, through_seq=0)
+            snapshot.restore(taken)
+            return taken
         except (snapshot.SnapshotInvalid, RuntimeError):
             if attempt == CAPTURE_ATTEMPTS - 1:
                 raise sim.CommandRejected(
@@ -542,4 +577,4 @@ def _gates_open(state: sim.State) -> set[str]:
     finished read as the option that made it impossible. Unlocking and foreclosing are
     movements of a gate; completion is not one.
     """
-    return {item.id for item in work.ITEMS if sim.is_unlocked(state, item.id)}
+    return {item.id for item in state.scenario.items if sim.is_unlocked(state, item.id)}

@@ -25,6 +25,8 @@ TypeScript with BigInt.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 # --- the quantum ----------------------------------------------------------
 
 #: Sim-seconds per tick. Recorded at genesis and immutable for a run.
@@ -125,6 +127,52 @@ def milli_tiles_progressed(elapsed_ticks: int) -> int:
     return (
         elapsed_ticks * WALK_TILES_NUMERATOR * MILLI_TILES_PER_TILE
     ) // WALK_TILES_DENOMINATOR
+
+
+def walk_position_milli(
+    origin: tuple[int, int],
+    path: Sequence[tuple[int, int]],
+    elapsed_ticks: int,
+) -> tuple[int, int]:
+    """Where a walker is between two tiles, in milli-tiles.
+
+    The kernel itself never needs this: `step._advance_walker` snaps to `path[covered - 1]`,
+    because a sub-tile coordinate in hashed state would be a hashed value nothing reads and
+    every day-boundary hash would carry it. The **client** needs it, because a figure that
+    jumps a whole tile every thirteen ticks does not read as walking.
+
+    So the definition lives here for exactly the reason `milli_tiles_progressed` does — the
+    client reimplements it, and the golden vector is the only build-time guard on the
+    reimplementation. Written in the kernel rather than only in TypeScript so that there *is*
+    a vector to generate: a client-only interpolation would be self-consistent and unchecked,
+    which is the failure mode the vectors exist for.
+
+    `path` follows `world.find_path`: the origin is excluded and the target included, so the
+    tile after `n` whole tiles of progress is `path[n - 1]` and `origin` is where `n` is zero.
+    Progress past the end of the path is the destination, not an extrapolation — arrival is a
+    clamp, and `walk_duration_ticks(len(path))` is the tick it happens at.
+    """
+    _check(elapsed_ticks)
+
+    if not path:
+        return (origin[0] * MILLI_TILES_PER_TILE, origin[1] * MILLI_TILES_PER_TILE)
+
+    milli = milli_tiles_progressed(elapsed_ticks)
+    covered = milli // MILLI_TILES_PER_TILE
+    within = milli % MILLI_TILES_PER_TILE
+
+    if covered >= len(path):
+        return (path[-1][0] * MILLI_TILES_PER_TILE, path[-1][1] * MILLI_TILES_PER_TILE)
+
+    here = origin if covered == 0 else path[covered - 1]
+    ahead = path[covered]
+
+    # Adjacent tiles, so each difference is exactly one or zero: this is a straight
+    # interpolation and not a general line-drawing routine.
+    return (
+        here[0] * MILLI_TILES_PER_TILE + (ahead[0] - here[0]) * within,
+        here[1] * MILLI_TILES_PER_TILE + (ahead[1] - here[1]) * within,
+    )
 
 
 def _check(tick: int) -> None:

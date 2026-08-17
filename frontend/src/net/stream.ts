@@ -1,9 +1,9 @@
 /**
  * The WebSocket the run arrives on, and the REST call commands leave by.
  *
- * The gateway is the client's only contact surface, and the client addresses it at `/api` and
- * `/ws` in both topologies — nginx proxies those prefixes under the demo profile, the Vite
- * dev server proxies them in development. Nothing here knows which it is running under.
+ * The backend is the client's only contact surface, and the client addresses it at `/api` and
+ * `/ws` in both setups — nginx proxies those prefixes under `docker compose up`, the Vite dev
+ * server proxies them in development. Nothing here knows which it is running under.
  *
  * **Resume is keyed on run *and* sequence.** A fork shares sequence values with its parent,
  * so reconnecting with a bare sequence names two different events once a fork exists. The
@@ -24,7 +24,7 @@
 import { GATEWAY_BASE } from './gateway'
 import { type Frame, useRunStore } from './store'
 
-/** Where the event socket lives. Proxied to the gateway in both topologies. */
+/** Where the event socket lives. Proxied to the backend in both setups. */
 export const STREAM_BASE = '/ws'
 
 /** Backoff for a dropped socket, in milliseconds. Capped, and the cap is deliberate. */

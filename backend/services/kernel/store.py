@@ -237,6 +237,10 @@ class LogStore:
                     horizon_tick=horizon_tick,
                     parent_run_id=parent_run_id,
                     forked_at_seq=forked_at_seq,
+                    # R21's first half: a run's lineage root is itself at creation. Set
+                    # here rather than defaulted in the DDL because no portable server
+                    # default can name another column of the row being inserted.
+                    lineage_root_id=run_id,
                     created_at=utc_now_iso(),
                 )
             )
@@ -461,6 +465,13 @@ class LogStore:
                     horizon_tick=parent["horizon_tick"],
                     parent_run_id=parent_run_id,
                     forked_at_seq=at_seq,
+                    # The creation rule, applied uniformly: a new row's lineage root is its
+                    # own id. **U16 owns changing this to the parent's root**, which is
+                    # R21's second half and what makes the HUD's aggregate span a lineage
+                    # rather than a run. Written this way rather than left null so the
+                    # column has no "no lineage yet" state for a reader to handle, and so
+                    # the one line U16 changes is visible instead of implied.
+                    lineage_root_id=child_run_id,
                     created_at=utc_now_iso(),
                 )
             )

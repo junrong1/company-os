@@ -1,10 +1,10 @@
 /**
  * Talking to the gateway.
  *
- * The gateway is the client's only contact surface, and the client addresses it
- * at `/api` in both topologies — nginx proxies that prefix under the demo
- * profile, the Vite dev server proxies it in development. Nothing here knows
- * which of the two it is running under, which is the point.
+ * The backend is the client's only contact surface, and the client addresses it
+ * at `/api` in both setups — nginx proxies that prefix under `docker compose up`,
+ * the Vite dev server proxies it in development. Nothing here knows which of the
+ * two it is running under, which is the point.
  */
 
 /** One dependency as the status endpoint reports it. */

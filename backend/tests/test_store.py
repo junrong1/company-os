@@ -24,7 +24,18 @@ from sqlalchemy import delete, insert, select, text, update
 from contracts.envelope import EventKind
 from kernel import lease as lease_module
 from kernel.lease import LeaseHeld, utc_now_iso
-from logschema import DDL_VERSION, event_log, metadata, runs, snapshots, store_version, writer_lease
+from logschema import (
+    APPEND_ONLY_TABLES,
+    DDL_VERSION,
+    MUTABLE_TABLES,
+    event_log,
+    metadata,
+    model_spend,
+    runs,
+    snapshots,
+    store_version,
+    writer_lease,
+)
 from kernel.store import (
     DdlVersionMismatch,
     DuplicateAnswer,
@@ -164,12 +175,35 @@ def test_the_log_still_accepts_appends_after_a_refused_mutation(store, handle) -
     assert result.head_seq == 2
 
 
-@pytest.mark.parametrize("table_name", ["runs", "snapshots", "writer_lease", "store_version"])
+def test_every_table_is_registered_as_append_only_or_as_mutable() -> None:
+    """The coverage claim the two tuples make, asserted rather than assumed.
+
+    A table added to `metadata` and left out of both lists is not *failed* by the suite
+    below — it is skipped by it, silently, because that suite parametrizes over the list.
+    So the list has to be provably complete. This is what makes U9's `model_spend` and
+    U12's cache table impossible to add without deciding which kind they are.
+    """
+    registered = set(APPEND_ONLY_TABLES) | set(MUTABLE_TABLES)
+    declared = set(metadata.tables)
+
+    assert declared == registered, (
+        "these tables are in the schema but registered as neither append-only nor mutable, "
+        f"so the append-only suite skips them: {sorted(declared - registered)}"
+    )
+    assert not (set(APPEND_ONLY_TABLES) & set(MUTABLE_TABLES)), "a table cannot be both"
+
+
+@pytest.mark.parametrize("table_name", MUTABLE_TABLES)
 def test_the_other_tables_stay_mutable(store, handle, table_name: str) -> None:
     """The recovery ladder depends on it.
 
     A snapshot invalidated by a tuning change is dropped and re-folded; the lease is
-    updated on every heartbeat. Append-only on these would break both.
+    updated on every heartbeat; the spend counter is incremented on every model call.
+    Append-only on any of these would break one of them.
+
+    Parametrized over `MUTABLE_TABLES` rather than over a written-out list, so a table
+    registered as mutable with no statement here raises a `KeyError` instead of quietly
+    going unchecked.
     """
     tables = {
         "runs": (update(runs).where(runs.c.run_id == RUN).values(rate=3), None),
@@ -193,6 +227,20 @@ def test_the_other_tables_stay_mutable(store, handle, table_name: str) -> None:
         "store_version": (
             update(store_version).where(store_version.c.id == 1).values(created_at=utc_now_iso()),
             None,
+        ),
+        "model_spend": (
+            insert(model_spend).values(
+                run_id=RUN,
+                calls=1,
+                input_tokens=41,
+                output_tokens=7,
+                cache_hits=0,
+                updated_at=utc_now_iso(),
+            ),
+            # Removed with its run, like a snapshot. The in-place increment that is the
+            # actual reason this table cannot be append-only is asserted by the ledger's
+            # own test in `test_modelgw.py`.
+            delete(model_spend).where(model_spend.c.run_id == RUN),
         ),
     }
     statement, cleanup = tables[table_name]

@@ -41,9 +41,20 @@ for root in ("packages", "services"):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from simcore import people as roster  # noqa: E402 - after the path bootstrap above
+from simcore import scenario as sc  # noqa: E402 - after the path bootstrap above
 from simcore import step as sim  # noqa: E402
 from simcore import time as simtime  # noqa: E402
+from simcore.world import find_path  # noqa: E402
+
+#: The company the vectors describe.
+#:
+#: Resolved through the loader rather than read from a module constant, which is the whole of
+#: U6's reason for touching this script: the roster and the work graph moved into
+#: `backend/scenarios/default.toml`, and a generator still building its vectors from constants
+#: would either fail to import or — worse, if a constant had been left behind — quietly
+#: regenerate the roster the move removed. `load_default()` is exactly what `new_run` uses when
+#: nothing names a scenario, so the vectors describe the company a run actually gets.
+SHIPPED = sc.load_default()
 
 #: The prototype's avatar palettes, from `company-os.html:1530`.
 AV_LIGHT = (
@@ -101,6 +112,94 @@ def avatar_palette(person_id: str) -> dict[str, Any]:
     }
 
 
+def walk_track() -> dict[str, Any]:
+    """One real hand-off walk, tick by tick, in milli-tiles.
+
+    The sub-tile position is what the client actually draws a walking person at (R15), and it
+    is the one piece of the movement arithmetic the kernel never evaluates for itself — the
+    simulation snaps to whole tiles, because a sub-tile coordinate in hashed state would be a
+    hashed value nothing reads. So without this vector the client's interpolation would be
+    self-consistent and compared against nothing, which is precisely the drift the vectors
+    exist to catch.
+
+    **The path is a real one, taken from the shipped floor rather than typed out here**, for the
+    reason `genesis_vector` gives: a hand-written path would be a second opinion about the
+    geometry, and the two would part company the first time the floor generator changed. It is
+    resolved through the roster rather than by naming ids, so a roster edit makes it describe a
+    different walk instead of breaking it.
+
+    **The longest hand-off on the floor**, because that is the one that turns corners. A walk
+    down a single row would leave a port that interpolated only the x axis passing, and the
+    turns are where a client and the kernel can disagree about which tile comes next.
+
+    The chosen ticks are the ones where an implementation goes wrong: zero, inside the first
+    tile, either side of a tile boundary, either side of each corner, either side of arrival,
+    and one far past the end — where the answer is the destination and not an extrapolation.
+    """
+    state, _ = sim.new_run(run_seed=0xC0FFEE)
+
+    # Every hand-off `assign_via_manager` can perform — a director walking to one of their own
+    # reports — and the longest of them. That is M62's headline walk, at its richest.
+    walks = [
+        (state.people[SHIPPED.reporting_line_of(person.id)], person.id)
+        for person in SHIPPED.people
+        if not person.is_director
+    ]
+    director, staff_id = max(
+        walks,
+        key=lambda pair: len(find_path(state.floor, pair[0].pos, state.seats[pair[1]])),
+    )
+
+    origin = director.pos
+    path = tuple(find_path(state.floor, origin, state.seats[staff_id]))
+    duration = simtime.walk_duration_ticks(len(path))
+
+    # The ticks a corner is turned on. The walker changes axis on reaching `path[index]`, which
+    # is `index + 1` whole tiles of progress, so that is the tick to straddle: a port carrying
+    # the wrong tile through a corner disagrees one tick either side of it.
+    corner_ticks = [
+        simtime.walk_duration_ticks(index + 1)
+        for index in range(1, len(path) - 1)
+        if (path[index][0] - path[index - 1][0], path[index][1] - path[index - 1][1])
+        != (path[index + 1][0] - path[index][0], path[index + 1][1] - path[index][1])
+    ]
+
+    elapsed_ticks = sorted(
+        {
+            0,
+            1,
+            6,
+            7,
+            13,
+            45,
+            89,
+            90,
+            91,
+            *(tick + offset for tick in corner_ticks for offset in (-1, 0, 1)),
+            duration - 1,
+            duration,
+            duration + 1,
+            2**53 + 1,
+        }
+    )
+
+    return {
+        "walker": director.id,
+        "origin": [str(origin[0]), str(origin[1])],
+        "path": [[str(x), str(y)] for x, y in path],
+        "duration_ticks": str(duration),
+        "cases": [
+            {
+                "elapsed": str(elapsed),
+                "x_milli": str(simtime.walk_position_milli(origin, path, elapsed)[0]),
+                "y_milli": str(simtime.walk_position_milli(origin, path, elapsed)[1]),
+                "arrived": elapsed >= duration,
+            }
+            for elapsed in elapsed_ticks
+        ],
+    }
+
+
 def walk_vector() -> dict[str, Any]:
     """Tick-derived movement: the arithmetic the client reimplements for interpolation."""
     # Small, hand-checkable ticks, then values that break a double.
@@ -133,6 +232,7 @@ def walk_vector() -> dict[str, Any]:
             "denominator": str(simtime.WALK_TILES_DENOMINATOR),
             "milli_per_tile": str(simtime.MILLI_TILES_PER_TILE),
         },
+        "track": walk_track(),
         "tiles_progressed": [
             {"elapsed": str(tick), "tiles": str(simtime.tiles_progressed(tick))}
             for tick in ticks
@@ -230,7 +330,7 @@ def palette_vector() -> dict[str, Any]:
         "a-very-long-identifier-that-overflows-the-32-bit-accumulator-many-times-over",
         "stf_ap" * 12,
     ]
-    ids = [person.id for person in roster.PEOPLE] + extras
+    ids = [person.id for person in SHIPPED.people] + extras
 
     return {
         "light": list(AV_LIGHT),

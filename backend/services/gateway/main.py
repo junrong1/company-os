@@ -5,22 +5,36 @@ contributor already has open when something goes wrong, so it has to stay up and
 is unreachable". A gateway that failed its own health alongside the kernel would turn one outage
 into two and explain neither.
 
-**The gateway never imports the kernel.** R4: services meet at a proto contract. It talks to a
-`KernelClient`, and there are two real implementations — gRPC across the compose network, and an
-in-process one used by the documented single-process mode. The single-process composition lives
-in `backend/single_process.py`, outside both services, because composing them is neither
-service's job.
+**The gateway never imports the kernel.** R4: services do not reach into each other. It talks to
+a `KernelClient`, and there is one implementation — the in-process one the launcher installs. There
+were two, and the other was a gRPC channel across the compose network; the five backend containers
+became one, so the channel went with them. The boundary did not: it is an import rule, policed by
+`tests/test_import_boundaries.py`, and it holds inside one process exactly as it held across two.
+The composition lives in `backend/single_process.py`, outside both services, because composing them
+is neither service's job.
 
 Exposure follows R34: bind every interface inside the container, publish only on host loopback.
+
+**Loopback is not a boundary against a browser (R26).** Any page the operator has open can
+open a WebSocket to `ws://127.0.0.1:8800/ws/<run>`, and the handshake is exempt from every
+cross-origin rule the browser applies to `fetch` — no preflight, no `Access-Control-*`, the
+socket simply connects. That mattered less when this port carried a tick stream and nothing
+else; it now fronts the report, the diagnose call and the domain surface in one process. So the
+stream checks the request origin itself, and the app declares an explicit cross-origin policy
+for the REST half, which is the other thing R26 asks for.
 """
 
 from __future__ import annotations
 
+import os
 import secrets
 import uuid
+from collections.abc import Callable
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 
 from gateway import stream as streaming
 from gateway.commands import CommandLedger, CommandResult, KernelClient, Outcome, submit
@@ -34,15 +48,93 @@ log = svclog.get_logger("gateway")
 
 SERVICE = "gateway"
 
-#: Set by the single-process launcher, or left None to use gRPC.
+#: Origins allowed in addition to the client's own, comma-separated. Empty in every
+#: shipped configuration: nginx and the vite dev server both make the client
+#: same-origin with this port, so a value here is somebody's deliberate second front
+#: end rather than something the product needs.
+ENV_ALLOWED_ORIGINS = "COMPANY_OS_ALLOWED_ORIGINS"
+
+#: Installed by the launcher. None means nothing composed this app, which is a
+#: misconfiguration rather than a topology.
 _kernel: KernelClient | None = None
 _ledger = CommandLedger()
 
+#: What this run has spent on model calls, as the HUD's frame reads it. Installed by
+#: the launcher for the same reason `_kernel` is: the counter lives in the agents
+#: service and R4 forbids the gateway importing it, so the launcher — the one
+#: component allowed to see both — hands the stream a reader.
+SpendReader = Callable[[str], dict[str, Any]]
+_spend: SpendReader | None = None
+
 
 def use_kernel(client: KernelClient) -> None:
-    """Install a kernel client. Called by the single-process launcher (R16)."""
+    """Install a kernel client. Called by the launcher (R16), in every topology."""
     global _kernel
     _kernel = client
+
+
+def use_spend(reader: SpendReader) -> None:
+    """Install the spend reader the stream publishes `MODEL_SPEND` from.
+
+    Optional, and absent is a working state rather than a fault: with no reader the
+    stream publishes no spend frame and the HUD tile shows its zero-and-absent state,
+    which is also what a keyless run shows for its whole life.
+    """
+    global _spend
+    _spend = reader
+
+
+# =========================================================================
+# Request origin (R26)
+# =========================================================================
+
+
+def allowed_origins() -> list[str]:
+    raw = os.environ.get(ENV_ALLOWED_ORIGINS, "")
+    return [entry.strip() for entry in raw.split(",") if entry.strip()]
+
+
+def _authority(origin: str) -> str:
+    """An origin reduced to the part two origins have to agree on to be one origin."""
+    parts = urlsplit(origin)
+    return parts.netloc.lower()
+
+
+def origin_is_our_own(origin: str | None, host_header: str | None) -> bool:
+    """Whether a handshake came from the page this port serves.
+
+    **"Its own" is the `Host` header, not a configured hostname.** The client reaches
+    this port under three different authorities — `127.0.0.1:8800` directly,
+    `127.0.0.1:8790` through nginx, `127.0.0.1:5173` through the dev server — and every
+    one of them is legitimately the client's own origin. Pinning a list would mean
+    editing the backend to change a published port. Comparing against `Host` needs no
+    list, because the browser computes both values from the same address bar: a page at
+    `http://127.0.0.1:8790` sends `Origin: http://127.0.0.1:8790` and `Host:
+    127.0.0.1:8790`, and `frontend/nginx.conf` forwards the client's `Host` unchanged so
+    that stays true through the proxy. That forward is `$http_host` and not `$host`, and
+    the distinction is load-bearing rather than stylistic: `$host` is the Host header
+    **with the port stripped**, so it would present `127.0.0.1` against an origin of
+    `127.0.0.1:8790` and refuse the client this check exists to admit.
+
+    **The authority is compared, not the scheme.** nginx does not send
+    `X-Forwarded-Proto`, so this process cannot tell `http` from `https` upstream, and a
+    scheme comparison would reject every request behind a TLS terminator. The dev server
+    rewrites the origin to its own target, which it spells `ws://` while the same address
+    reached directly is spelled `http://`. What the check is for is a *foreign* origin —
+    `https://evil.example` reaching loopback — and that differs in the authority every
+    time.
+
+    **No `Origin` header at all is allowed.** A browser always sends one on a WebSocket
+    handshake, so its absence means the caller is curl, `websocat`, the test client or
+    the CLI — none of which a hostile page can drive, and all of which would otherwise
+    need a header they have no reason to send. Refusing them would harden nothing and
+    would break every non-browser consumer of the stream.
+    """
+    if not origin:
+        return True
+    if origin in allowed_origins():
+        return True
+    return bool(host_header) and _authority(origin) == host_header.lower()
 
 
 def kernel() -> KernelClient:
@@ -50,8 +142,10 @@ def kernel() -> KernelClient:
         raise HTTPException(
             status_code=503,
             detail=(
-                "no kernel client is configured. The gateway reaches the kernel over gRPC in "
-                "compose, or is handed an in-process client by the single-process launcher."
+                "no kernel client is configured. This app is served by "
+                "`backend/single_process.py`, which installs one; running "
+                "`python -m gateway.main` directly starts the routes without a kernel behind "
+                "them, which is useful for reading /status and for nothing else."
             ),
         )
     return _kernel
@@ -59,7 +153,9 @@ def kernel() -> KernelClient:
 
 def _probe_kernel() -> tuple[bool, str]:
     if _kernel is not None:
-        return True, "in-process kernel (single-process mode)"
+        return True, "in-process kernel"
+    # No client installed. The peer probe is what a bare `python -m gateway.main` reports, and
+    # it is honest there: it says nothing is answering rather than claiming a healthy kernel.
     return probe_http(peer_url("kernel"))
 
 
@@ -73,6 +169,29 @@ app = create_service_app(
             note="reported, not required: the gateway stays up to explain a kernel outage",
         )
     ],
+)
+
+# R26's second half: the policy is declared rather than defaulted. Whatever the operator
+# named, and nothing else — a JSON `POST /runs/{id}/commands` from another origin is
+# preflighted, the preflight goes unanswered, and the browser refuses it. Installed even
+# when the list is empty, because the requirement is that the application *states* its
+# cross-origin position: a missing middleware and a deny-everything middleware behave the
+# same and read very differently.
+#
+# It carries no same-origin case because it does not need one: a same-origin request has no
+# `Origin` header the middleware acts on, and the browser never preflights it. And CORS is
+# irrelevant to the WebSocket above — Starlette's middleware passes any non-HTTP scope
+# straight through — which is exactly why R26 asks for the handshake check as well.
+#
+# Read once, here, because middleware is constructed once. The stream's own check reads the
+# same variable per handshake, so the two can only disagree inside a test that changes the
+# environment after import.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["content-type"],
 )
 
 
@@ -200,6 +319,18 @@ async def events(socket: WebSocket, run_id: str, after_seq: int = Query(0)) -> N
     Resume is keyed on run *and* sequence: a fork shares sequence values with its parent, so a
     bare sequence names two different events once one exists.
     """
+    origin = socket.headers.get("origin")
+    if not origin_is_our_own(origin, socket.headers.get("host")):
+        # Refused before `accept`, so the handshake fails rather than a connected socket
+        # being closed: a page that never completes the upgrade cannot read a frame, and
+        # the browser reports it as a failed connection instead of a server error.
+        log.warning(
+            "refusing a stream connection from another origin",
+            extra={"run": run_id, "origin": origin, "host": socket.headers.get("host")},
+        )
+        await socket.close(code=1008, reason="origin not allowed")
+        return
+
     await socket.accept()
 
     if _kernel is None:
@@ -241,6 +372,22 @@ async def events(socket: WebSocket, run_id: str, after_seq: int = Query(0)) -> N
     )
     subscription = _kernel.subscribe(run_id, connection)
 
+    # M28: the HUD's one measured figure has to move *during* a run. It cannot ride on an
+    # event — what a call cost depends on which provider answered, so an event carrying it
+    # would be an output the fold cannot reproduce and strict replay would fail on every run
+    # that used the bench — so it is a control frame on this stream, beside `POSITION_ECHO`,
+    # which is here for the same reason.
+    spender = (
+        asyncio.create_task(
+            streaming.publish_spend(
+                connection, run_id, _spend, streaming.SPEND_POLL_SECONDS
+            ),
+            name=f"ws-spend-{run_id}",
+        )
+        if _spend is not None
+        else None
+    )
+
     try:
         while not connection.closed:
             # The receive side exists to notice the client going away. Anything it sends is
@@ -249,6 +396,8 @@ async def events(socket: WebSocket, run_id: str, after_seq: int = Query(0)) -> N
     except WebSocketDisconnect:
         pass
     finally:
+        if spender is not None:
+            spender.cancel()
         _kernel.unsubscribe(run_id, subscription)
         await connection.close()
 

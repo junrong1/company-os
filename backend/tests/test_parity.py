@@ -27,6 +27,35 @@ has burned by a given moment are marked `effort_timed`. U7 alters the burn rate 
 capacity and morale, so those are the ones that will move, and the marker makes U7's job
 mechanical: `pytest -m effort_timed`. Nothing here asserts anything about manual hours,
 so U7's manual-hours work needs no exemption.
+
+**Two of them have already changed, and the change is recorded rather than absorbed** (R16).
+M6 opens a run on one authored assignment — `[[seeded_assignment]]` in the scenario file, and a
+module constant when U2 wrote this — so the floor is no longer idle at tick zero and one more item
+is blocked for the whole of the harness's script.
+Exactly two ported assertions move with it, and neither is `effort_timed`:
+
+| harness check | was | is |
+|---|---|---|
+| `everyone starts idle` (100) | every person `idle` | every person except the seeded assignee |
+| `one item waiting in the tray` (123) | `blocked_count == 1` | `{wi_ap_map, wi_hiring}` |
+
+Nothing else moved, and the reason is worth stating because it is what makes the two above
+readable as the whole of the change: the seed lands in Ruth's line, and the harness only ever
+works Priya's and Dana's items. Every `effort_timed` assertion measures a burn rate in a
+department the seed does not touch, so none of them shifted by a single unit.
+
+**And the golden vectors did not move at all** when the seed arrived. R16 expects them to, so the
+absence was recorded rather than left looking like a regeneration somebody forgot: four of the five
+vectors pin arithmetic — walk speed, the clock, the CEO's step, avatar palettes — and none reads
+day-zero state, while the fifth is the GENESIS *payload* and the seed is deliberately not on it.
+What moved then was the day-zero state hash, which no fixture holds.
+
+**U6 moved the payload, once, and left that hash where it was.** The roster and the work graph now
+come off the scenario file, so `genesis.json` gained the scenario identity and four fields per
+person; the seed is still not on the payload, and the reason is now the settled one rather than a
+deferral — it is inside the scenario's content hash, which all three R7 guards check. Everything
+this suite asserts is unchanged by that move, which is the point of it: `state_shape_ver`,
+RULES_VERSION and the day-zero state hash are all where U2 left them.
 """
 
 from __future__ import annotations
@@ -37,13 +66,20 @@ from typing import Any
 
 import pytest
 
+from simcore import capacity as cap
+from simcore import effects
 from simcore import items as work
-from simcore import people as roster
+from simcore import scenario as sc
 from simcore import step as sim
 from simcore import time as simtime
 from simcore.world import find_path, walkable
 
 SEED = 0xC0FFEE
+
+#: The shipped company, loaded once. Every roster and catalog reference below goes through it:
+#: U6 moved both into `scenarios/default.toml`, so a module constant is no longer what the
+#: kernel reads and would no longer be what this suite is asserting agreement with.
+SHIPPED = sc.load_default()
 
 #: One wall second of the harness, in ticks, at x1. See the module docstring.
 TICKS_PER_WALL_SECOND = simtime.TICKS_PER_WALL_SECOND_AT_BASE_RATE
@@ -69,13 +105,18 @@ def observed() -> dict[str, Any]:
     state, _ = sim.new_run(run_seed=SEED)
 
     # --- 1. Initial state ------------------------------------------------
-    seen["all_idle"] = all(person.state == sim.STATE_IDLE for person in state.people.values())
+    seen["busy_at_start"] = sorted(
+        person.id for person in state.people.values() if person.state != sim.STATE_IDLE
+    )
+    seen["seeded_items_at_start"] = sorted(
+        item.id for item in state.items.values() if item.status != sim.STATUS_BACKLOG
+    )
     seen["visibility_start"] = state.metrics["visibility"]
     seen["available_at_start"] = [
-        item.id for item in work.ITEMS if item.requires == work.Requires()
+        item.id for item in SHIPPED.items if item.requires == work.Requires()
     ]
     seen["locked_at_start"] = [
-        item.id for item in work.ITEMS if item.requires != work.Requires()
+        item.id for item in SHIPPED.items if item.requires != work.Requires()
     ]
 
     # --- 2. Assign through the reporting line ----------------------------
@@ -101,8 +142,10 @@ def observed() -> dict[str, Any]:
     _advance(state, 10)
     seen["done_before_stall"] = before_stall
     seen["done_after_stall"] = item.done_units
-    seen["blocked_count"] = sum(
-        1 for candidate in state.items.values() if candidate.status == sim.STATUS_BLOCKED
+    seen["blocked_items"] = sorted(
+        candidate.id
+        for candidate in state.items.values()
+        if candidate.status == sim.STATUS_BLOCKED
     )
 
     # --- 4. In-person decisions surface tacit knowledge ------------------
@@ -140,7 +183,7 @@ def observed() -> dict[str, Any]:
     second = state.items["wi_dup_entry"]
     seen["second_status_after_70s"] = second.status
     seen["second_progress_percent"] = (
-        second.done_units * 100 // work.spec("wi_dup_entry").effort_units
+        second.done_units * 100 // SHIPPED.item("wi_dup_entry").effort_units
     )
 
     if second.status == sim.STATUS_BLOCKED:
@@ -156,7 +199,7 @@ def observed() -> dict[str, Any]:
 
     # --- 9. Pathfinding respects walls -----------------------------------
     # The harness uses `S.people[4].seat`, which is the fifth roster entry: Priya.
-    far = state.seats[roster.PEOPLE[4].id]
+    far = state.seats[SHIPPED.people[4].id]
     path = find_path(state.floor, state.floor.spawn, far)
     seen["far_seat"] = far
     seen["path_length"] = len(path)
@@ -177,8 +220,26 @@ def observed() -> dict[str, Any]:
 # =========================================================================
 
 
-def test_everyone_starts_idle(observed: dict[str, Any]) -> None:
-    assert observed["all_idle"] is True
+def test_everyone_starts_idle_except_the_authored_assignment(
+    observed: dict[str, Any],
+) -> None:
+    """The harness's `everyone starts idle`, amended by M6 (R16).
+
+    The prototype opened on an empty floor, and this assertion held literally. M6 changes what
+    the product opens on: one director is already carrying the authored day-zero item, so the
+    first thing on screen is a person waiting. The claim worth keeping from the harness is the
+    one this asserts — that *nothing else* is moving, so the seed is one authored assignment
+    and not a floor that starts itself.
+
+    Named for what it now checks. The harness line it descends from keeps its own wording in
+    `HARNESS_CHECKS`; renaming the test rather than quietly widening `all_idle` is what makes
+    the amendment findable from either side.
+    """
+    seeded = [entry.person_id for entry in SHIPPED.seeded]
+    assert observed["busy_at_start"] == sorted(seeded)
+    assert observed["seeded_items_at_start"] == sorted(
+        entry.item_id for entry in SHIPPED.seeded
+    )
 
 
 def test_visibility_starts_at_6_percent(observed: dict[str, Any]) -> None:
@@ -232,7 +293,18 @@ def test_no_progress_until_you_decide(observed: dict[str, Any]) -> None:
 
 
 def test_one_item_waiting_in_the_tray(observed: dict[str, Any]) -> None:
-    assert observed["blocked_count"] == 1
+    """The harness's one, plus the authored day-zero stop (M6, R16).
+
+    Asserted as the *set* rather than as a count. A count would have gone from 1 to 2 and read
+    as tuning; the set says which two, so a future change that blocks a third item — or that
+    silently loses the seeded one to attrition or a reassignment — fails here naming it.
+
+    The seeded item is still blocked at this point in the harness's script because nobody
+    resolves it: it is Ruth's, and the harness only ever touches Priya's and Dana's work.
+    """
+    assert observed["blocked_items"] == sorted(
+        ["wi_ap_map", *(entry.item_id for entry in SHIPPED.seeded)]
+    )
 
 
 # =========================================================================
@@ -364,6 +436,93 @@ def test_every_person_got_a_distinct_desk(observed: dict[str, Any]) -> None:
 
 
 # =========================================================================
+# Day zero is not an empty floor  (M6)
+# =========================================================================
+#
+# The prototype opened on an idle office. M6 does not, and these are the assertions that hold
+# the difference in place — including the authoring invariants, because M6 is a property of
+# *data* now and a future edit to that data is the way it would be lost.
+
+
+def test_a_new_run_reaches_an_unresolved_checkpoint_with_no_command() -> None:
+    """Covers M6. One tick, no command, a director holding a decision."""
+    state, emitted = sim.new_run(run_seed=SEED)
+
+    # Genesis says nothing about the seed itself: the fold rebuilds it by calling `new_run`,
+    # and an extra WORK_ASSIGNED would be re-applied as an input against an already-active
+    # item. So this is the whole of what creation emits.
+    assert [event.kind.name for event in emitted] == ["GENESIS"]
+
+    produced = sim.step(state)
+    raised = [event for event in produced if event.kind.name == "CHECKPOINT_RAISED"]
+    assert len(raised) == 1, [event.kind.name for event in produced]
+
+    payload = raised[0].payload
+    assert payload["tick"] == 1, "the first frame, not the first sim-minutes"
+    assert SHIPPED.person(payload["person"]).rank == "director"
+    assert state.items[payload["item"]].status == sim.STATUS_BLOCKED
+    assert state.items[payload["item"]].resolved == [False]
+    assert state.people[payload["person"]].state == sim.STATE_BLOCKED
+
+
+def test_the_opening_stop_is_structural_rather_than_arithmetic() -> None:
+    """Each seed is authored at or past its item's first checkpoint.
+
+    This is what makes the opening survive an edit to the item it seeds. Author the progress a
+    percent below the checkpoint and the run still reaches it — a few hundred ticks later, with
+    an empty floor on screen until it does — so the failure would be invisible to every other
+    assertion here.
+    """
+    assert SHIPPED.seeded, "M6 needs at least one authored assignment"
+
+    for seeded in SHIPPED.seeded:
+        spec = SHIPPED.item(seeded.item_id)
+        assert spec.checkpoints, f"{seeded.item_id} has nothing to stop at"
+        assert seeded.done_percent >= spec.checkpoints[0].at_percent
+        assert work.checkpoint_reached(
+            seeded.done_units(spec), spec.effort_units, spec.checkpoints[0].at_percent
+        )
+        # And not past the *last* one, which would open on a run whose seeded work is nearly
+        # finished and whose decision supply is one short.
+        assert seeded.done_percent < 100
+
+
+def test_the_opening_costs_nothing_the_ceo_did_not_choose() -> None:
+    """The seed is not a command, so it carries no command's price.
+
+    A bypass penalty would open every run three morale down, and a hand-off walk would open it
+    with a director crossing the floor — both of which would read as something having already
+    happened to the company rather than as work it was already doing.
+    """
+    state, _ = sim.new_run(run_seed=SEED)
+
+    assert state.metrics == effects.initial_metrics(SHIPPED)
+    for seeded in SHIPPED.seeded:
+        person = state.people[seeded.person_id]
+        assert person.bypassed_director is False
+        assert person.state == sim.STATE_WORKING
+        assert person.pos == person.seat
+        assert person.path == ()
+        # Unlocked, or the CEO opens on an item the DAG draws as unavailable and the kernel
+        # would refuse to reassign.
+        assert sim.is_unlocked(state, seeded.item_id)
+
+
+def test_the_opening_is_not_an_overloaded_office() -> None:
+    """The seeded line opens under its ceiling.
+
+    Over it, the first thing the CEO sees is a department already degrading throughput and
+    losing morale for a reason they had no part in — which turns the opening from an invitation
+    into a mess to clean up.
+    """
+    state, _ = sim.new_run(run_seed=SEED)
+
+    for seeded in SHIPPED.seeded:
+        line = state.line_of_assignee(seeded.person_id)
+        assert state.capacity[line].load_permille < cap.LOAD_CEILING
+
+
+# =========================================================================
 # Traceability
 # =========================================================================
 
@@ -376,7 +535,9 @@ def test_every_person_got_a_distinct_desk(observed: dict[str, Any]) -> None:
 #: is added to this module. This says which harness line each test descends from, so the
 #: parity claim is auditable against the source it claims parity with.
 HARNESS_CHECKS: tuple[tuple[int, str, str | None], ...] = (
-    (100, "everyone starts idle", "test_everyone_starts_idle"),
+    # Amended by M6: the floor no longer starts empty, so the ported check is now "everyone
+    # except the one authored assignee". See the test's own docstring, and R16.
+    (100, "everyone starts idle", "test_everyone_starts_idle_except_the_authored_assignment"),
     (101, "visibility starts at 6%", "test_visibility_starts_at_6_percent"),
     (102, "5 directives available at start", "test_five_directives_available_at_start"),
     (104, "3 directives locked at start", "test_three_directives_locked_at_start"),
@@ -505,6 +666,48 @@ def test_golden_walk_vector_matches_the_kernel() -> None:
     for case in vector["walk_duration_ticks"]:
         assert simtime.walk_duration_ticks(int(case["distance"])) == int(case["ticks"])
 
+    track = vector["track"]
+    origin = (int(track["origin"][0]), int(track["origin"][1]))
+    path = [(int(x), int(y)) for x, y in track["path"]]
+    for case in track["cases"]:
+        elapsed = int(case["elapsed"])
+        assert simtime.walk_position_milli(origin, path, elapsed) == (
+            int(case["x_milli"]),
+            int(case["y_milli"]),
+        )
+        assert (elapsed >= int(track["duration_ticks"])) is case["arrived"]
+
+
+def test_the_golden_walk_track_is_the_walk_the_kernel_actually_produces() -> None:
+    """The vector is a recorded event, not a hand-written path.
+
+    A path typed into the fixture would be a second opinion about the floor, and the two would
+    part company the first time the generator changed. This is the check that it is still the
+    kernel's own answer: the same walk, resolved by the same pathfinder over the same geometry.
+    """
+    vector = _load("walk.json")["track"]
+    state, _ = sim.new_run(run_seed=SEED)
+
+    walker = state.people[vector["walker"]]
+    assert [str(coordinate) for coordinate in walker.pos] == vector["origin"], (
+        "the vector's walker no longer starts where it was generated from"
+    )
+
+    destination = (int(vector["path"][-1][0]), int(vector["path"][-1][1]))
+    resolved = find_path(state.floor, walker.pos, destination)
+    assert [[str(x), str(y)] for x, y in resolved] == vector["path"]
+    assert simtime.walk_duration_ticks(len(resolved)) == int(vector["duration_ticks"])
+
+
+def test_the_golden_walk_track_turns_at_least_one_corner() -> None:
+    """Otherwise a port that interpolated only the x axis would pass it."""
+    path = [(int(x), int(y)) for x, y in _load("walk.json")["track"]["path"]]
+    axes = {
+        (path[index][0] - path[index - 1][0], path[index][1] - path[index - 1][1])
+        for index in range(1, len(path))
+    }
+    assert len(axes) > 1, f"the vectored path never changes direction: {path}"
+
 
 def test_golden_walk_vector_covers_values_above_2_53() -> None:
     """The point of the vector: a double-based port fails here rather than in production."""
@@ -544,7 +747,7 @@ def test_golden_ceo_vector_matches_the_kernel() -> None:
 def test_golden_palette_vector_covers_every_person() -> None:
     vector = _load("palette.json")
     covered = {case["id"] for case in vector["cases"]}
-    for person in roster.PEOPLE:
+    for person in SHIPPED.people:
         assert person.id in covered, f"no palette vector for {person.id}"
 
 

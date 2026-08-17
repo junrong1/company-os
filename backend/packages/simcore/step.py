@@ -29,6 +29,22 @@ source from roughly 36 position rows per second to one event per keypress.
 style preference: seed determinism needs a stable order as much as a stable RNG. The
 order is day boundary, then work, then movement, then CEO — matching the prototype,
 whose `tick(dt)` runs the rollover and work before the loop moves anyone.
+
+**The company is on `State`, not in a global.** The roster and the work graph were module
+constants until U6, read here at fold and step time. One process ticks many runs at once, so a
+scenario in a global would be a single company shared across runs of different ones — and the
+symptom would be a run seating people from somebody else's roster, or pricing a decision
+against a department it does not have. `state.scenario` is an immutable fold-time input,
+excluded from the state hash because the genesis event already records its content hash and
+hashing the same structure twice would move the state-shape version for a value that cannot
+change within a run. `snapshot()` below is the only input to `hashing.state_hash`, and it omits
+the scenario — enforced rather than remembered, because `state_hash` refuses an undeclared
+subsystem.
+
+**Three lookups go through `State` rather than through the scenario directly**, and that is the
+point of them: `rank_of`, `name_of` and `manager_of` answer for an arrived hire, who is in
+`state.people` and on no authored roster. Reading the roster straight raised `KeyError` past
+the point where `CommandRejected` is caught.
 """
 
 from __future__ import annotations
@@ -45,6 +61,8 @@ from simcore import lifecycle
 from simcore import morale as mor
 from simcore import pending as pend
 from simcore import people as roster
+from simcore import scenario as sc
+from simcore import statement as stmt
 from simcore import time as simtime
 from simcore.rates import DIRECTOR_RATE, RULES_VERSION, TUNING, apply_rates
 from simcore.world import DEFAULT_COLS, DEFAULT_ROWS, Floor, find_path, plan_floor, walkable
@@ -87,6 +105,19 @@ INPUT_MASK = INPUT_LEFT | INPUT_RIGHT | INPUT_UP | INPUT_DOWN
 #: A guard rather than tuning, so it stays out of TUNING and out of the rules version. Changing
 #: a limit on what may be submitted does not change what a recorded run means.
 MAX_INPUT_LEAD_TICKS = simtime.TICKS_PER_SIM_DAY
+
+#: How near the CEO must stand for a director to brief them, in milli-tiles.
+#:
+#: The client's `OPEN_RADIUS_MILLI` (`frontend/src/ui/conversation-model.ts`), and it has to be the
+#: same number: the pending block for a statement renders on the conversation panel that radius
+#: opens, so a kernel with its own radius would raise requests for a director the client is not
+#: showing, or show a panel with no briefing coming.
+#:
+#: A guard rather than tuning, so it stays out of TUNING and out of the rules version. It bounds
+#: when the kernel *asks* a question; it changes nothing about what a recorded run means, and moving
+#: the rules version would invalidate every kept snapshot to say "the CEO now stands a little
+#: closer".
+STATEMENT_RANGE_MILLI = 1900
 
 #: How long a typed question may be.
 #:
@@ -141,6 +172,23 @@ STATE_BLOCKED = "blocked"
 STATE_WALKING = "walking"
 STATE_MEETING = "meeting"
 
+#: What each arrival intent leaves the walker in once the path runs out.
+#:
+#: A table rather than a chain of branches inside `_arrive`, because the movement event has to
+#: carry the same answer: a client is *told* what a walk ends in rather than mapping the intent
+#: itself, and a second copy of this mapping in TypeScript would be duplicated logic with
+#: nothing comparing the two halves. `_arrive` reads it, so there is one place to change.
+ARRIVE_STATE: dict[str, str] = {
+    ARRIVE_NONE: STATE_IDLE,
+    ARRIVE_START_WORK: STATE_WORKING,
+    ARRIVE_RESUME_WORK: STATE_WORKING,
+    ARRIVE_ENTER_MEETING: STATE_MEETING,
+    ARRIVE_SIT_IDLE: STATE_IDLE,
+    # A hand-off does not end in standing: the director hands the work across and sets off
+    # home in the same tick, which is a walk of its own and an event of its own.
+    ARRIVE_HANDOFF: STATE_WALKING,
+}
+
 STATUS_BACKLOG = "backlog"
 STATUS_ASSIGNED = "assigned"
 STATUS_ACTIVE = "active"
@@ -182,9 +230,9 @@ class PersonRuntime:
     #: in different orders hash the same.
     answered: list[str] = field(default_factory=list)
 
-    @property
-    def rank(self) -> str:
-        return roster.spec(self.id).rank
+    # No `rank` property. It read the module-level roster and raised `KeyError` for an arrived
+    # hire — someone in `state.people` whom no scenario authored — and a `PersonRuntime` has no
+    # way to reach the company the run was created against. It is `State.rank_of` now.
 
     def to_state(self) -> dict[str, Any]:
         return {
@@ -310,6 +358,9 @@ class State:
     """Everything a run is. Integers throughout; no float, no set."""
 
     run_seed: int
+    #: The company this run was created against (M9). An immutable fold-time input, deliberately
+    #: outside the state hash — see the module docstring, and `snapshot()` at the foot of it.
+    scenario: sc.Scenario
     tick: int
     floor: Floor
     seats: dict[str, tuple[int, int]]
@@ -326,7 +377,12 @@ class State:
     morale: dict[str, mor.PersonMorale] = field(default_factory=dict)
     #: Requested and arrived hires, keyed by request id.
     hires: dict[str, hiring.Hire] = field(default_factory=dict)
-    #: Work items created at runtime — hiring items. Authored items live in `items.ITEMS`.
+    #: Work items created at runtime — hiring items. Authored items live on `scenario.items`.
+    #:
+    #: Kept as a second table rather than merged into the scenario, and U6 confirmed it has to
+    #: stay one: `snapshot.to_wire` writes eight fields per dynamic item and no `checkpoints`
+    #: tuple, so a branch forked from a state holding an authored item here would come back with
+    #: an empty tuple and fail on an index. The authored catalog stays on the static path.
     dynamic_items: dict[str, work.ItemSpec] = field(default_factory=dict)
     #: People who have left. Kept rather than deleted so the log stays interpretable.
     departed: list[str] = field(default_factory=list)
@@ -354,16 +410,52 @@ class State:
         """An item's spec, authored or created at runtime."""
         if item_id in self.dynamic_items:
             return self.dynamic_items[item_id]
-        return work.spec(item_id)
+        return self.scenario.item(item_id)
 
     def line_of(self, person_id: str) -> str:
-        return roster.reporting_line_of(person_id)
+        return self.scenario.reporting_line_of(person_id)
+
+    def rank_of(self, person_id: str) -> str:
+        """A person's rank, `"staff"` for an arrived hire.
+
+        A hire is in `state.people` and on no authored roster, so the roster lookup this
+        replaces raised `KeyError`. `"staff"` rather than a refusal because that is what a hire
+        *is* — hiring adds capacity to a line, never a second head of one, and `attrition` and
+        the bypass penalty both need an answer rather than an exception.
+        """
+        person = self.scenario.people_by_id.get(person_id)
+        return person.rank if person is not None else "staff"
+
+    def name_of(self, person_id: str) -> str:
+        """A person's name for a message or a provenance line; their id if nobody authored one.
+
+        The id rather than a placeholder: a deliverable's provenance is an audit line, and
+        "Somebody — 12 hours of work" would be less use than the id the log already carries.
+        """
+        person = self.scenario.people_by_id.get(person_id)
+        return person.name if person is not None else person_id
+
+    def manager_of(self, person_id: str) -> str:
+        """Whose line this person reports into, `""` for a director.
+
+        For an authored person this is exactly their authored `manager`, so no shipped value
+        moves. For an arrived hire — whom no scenario authored — it is the director of the line
+        they were hired into, which is the answer that makes assigning work around them count as
+        a bypass in the same way it does for anybody else at their level.
+        """
+        person = self.scenario.people_by_id.get(person_id)
+        if person is not None:
+            return person.mgr
+        for hire in self.hires.values():
+            if hire.person_id == person_id:
+                return hire.director_id
+        return ""
 
     def present_members(self, director_id: str) -> tuple[str, ...]:
         """Everyone still in this line, the director included and departures excluded."""
         members = [
             person_id
-            for person_id in cap.members_of(director_id)
+            for person_id in self.scenario.lines.get(director_id, ())
             if person_id not in self.departed
         ]
         members.extend(
@@ -385,10 +477,11 @@ class State:
         return total
 
     def line_of_assignee(self, person_id: str) -> str:
+        """The line an assignee's work loads, hires included."""
         for hire in self.hires.values():
             if hire.person_id == person_id:
                 return hire.director_id
-        return roster.reporting_line_of(person_id)
+        return self.scenario.reporting_line_of(person_id)
 
     def person(self, person_id: str) -> PersonRuntime:
         try:
@@ -418,36 +511,46 @@ def new_run(
     cols: int = DEFAULT_COLS,
     rows: int = DEFAULT_ROWS,
     horizon_tick: int | None = None,
+    scenario: sc.Scenario | None = None,
 ) -> tuple[State, list[Emitted]]:
     """Create a run, and the genesis event recording what it was created with.
 
     Geometry is computed here, once, and recorded. Nothing downstream re-derives it
     from a viewport.
+
+    `scenario` defaults to the shipped company rather than being required, which is what let the
+    wiring land without touching forty-two call sites — and it is the right default anyway:
+    "which company" is a choice the gateway offers (U7), not something every caller of the
+    kernel library has an opinion about. The fold passes the one the run recorded, and
+    `log._apply_genesis` is the site that refuses a scenario whose file has since changed.
     """
+    company = sc.load_default() if scenario is None else scenario
     floor = plan_floor(cols, rows)
-    seats = roster.assign_seats(floor)
+    seats = roster.assign_seats(company, floor)
 
     state = State(
         run_seed=run_seed,
+        scenario=company,
         tick=0,
         floor=floor,
         seats=seats,
-        metrics=effects.initial_metrics(),
+        metrics=effects.initial_metrics(company),
         people={
             person.id: PersonRuntime(id=person.id, pos=seats[person.id], seat=seats[person.id])
-            for person in roster.PEOPLE
+            for person in company.people
         },
         items={
             item.id: ItemRuntime(id=item.id, resolved=[False] * len(item.checkpoints))
-            for item in work.ITEMS
+            for item in company.items
         },
         ceo=CeoRuntime(x_milli=floor.spawn[0] * MILLI, y_milli=floor.spawn[1] * MILLI),
-        capacity=cap.new_capacity(),
-        morale=mor.new_morale(),
+        capacity=cap.new_capacity(company),
+        morale=mor.new_morale(company),
         horizon_tick=(
             lifecycle.default_horizon_tick() if horizon_tick is None else horizon_tick
         ),
     )
+    _seed_authored_work(state)
     _refresh_load(state)
 
     # Anything already available on day one is announced by genesis itself — the catalog and
@@ -462,17 +565,22 @@ def new_run(
             "quantum_sim_seconds": simtime.QUANTUM_SIM_SECONDS,
             "grid": [cols, rows],
             "horizon_tick": state.horizon_tick,
-            "decision_supply": lifecycle.decision_supply(),
+            "decision_supply": lifecycle.decision_supply(company),
             "rules_ver": RULES_VERSION,
-            "metrics": effects.initial_metrics(),
-            "draws": dict(cap.DEPARTMENT_DRAWS),
+            # Which company this run is of, and which exact revision of it (R7). Three sites
+            # check it and refuse a run whose file has since been edited; see
+            # `scenario.load_recorded`. It rides genesis rather than a store column so that an
+            # exported log carries its own provenance and a fork inherits it for free.
+            "scenario": company.identity(),
+            "metrics": effects.initial_metrics(company),
+            "draws": dict(company.draws),
             "floor": floor.to_state(),
-            "roster": roster.roster_to_state(seats),
-            "items": [item.id for item in work.ITEMS],
+            "roster": roster.roster_to_state(company, seats),
+            "items": [item.id for item in company.items],
             # The authored work graph. Ids alone were enough while nothing read the
             # dependency edges; U14's DAG assigns layers by longest-path depth over the
             # whole graph, so it needs the edges before anything unlocks.
-            "catalog": work.catalog_to_state(),
+            "catalog": work.catalog_to_state(company),
             # The metric table, `good` included. The HUD renders each metric against its
             # own favourable direction, and deriving that client-side would make cutting
             # manual hours read as a regression.
@@ -484,6 +592,65 @@ def new_run(
         },
     )
     return state, [genesis]
+
+
+def _seed_authored_work(state: State) -> None:
+    """Put the authored day-zero work in flight, so day one is not an empty floor (M6).
+
+    **This emits no event, and that is the load-bearing part.** The fold rebuilds genesis by
+    calling this same `new_run` (`log._apply_genesis`), so the seed is already applied by the
+    time any logged event is replayed. A `WORK_ASSIGNED` alongside it would be worse than
+    redundant: that kind is an *input*, so the replay would re-issue `assign_direct` against
+    an item this function had already made active, and the command would be rejected mid-fold.
+    The genesis event is the record; the seed is part of what genesis means.
+
+    **It is still not on the genesis payload, and U6 decided that deliberately.** U2 deferred
+    the question here on the reasoning that R7's mechanism would make the seed checkable. R7
+    makes it checkable *by hash*: the seed is inside the scenario's content hash, so a file whose
+    seed moved is refused at all three guards by name and revision. A payload copy would be a
+    key nothing reads — the fold rebuilds the seed by calling this function with the recorded
+    scenario rather than by reading a payload, the client learns the seeded item from the first
+    `CHECKPOINT_RAISED` (which names the person, the item and the effort already burned, with no
+    command anywhere before it to explain them), and the drift report would need a fourth
+    comparison projection to say anything about it that the hash does not already refuse. A
+    scenario field the payload does not carry narrows the *report* rather than the guard, and
+    `_mismatch` says so in as many words.
+
+    **It goes through `_start_work` rather than setting the fields itself**, so a seeded person
+    reaches their desk by the same path a delegated one does. They are already sitting at it at
+    genesis, so no walk is generated.
+
+    **A seed that would walk refuses rather than dropping the walk.** Since movement went on the
+    wire (R15), `_start_work` emits an event for anyone not already at their desk, and genesis has
+    nowhere to put one: `new_run` returns GENESIS alone, and the fold rebuilds this state by
+    *calling* `new_run` rather than by replaying events. So a movement event produced here would
+    either be swallowed — the client never sees the walk and the person teleports on their first
+    step — or appended, which puts an output event at tick zero that no `step()` regenerates and
+    makes strict replay diverge on it. Neither happens today, and U6 kept it that way rather than
+    teaching genesis to carry a walk: a scenario cannot express a seed that walks, because
+    `[[seeded_assignment]]` names an item and a person and the person's desk is where they start.
+    A format that let an author seed somebody mid-floor would have to be refused at *load*, where
+    the message can name the line, rather than here at genesis.
+
+    A log written before this seed existed folds to a different day-zero state under an
+    unchanged rules version, because RULES_VERSION digests the tuning table and the multiplier
+    order — not the authored roster or work graph. That is survivable only because U9's
+    DDL_VERSION bump makes the store a documented wipe; there are no older logs to fold.
+    """
+    for seeded in state.scenario.seeded:
+        item = state.items[seeded.item_id]
+        person = state.people[seeded.person_id]
+        item.assignee = person.id
+        item.done_units = seeded.done_units(state.scenario.item(seeded.item_id))
+        if _start_work(state, person, item):
+            raise ValueError(
+                f"the seeded assignment of {seeded.item_id} puts {seeded.person_id} at "
+                f"{person.pos} rather than at their desk {person.seat}, so genesis would have "
+                "to carry a movement event — and it cannot, because the fold rebuilds genesis "
+                "by calling new_run, so an output event at tick zero regenerates nowhere and "
+                "strict replay diverges on it. Seed people at their desks, or teach the fold "
+                "to compare genesis' own outputs."
+            )
 
 
 # =========================================================================
@@ -532,11 +699,16 @@ def step(state: State) -> list[Emitted]:
     events.extend(_announce_unlocks(state))
 
     # Phase 6 — the pending-input contract: apply answers that land on this tick, raise the
-    # period consult at a period boundary, and abandon anything past its deadline. All three
-    # inside the step, so both the deadline and the cap are properties of the run rather than of
-    # the machine.
+    # period consult at a period boundary and a statement request where the CEO is standing at an
+    # open checkpoint, and abandon anything past its deadline. All of it inside the step, so the
+    # deadline, the cap and the request itself are properties of the run rather than of the machine.
+    #
+    # After movement, because whether the CEO is beside a director is a fact about where this tick
+    # left them; before abandonment, because a request raised this tick is not overdue this tick and
+    # asking the question in the other order would only invite somebody to wonder.
     events.extend(_apply_queued_answers(state))
     events.extend(_raise_period_consult(state))
+    events.extend(_raise_statement_requests(state))
     events.extend(_abandon_overdue_requests(state))
 
     # Phase 7 — has the run ended? Evaluated here, at the boundary of the quantum that just
@@ -557,15 +729,34 @@ def raise_request(
     owning_item: str,
     request_id: str,
     period_index: int = 0,
+    *,
+    subject: dict[str, Any] | None = None,
+    deadline_ticks: int | None = None,
 ) -> list[Emitted]:
-    """Emit a request and stall the owning item. The clock keeps running.
+    """Emit a request against the owning item. The clock keeps running.
 
     No network call happens here (R2). The kernel records that it asked; the transport is the
     caller's business, and on replay the caller never runs.
+
+    **This does not stall the item, and the docstring used to say it did.** It records the request
+    in `state.pending` and emits `REQUEST_RAISED`, and nothing in `_advance_work` or the burn path
+    reads `state.pending` — so the claim was true only by accident of its two callers, one of which
+    attaches to a synthetic item and the other of which acts on an item that was *already* blocked
+    at its checkpoint. Building the stall is U15's, together with the state-shape move that comes
+    with it (R24); correcting the sentence is whichever unit touches this function first.
+
+    `subject` is the leg-specific half of the payload and is absent entirely for a leg that has
+    none. Merged rather than nested, because the sequence diagram this implements names `person` on
+    the event; conditional rather than defaulted, because a key added here for the bench would
+    change what `step()` regenerates for a *period consult* — and every log written before this unit
+    would then fail strict replay on an event the bench has nothing to do with.
+
+    `deadline_ticks` is per request for the same reason it is per leg (R18). A statement's window is
+    sized against a provider API and the period consult's against a service on a loopback; sharing
+    one number would make the bench's dominant path at speed abandonment. It costs no state-shape
+    move, because `PendingRequest.deadline_tick` is already an absolute tick per request.
     """
-    per_item = sum(
-        1 for request in state.pending.values() if request.owning_item == owning_item
-    )
+    per_item = pend.outstanding_for_item(state.pending, owning_item)
     if per_item >= pend.MAX_OUTSTANDING_PER_ITEM:
         raise pend.RequestCapExceeded(
             f"{owning_item} already has {per_item} outstanding requests, at the cap of "
@@ -578,12 +769,13 @@ def raise_request(
             f"{pend.MAX_OUTSTANDING_PER_RUN}"
         )
 
+    window = pend.REQUEST_DEADLINE_TICKS if deadline_ticks is None else deadline_ticks
     request = pend.PendingRequest(
         request_id=request_id,
         service=service,
         owning_item=owning_item,
         raised_at_tick=state.tick,
-        deadline_tick=state.tick + pend.REQUEST_DEADLINE_TICKS,
+        deadline_tick=state.tick + window,
         period_index=period_index,
     )
     state.pending[request_id] = request
@@ -592,6 +784,10 @@ def raise_request(
         Emitted(
             kind=EventKind.REQUEST_RAISED,
             payload={
+                # The subject goes first so the contract's own keys win a collision. Canonical
+                # encoding sorts keys, so the order costs nothing on the wire and buys the
+                # guarantee that a leg cannot rewrite `service` or `deadline_tick` by naming them.
+                **(subject or {}),
                 "tick": state.tick,
                 "service": service,
                 "owning_item": owning_item,
@@ -604,14 +800,63 @@ def raise_request(
 
 
 def receive_answer(
-    state: State, request_id: str, answer: dict[str, Any], at_tick: int | None = None
+    state: State,
+    request_id: str,
+    answer: dict[str, Any],
+    at_tick: int | None = None,
+    *,
+    paused: bool = False,
 ) -> list[Emitted]:
     """Queue an answer for the tick it applies at.
 
     Only the tick loop appends (R22), so an answer arriving on a stream is enqueued here and
     applied at a tick boundary rather than written on the spot. That is what makes sole-writer
     true at the transaction level rather than merely at the process level.
+
+    **A statement's landing tick is derived from the tick that raised the request, never from the
+    live tick** (R17). The live tick at the moment an answer arrives is how long the provider took,
+    so a landing tick read from it makes provider latency hashed state — `pending` is a hashed
+    subsystem and the landing tick is when a request leaves it — and two fresh runs from one seed
+    diverge on nothing the player did. Deriving it from `raised_at_tick` makes latency invisible to
+    the run, which is the same call this contract already made for deadlines.
+
+    `paused` is the one branch that reads the clock, and it reads a tick the *player* set rather
+    than one the provider set: while the run is paused `state.tick` does not move, so every answer
+    arriving during a pause lands at the same tick however slow it was. Without this branch a
+    request raised at T, a pause at T+2 and an answer at T+5 wall-clock leaves the conversation
+    waiting for a tick the run will never reach, with the sim-tick deadline unable to fire either —
+    the hang execution decision §2 closes. It is a parameter rather than a field on `State` for the
+    reason §2 gives: a `rate` on `State` would move the state-shape version and regenerate every
+    golden fixture to buy what the input event already carries.
+
+    §2's table says "the current tick" for the paused branch; this adds one to it, and the reason is
+    mechanical rather than a departure. `step()` increments the clock *before* it applies queued
+    answers, so an answer filed at the tick the run is paused at is never popped. The first tick a
+    paused run reaches when it resumes is that tick plus one, and it is just as much a
+    player-determined tick.
+
+    **Refusals on this path raise rather than emit, and that is a replay requirement rather than a
+    style choice.** `ANSWER_REJECTED` is in the fold's *output* set, so the fold expects `step()` to
+    regenerate every one of them — and it can only regenerate the ones the step derives. A refusal
+    from here appends an output event with no `INPUT_RECEIVED` beside it, so there is nothing for
+    `log._apply_input` to re-issue, nothing regenerates, and `_expect_exhausted` fails the strict
+    comparison on a log that is in fact a faithful record. `CommandRejected` mutates nothing and
+    appends nothing, which is what `compare_options` does with `MAX_COMPARISON_PAYLOAD_BYTES` and for
+    the same reason. What the log then says about the request is that it was never answered, which is
+    true, and the step's own abandonment says so at the deadline.
+
+    The refusals are therefore checked **only on the live path**. On replay `at_tick` is set, the
+    answer is already a logged fact, and re-checking it could only refuse a log that exists.
     """
+    if not isinstance(answer, dict):
+        # Checked before anything is read off it, because `dict(answer)` below is what raises and it
+        # sits after the queue mutation — a non-mapping answer used to queue itself and then kill the
+        # tick loop at the landing tick, two sim-days later, with the exception nowhere near the
+        # cause. A leg that answers the wrong shape is a rejection with a sentence.
+        raise CommandRejected(
+            f"an answer is a mapping, got {type(answer).__name__}"
+        )
+
     request = state.pending.get(request_id)
     if request is None:
         # Either already answered, or never asked. Either way it is a duplicate, and the
@@ -631,15 +876,36 @@ def receive_answer(
             )
         ]
 
-    applies_at = max(state.tick + 1, at_tick or state.tick + 1)
-    state.queued_answers.setdefault(applies_at, []).append(
-        {"request_id": request_id, "answer": answer}
-    )
+    if at_tick is not None:
+        # Replay's path: the landing tick is a recorded fact on an input event, so it is read
+        # rather than re-derived. `log._apply_input` passes it, which is what makes a replay
+        # reproduce a landing tick it could not otherwise know — a pause is in the log
+        # independently, but re-deriving would mean the fold reconstructing which branch fired.
+        applies_at = at_tick
+    else:
+        applies_at = _landing_tick(state, request, paused=paused)
+
+        unloggable = _answer_not_loggable(answer)
+        if unloggable:
+            raise CommandRejected(unloggable)
+
+        if applies_at <= state.tick:
+            raise CommandRejected(
+                f"the answer applies at tick {applies_at}, which the run passed at tick "
+                f"{state.tick}; the leg had "
+                f"{request.deadline_tick - request.raised_at_tick} ticks and its answer landed "
+                "outside the window. The request stays outstanding and the step abandons it at "
+                "its deadline."
+            )
 
     # The answer itself is logged, carrying the tick it applies at. This is the event replay
     # reads instead of re-issuing the call (R3) — so the content has to be here, not merely the
     # fact that something answered.
-    return [
+    #
+    # Built *before* the queue is touched. `dict(answer)` is the last thing that can fail, and a
+    # failure after the mutation leaves an answer in memory that the log has no row for — which
+    # applies at the landing tick and takes the state hash away from the log with it.
+    emitted = [
         Emitted(
             kind=EventKind.INPUT_RECEIVED,
             payload={
@@ -654,6 +920,50 @@ def receive_answer(
         )
     ]
 
+    state.queued_answers.setdefault(applies_at, []).append(
+        {"request_id": request_id, "answer": answer}
+    )
+    return emitted
+
+
+def _landing_tick(state: State, request: pend.PendingRequest, *, paused: bool) -> int:
+    """The tick this answer applies at, derived and never read from the live clock (R17)."""
+    if not request.is_statement:
+        # The domain consult and the resolver keep the tick they have always landed at. Neither is
+        # reached by a provider — the shipped domain model is arithmetic in-process and the shipped
+        # resolver declines — so neither carries the latency R17 is about, and moving them would
+        # change a period's metric application tick for no requirement.
+        return state.tick + 1
+    if paused:
+        return state.tick + 1
+    return request.raised_at_tick + pend.STATEMENT_OFFSET_TICKS
+
+
+def _answer_not_loggable(answer: dict[str, Any]) -> str:
+    """Why this answer may not become a logged fact, or the empty string.
+
+    Encoded rather than estimated, because the encoded form is what the log holds and a character
+    count over the prose would miss a context list entirely. `contracts.canonical` is the same
+    encoder the append uses, so the two cannot disagree about the size — and it is pure, which is
+    what lets this live inside the step at all.
+    """
+    from contracts import canonical
+
+    try:
+        size = len(canonical.encode(answer))
+    except (TypeError, ValueError) as refused:
+        # The append would refuse it too — no float may cross the log (R6) — but it would refuse it
+        # from inside the writer, where the failure is a 500 or a dead dispatch task rather than a
+        # rejection anybody can read. Caught here so it is a logged reason instead.
+        return f"the answer cannot be canonically encoded: {refused}"
+
+    if size > pend.MAX_ANSWER_PAYLOAD_BYTES:
+        return (
+            f"the answer encodes to {size} bytes, over the bound of "
+            f"{pend.MAX_ANSWER_PAYLOAD_BYTES}; the log is append-only and cannot take a row back"
+        )
+    return ""
+
 
 def _apply_queued_answers(state: State) -> list[Emitted]:
     """Apply answers whose tick has arrived, validating each before it becomes a logged fact."""
@@ -666,8 +976,13 @@ def _apply_queued_answers(state: State) -> list[Emitted]:
         if request is None:
             continue
 
+        # Three legs, three branches (R1). Until this unit the dispatch was two, so *every*
+        # non-domain answer fell into the resolver — and a statement arriving there would have
+        # resolved or escalated a checkpoint, which is the one thing a director must never do.
         if request.service == pend.DOMAIN:
             events.extend(_apply_domain_answer(state, request, answer))
+        elif request.is_statement:
+            events.extend(_apply_statement_answer(state, request, answer))
         else:
             events.extend(_apply_agent_answer(state, request, answer))
 
@@ -772,6 +1087,270 @@ def _apply_agent_answer(
     return resolve_checkpoint(state, item.id, cp_index, option_index, in_person=False)
 
 
+def _apply_statement_answer(
+    state: State, request: pend.PendingRequest, answer: dict[str, Any]
+) -> list[Emitted]:
+    """Accept a briefing, or refuse it and say why. Moves no metric (M22).
+
+    **Accepting produces no event, and that is the point.** The statement is already in the log:
+    it rode `INPUT_RECEIVED`, which is an input kind and is therefore read rather than regenerated,
+    so the prose, the citations, the retrieved context and the producer identity are all a recorded
+    fact by the time this runs (R2, M31, M32). What is left for the landing tick is the only state
+    consequence a statement has — the request stops being outstanding — and `pending` is a hashed
+    subsystem, so that consequence is already covered.
+
+    **Refusing produces one, and that is also the point.** `ANSWER_REJECTED` is an output kind, so
+    the verdict is regenerated by the step and compared byte-for-byte against the log. That is what
+    makes the guard auditable rather than merely enforced: a reader can re-derive from the log that a
+    statement was refused, without trusting the service that produced it. Execution decision §1 is
+    the whole of this branch's reason for existing.
+
+    The scope is re-derived here rather than read off the request, for the reason the fold
+    regenerates outputs at all: a scope read from the payload would make the check as trustworthy as
+    the payload. It comes from folded state — the producer's line, and which items are assigned into
+    it — so a tampered request cannot widen it.
+    """
+    del state.pending[request.request_id]
+
+    producer = str(answer.get(stmt.KEY_PRODUCER, ""))
+    refusal = _statement_refusal(state, request, producer, answer)
+
+    if refusal:
+        # No escalation flag: an item waiting on a *decision* escalates to the CEO's tray, and a
+        # briefing is not a decision. The checkpoint is exactly as open as it was, and R5 sends this
+        # to the same exit as a provider error — that director's scripted reply for that turn.
+        return [
+            Emitted(
+                kind=EventKind.ANSWER_REJECTED,
+                payload={
+                    "tick": state.tick,
+                    "reason": refusal,
+                    "owning_item": request.owning_item,
+                    "service": request.service,
+                    "producer": producer,
+                },
+                request_id=request.request_id,
+            )
+        ]
+
+    return []
+
+
+def _statement_refusal(
+    state: State, request: pend.PendingRequest, producer: str, answer: dict[str, Any]
+) -> str:
+    """Why this statement may not stand, or the empty string. Pure over folded state."""
+    if not stmt.is_statement_answer(answer):
+        return (
+            "an answer on the bench leg that carries no briefing is not a statement; the leg "
+            "answered the wrong shape rather than declining"
+        )
+
+    item = state.items.get(request.owning_item)
+    if item is None or not item.assignee:
+        return (
+            "the item is no longer somebody's to brief on — it was returned to the backlog, or "
+            "its assignee was removed by attrition"
+        )
+
+    if producer not in state.people or producer in state.departed:
+        return f"{producer!r} is not somebody this company can brief the CEO"
+
+    if state.rank_of(producer) != "director":
+        # M14: four directors are model-backed and specialists stay scripted. A statement
+        # attributed to a specialist is a persona the scenario did not author.
+        return f"{producer!r} is not a director, and only a director produces a statement (M14)"
+
+    # Derived from the *item's* line, not from the producer the answer names. Deriving it from the
+    # producer would make the attribution check compare a value to itself, and the scope check would
+    # then be against whichever line the answer claimed — which is the leg choosing its own scope by
+    # a different door. `stmt.refusal` catches the mismatch.
+    #
+    # The line is read at the *landing* tick, while the leg drew its context under the line recorded
+    # at the raising tick up to two sim-days earlier. So there are two ways to arrive here and folded
+    # state cannot tell them apart — the answer names a director the request was not raised on, or
+    # the item was reassigned across lines while the director was thinking — and the message names
+    # both rather than asserting the one that happens to be more common. Either way the statement is
+    # about work this producer does not own, which is the fact that decides it.
+    authorized = _authorized_scope(state, state.line_of_assignee(item.assignee))
+    if authorized.director != producer:
+        return (
+            f"{producer!r} produced a statement about an item in {authorized.director!r}'s line: "
+            "either it is misattributed, or the item was reassigned across lines while the "
+            "director was thinking"
+        )
+
+    return stmt.refusal(answer, authorized=authorized)
+
+
+def _authorized_scope(state: State, director_id: str) -> stmt.Authorized:
+    """What this director may read, derived from folded state (R23).
+
+    The one derivation. `step()` records it on the request so the leg is *told* its scope, and this
+    same function re-derives it at the landing tick so the check does not trust what it recorded. A
+    second derivation in the agents service would be the second place the rule lived, and the two
+    would disagree the first time a reassignment moved an item between lines.
+    """
+    return stmt.authorized_for(
+        state.scenario,
+        director_id,
+        line_members=state.present_members(director_id),
+        line_items=[
+            item_id
+            for item_id, item in state.items.items()
+            if item.assignee and state.line_of_assignee(item.assignee) == director_id
+        ],
+    )
+
+
+def _raise_statement_requests(state: State) -> list[Emitted]:
+    """Ask a director for a briefing when the CEO opens their checkpoint in person (M17).
+
+    **Derived here, inside the step, and never issued from a command handler.** `REQUEST_RAISED` is
+    in the fold's output set and is compared byte-for-byte against what `step()` reproduces, so a
+    request emitted from a command path fails strict replay — the fold would regenerate nothing at
+    that tick and find an event in the log. Three facts the fold already reproduces decide it: the
+    CEO standing next to a director, an open checkpoint on an item in that director's line, and no
+    statement already asked for that checkpoint.
+
+    **Never per tick** (M17). The third condition is what makes that true: a request outstanding for
+    the checkpoint suppresses the next one, and the window is `STATEMENT_OFFSET_TICKS` wide — two
+    sim-days — so a CEO standing at a desk asks once and not thirty-six times a wall-second.
+
+    **The cap is avoided rather than caught.** `raise_request` raises `RequestCapExceeded` past the
+    cap, and an exception escaping `step()` is not a refused request, it is a dead clock: the tick
+    task's done callback records it and readiness reports a stopped run. So the count is checked
+    here, against the same helper the cap uses, and an item at its limit is skipped. It is still
+    caught below as well, because the *run*-wide cap can bind on an item that is under its own.
+    """
+    events: list[Emitted] = []
+
+    for director_id in state.scenario.directors:
+        if director_id in state.departed or director_id not in state.people:
+            continue
+        if not _ceo_is_beside(state, state.people[director_id]):
+            continue
+
+        open_checkpoint = _open_checkpoint_in_line(state, director_id)
+        if open_checkpoint is None:
+            continue
+        item_id, cp_index = open_checkpoint
+
+        if _already_asked(state, item_id, cp_index, director_id):
+            continue
+        if pend.outstanding_for_item(state.pending, item_id) >= pend.MAX_OUTSTANDING_PER_ITEM:
+            continue
+
+        # No guard around this. `authorized_for` puts the director in their own scope, so the empty
+        # scope `Authorized` refuses is unreachable from here — `director_id` comes from
+        # `scenario.directors` and cannot be blank. The refusal exists for `Authorized.from_payload`,
+        # which builds one from a payload nothing in this process wrote.
+        authorized = _authorized_scope(state, director_id)
+
+        try:
+            events.extend(
+                raise_request(
+                    state,
+                    service=pend.BENCH,
+                    owning_item=item_id,
+                    request_id=pend.statement_request_id(
+                        director_id, item_id, cp_index, state.tick
+                    ),
+                    subject={
+                        # Named on the event because the sequence diagram names it, and because
+                        # the leg has to know whose persona to speak in and which scope to query
+                        # under. The scope is recorded rather than left implicit so a log reader
+                        # can audit R23 without re-deriving the roster.
+                        "person": director_id,
+                        "cp_index": cp_index,
+                        "scope": authorized.to_payload(),
+                    },
+                    deadline_ticks=pend.STATEMENT_DEADLINE_TICKS,
+                )
+            )
+        except pend.RequestCapExceeded:
+            # The run-wide cap. Deterministic, so this is a run that has genuinely stopped being
+            # answered; the briefing is skipped and `diagnose()` reports what is outstanding.
+            continue
+
+    return events
+
+
+def _already_asked(state: State, item_id: str, cp_index: int, director_id: str) -> bool:
+    """Whether a statement is outstanding for this checkpoint.
+
+    Read off `state.pending` rather than off a marker on the item, and that is a deliberate limit
+    rather than an oversight: an "already briefed" flag would be a new field in
+    `ItemRuntime.to_state()`, which R27 makes a `STATE_SHAPE_VERSION` move, and this unit is neither
+    of the two changes the plan says may move it.
+
+    What it costs, stated exactly, because the loose version of it is wrong: a CEO who stands at the
+    same desk past the landing tick without settling the checkpoint is briefed again, once per
+    `STATEMENT_OFFSET_TICKS`. The per-item cap does *not* bound the total — it bounds how many are
+    outstanding at once, and each answer clears one — so the bound is the run's length over the
+    window, about ten in a twenty-sim-day run rather than three. Each is a fresh turn two sim-days
+    apart rather than a retry of a refused one, which is the distinction the plan's "never a retry
+    loop" draws; U15 owns the state-shape move that would let it be once.
+    """
+    return any(
+        request.is_statement
+        and request.owning_item == item_id
+        and request.request_id
+        == pend.statement_request_id(director_id, item_id, cp_index, request.raised_at_tick)
+        for request in state.pending.values()
+    )
+
+
+def _ceo_is_beside(state: State, person: PersonRuntime) -> bool:
+    """Whether the CEO is standing within conversation range of this person.
+
+    The same radius the client opens a conversation at — `OPEN_RADIUS_MILLI` in
+    `frontend/src/ui/conversation-model.ts` — because the pending block appears on the panel that
+    radius opens, and a kernel with a radius of its own would raise requests at distances the client
+    never shows a panel at.
+
+    **Necessary, and not sufficient**, so the claim is bounded here rather than overstated. The
+    client picks a *single* nearest person and holds them out to `CLOSE_RADIUS_MILLI` with a
+    `SWITCH_MARGIN_MILLI` steal margin; this loops over every director. Two directors inside 1.9
+    tiles, or a held conversation retained at 2.4 tiles while a second director enters at 1.8, both
+    raise a request the client is not currently rendering a panel for. Sharing the radius is what
+    makes the common case agree; U11's surface decides what to do with the uncommon one, and the
+    request is on the log either way.
+
+    Compared as *squared* milli-tiles rather than through a square root. `Math.hypot` is a float and
+    no float may cross this kernel (R6); squaring both sides is the only form that is exact in
+    integers and agrees with the client everywhere except exactly on the boundary, where a float
+    rounding of an irrational distance was never going to be reproducible anyway.
+
+    The person's position is their tile, scaled, while the CEO's is milli-tiles: the CEO is derived
+    from logged input at milli-tile resolution and a walker's position is a tile per tick, so this is
+    a half-tile quantisation on one side of the comparison and not an approximation of either.
+    """
+    dx = state.ceo.x_milli - person.pos[0] * MILLI
+    dy = state.ceo.y_milli - person.pos[1] * MILLI
+    return dx * dx + dy * dy <= STATEMENT_RANGE_MILLI * STATEMENT_RANGE_MILLI
+
+
+def _open_checkpoint_in_line(state: State, director_id: str) -> tuple[str, int] | None:
+    """The item in this director's line that is stopped at a checkpoint, and which one.
+
+    Iterated in `state.items` order, which is the authored catalog order followed by any item
+    created at runtime — deterministic, and the order the rest of this module reads the work graph
+    in. The first one wins: two items in one line stopped at once is a real state, and briefing on
+    the earlier of them is a choice the fold reproduces rather than a coin toss.
+    """
+    for item_id, item in state.items.items():
+        if item.status != STATUS_BLOCKED or not item.assignee:
+            continue
+        if state.line_of_assignee(item.assignee) != director_id:
+            continue
+        cp_index = state.people[item.assignee].cp_index
+        if cp_index < 0:
+            continue
+        return (item_id, cp_index)
+    return None
+
+
 def _raise_period_consult(state: State) -> list[Emitted]:
     """Ask the domain service for this period's metric effects.
 
@@ -809,6 +1388,10 @@ def _abandon_overdue_requests(state: State) -> list[Emitted]:
 
     Counted in sim-ticks, so abandonment happens at the same tick on every machine. A wall-clock
     deadline would replay fine and still break seed determinism.
+
+    The window is read off the request rather than from the module constant, because a statement's
+    is four times the shared one (R18) and a message naming the wrong number is a diagnostic that
+    sends the reader to the wrong constant. For a period consult it reproduces today's text exactly.
     """
     events: list[Emitted] = []
 
@@ -818,14 +1401,20 @@ def _abandon_overdue_requests(state: State) -> list[Emitted]:
         if request.overdue(state.tick)
     ]:
         request = state.pending.pop(request_id)
-        escalated = request.owning_item != pend.SYNTHETIC_PERIOD_ITEM
+        # A statement is never escalated, because a briefing is not a decision: the checkpoint the
+        # director was going to talk about is already the CEO's to settle, and flagging it would put
+        # a second claim on the tray for something that was never off it.
+        escalated = (
+            not request.is_statement and request.owning_item != pend.SYNTHETIC_PERIOD_ITEM
+        )
         events.append(
             Emitted(
                 kind=EventKind.ANSWER_REJECTED,
                 payload={
                     "tick": state.tick,
                     "reason": (
-                        f"no answer within {pend.REQUEST_DEADLINE_TICKS} ticks of being raised"
+                        f"no answer within {request.deadline_tick - request.raised_at_tick} "
+                        "ticks of being raised"
                     ),
                     "owning_item": request.owning_item,
                     "service": request.service,
@@ -863,7 +1452,7 @@ def _check_termination(state: State) -> list[Emitted]:
                 "decisions_taken": sum(
                     len(item.decisions) for item in state.items.values()
                 ),
-                "decision_supply": lifecycle.decision_supply(),
+                "decision_supply": lifecycle.decision_supply(state.scenario),
                 "deliverables": len(state.outputs),
             },
         )
@@ -969,7 +1558,7 @@ def _roll_over_day(state: State) -> list[Emitted]:
     # --- attrition. Load can now rise with no CEO action, which is the point (R38).
     for director in list(state.capacity):
         leaving = mor.attrition_candidate(
-            state.morale, director, set(state.present_members(director))
+            state.scenario, state.morale, director, set(state.present_members(director))
         )
         if leaving is None:
             continue
@@ -1036,7 +1625,7 @@ def _advance_work(state: State, person: PersonRuntime) -> list[Emitted]:
         person.met_ticks += 1
         if person.met_ticks >= work.MEETING_SIM_HOURS * simtime.TICKS_PER_SIM_HOUR:
             person.met_ticks = 0
-            _walk_to(state, person, person.seat, ARRIVE_RESUME_WORK)
+            return _walk_to(state, person, person.seat, ARRIVE_RESUME_WORK)
         return []
 
     if person.state != STATE_WORKING or not person.item_id:
@@ -1055,8 +1644,7 @@ def _advance_work(state: State, person: PersonRuntime) -> list[Emitted]:
         item.visited = True
         meeting = state.floor.room("meeting")
         destination = meeting.visit or (meeting.x1 + 1, meeting.y2)
-        _walk_to(state, person, destination, ARRIVE_ENTER_MEETING)
-        return []
+        return _walk_to(state, person, destination, ARRIVE_ENTER_MEETING)
 
     next_cp = next(
         (
@@ -1104,7 +1692,7 @@ def _burn_this_tick(state: State, person: PersonRuntime, item: ItemRuntime) -> i
         available = max(0, available - share)
 
     multipliers = {}
-    if person.rank == "director":
+    if state.rank_of(person.id) == "director":
         multipliers["director_rate"] = DIRECTOR_RATE
     if department is not None:
         multipliers["over_ceiling_degradation"] = cap.over_ceiling_multiplier(
@@ -1161,7 +1749,7 @@ def _complete(state: State, person: PersonRuntime, item: ItemRuntime) -> list[Em
 
     stops = len(spec.checkpoints)
     provenance = [
-        f"{roster.spec(person.id).name} — {spec.effort_hours} hours of work, "
+        f"{state.name_of(person.id)} — {spec.effort_hours} hours of work, "
         f"{stops} decision stop{'' if stops == 1 else 's'}",
         *(
             f"CEO decision: {d.choice} ({'in person' if d.in_person else 'from the tray'})"
@@ -1224,7 +1812,7 @@ def _newly_available(state: State) -> list[str]:
     """Backlog items whose gates are now clear, in item order."""
     return [
         item.id
-        for item in work.ITEMS
+        for item in state.scenario.items
         if state.items[item.id].status == STATUS_BACKLOG
         and item.requires != work.Requires()
         and is_unlocked(state, item.id)
@@ -1291,28 +1879,70 @@ def _facing(origin: tuple[int, int], destination: tuple[int, int]) -> str:
 
 def _walk_to(
     state: State, person: PersonRuntime, destination: tuple[int, int], intent: str
-) -> None:
+) -> list[Emitted]:
+    """Resolve a path and announce it. One event per walk, and none per tick (R15).
+
+    The path plus the tick it started on is the whole of the walk: position is a function of
+    `tick - path_start_tick`, as `_advance_walker` above is, so a client holding both derives
+    every intermediate position itself. Emitting per tick instead would put roughly 36 rows per
+    walker per wall second into an append-only log to restate what one row already said — the
+    same arithmetic that collapsed the CEO's movement to one event per keypress.
+
+    **Unconditional, including when the path came back empty.** `find_path` returns nothing for
+    a walker already standing on the destination, and it would be tempting to stay silent for
+    that case. A walk that sometimes emits and sometimes does not is a walk whose absence from
+    the log cannot be told apart from a dropped event, either by the strict replay's count or by
+    a reader; one row on a case that barely arises is the cheaper half of that trade.
+    """
     person.path = tuple(find_path(state.floor, person.pos, destination))
     person.path_start_tick = state.tick
     person.arrive = intent
     person.state = STATE_WALKING
 
+    return [
+        Emitted(
+            kind=EventKind.STAFF_MOVED,
+            payload={
+                "tick": state.tick,
+                "person": person.id,
+                # Where the walk begins. The path excludes the origin — `find_path`'s
+                # convention, because arrival is detected by the path emptying — so without
+                # this the client has nothing to interpolate the first tile *from*, and a
+                # resync's `pos` is where the walker has already got to rather than where
+                # they set off.
+                "from": list(person.pos),
+                "path": [list(tile) for tile in person.path],
+                # The same number as `tick`, and carried anyway because R15 names it. `tick`
+                # is where this event sits in sim-time, which is what every payload here means
+                # by it; `start_tick` is what a client subtracts from the tick it is drawing.
+                # They are equal because a walk is announced on the tick it is resolved, and a
+                # reader deriving one from the other would be depending on that staying true.
+                "start_tick": person.path_start_tick,
+                # What the walker is carrying. The org chart's progress row reads this: a
+                # person's item reaches the client on no other event, so the row was marked
+                # and unreachable before this.
+                "item": person.item_id,
+                # The state the walk ends in, stated by the kernel rather than mapped by the
+                # client from the arrival intent. `_arrive` reads the same table, so "what
+                # does this walk lead to" has one answer rather than one per language — and
+                # without it a client would have no way to stop showing somebody as walking,
+                # because arrival is in no event either.
+                "then": ARRIVE_STATE[intent],
+            },
+        )
+    ]
+
 
 def _arrive(state: State, person: PersonRuntime) -> list[Emitted]:
     intent = person.arrive
     person.arrive = ARRIVE_NONE
-
-    if intent in (ARRIVE_START_WORK, ARRIVE_RESUME_WORK):
-        person.state = STATE_WORKING
-        return []
+    # One table, read here and by the movement event's `then`. The hand-off branch below
+    # re-enters `_walk_to`, which sets `walking` again; the table's answer for that intent is
+    # the same, so the two agree rather than one overwriting the other.
+    person.state = ARRIVE_STATE.get(intent, STATE_IDLE)
 
     if intent == ARRIVE_ENTER_MEETING:
-        person.state = STATE_MEETING
         person.met_ticks = 0
-        return []
-
-    if intent == ARRIVE_SIT_IDLE:
-        person.state = STATE_IDLE
         return []
 
     if intent == ARRIVE_HANDOFF:
@@ -1321,9 +1951,6 @@ def _arrive(state: State, person: PersonRuntime) -> list[Emitted]:
         person.item_id = ""
         item = state.items[item_id]
         staff = state.people[item.assignee]
-
-        # The director walks home; the specialist starts.
-        _walk_to(state, person, person.seat, ARRIVE_SIT_IDLE)
 
         events = [
             Emitted(
@@ -1337,25 +1964,29 @@ def _arrive(state: State, person: PersonRuntime) -> list[Emitted]:
                 },
             )
         ]
-        _start_work(state, staff, item)
+        # The director walks home; the specialist starts. Both may produce a walk, and both
+        # come after the hand-off itself: the assignment is the fact, and the movement is what
+        # the fact caused.
+        events.extend(_walk_to(state, person, person.seat, ARRIVE_SIT_IDLE))
+        events.extend(_start_work(state, staff, item))
         # Stamped after the work starts, not before: at the point the payload was built the
         # item was still `assigned`, and a read-side consumer told that would move its node
         # to a status the item left in the same operation, with no later event to correct it.
         events[0].payload["item_status"] = item.status
         return events
 
-    person.state = STATE_IDLE
     return []
 
 
-def _start_work(state: State, person: PersonRuntime, item: ItemRuntime) -> None:
+def _start_work(state: State, person: PersonRuntime, item: ItemRuntime) -> list[Emitted]:
     person.item_id = item.id
     item.status = STATUS_ACTIVE
 
     if person.pos != person.seat:
-        _walk_to(state, person, person.seat, ARRIVE_START_WORK)
-    else:
-        person.state = STATE_WORKING
+        return _walk_to(state, person, person.seat, ARRIVE_START_WORK)
+
+    person.state = STATE_WORKING
+    return []
 
 
 def _held_bitmask(state: State) -> int:
@@ -1511,7 +2142,7 @@ def ask_person(state: State, person_id: str, question: str) -> list[Emitted]:
     # nothing in the log is replay identity broken silently, which is the one failure this
     # kernel is built to prevent.
     try:
-        deflection = roster.deflection_for(person_id)
+        deflection = state.scenario.deflection_of(person_id)
     except KeyError:
         raise CommandRejected(
             f"{person_id} joined after the run started and has nothing scripted to say yet"
@@ -1540,7 +2171,7 @@ def ask_person(state: State, person_id: str, question: str) -> list[Emitted]:
         ]
 
     # Resolved before the mutations below, for the reason stated above.
-    answer = roster.answer_for(person_id, intent.slot)
+    answer = state.scenario.voice_of(person_id, intent.slot)
 
     # First time for *this person and this question*. Someone else having answered "why" costs
     # nothing here — the knowledge is theirs, not the company's.
@@ -1592,7 +2223,7 @@ def assign_via_manager(state: State, item_id: str) -> list[Emitted]:
     if not is_unlocked(state, item_id):
         raise CommandRejected(lock_reason(state, item_id) or "not available yet")
 
-    director_id = roster.reporting_line_of(spec.want)
+    director_id = state.line_of(spec.want)
     if director_id == spec.want:
         # The wanted person *is* the director; there is nobody to route through.
         return assign_direct(state, item_id, spec.want)
@@ -1603,7 +2234,7 @@ def assign_via_manager(state: State, item_id: str) -> list[Emitted]:
     item.assignee = staff.id
 
     director.item_id = item_id
-    _walk_to(state, director, staff.seat, ARRIVE_HANDOFF)
+    walked = _walk_to(state, director, staff.seat, ARRIVE_HANDOFF)
     director.arrive_item = item_id
     _refresh_load(state)
 
@@ -1621,7 +2252,11 @@ def assign_via_manager(state: State, item_id: str) -> list[Emitted]:
                 # until they arrive.
                 "item_status": item.status,
             },
-        )
+        ),
+        # The walk the assignment causes, after the assignment itself. This is the event that
+        # makes delegation visible: it is the whole of M62's headline case, and the client draws
+        # the director crossing the floor from it.
+        *walked,
     ]
 
 
@@ -1639,7 +2274,7 @@ def assign_direct(state: State, item_id: str, person_id: str) -> list[Emitted]:
     item.status = STATUS_ASSIGNED
     item.assignee = person.id
 
-    manager = roster.spec(person_id).mgr
+    manager = state.manager_of(person_id)
     effective: dict[str, int] = {}
     if manager:
         person.bypassed_director = True
@@ -1662,7 +2297,7 @@ def assign_direct(state: State, item_id: str, person_id: str) -> list[Emitted]:
             },
         )
     ]
-    _start_work(state, person, item)
+    events.extend(_start_work(state, person, item))
     _refresh_load(state)
     # Stamped after the work starts: a direct assignment goes straight to active, and the
     # payload has to report where the item ended up rather than where it passed through.
@@ -1682,10 +2317,13 @@ def reassign(state: State, item_id: str, person_id: str) -> list[Emitted]:
         raise CommandRejected(f"{item_id} is {item.status}; there is nothing in flight")
 
     current = item.assignee
-    if not roster.same_reporting_line(current, person_id):
+    # Compared through `line_of_assignee` rather than through the authored roster, so an arrived
+    # hire has a line here too. Identical for every authored person; the roster lookup it
+    # replaces raised `KeyError` for a hire, past where `CommandRejected` is caught.
+    if state.line_of_assignee(current) != state.line_of_assignee(person_id):
         raise CommandRejected(
-            f"{roster.spec(person_id).name} is in a different reporting line from "
-            f"{roster.spec(current).name}; reassignment across lines is not permitted"
+            f"{state.name_of(person_id)} is in a different reporting line from "
+            f"{state.name_of(current)}; reassignment across lines is not permitted"
         )
 
     retained = item.done_units
@@ -1710,7 +2348,7 @@ def reassign(state: State, item_id: str, person_id: str) -> list[Emitted]:
             },
         )
     ]
-    _start_work(state, person, item)
+    events.extend(_start_work(state, person, item))
     _refresh_load(state)
     events[0].payload["item_status"] = item.status
     return events
@@ -1763,6 +2401,13 @@ def request_hire(state: State, director_id: str) -> list[Emitted]:
 
     Not a menu action that adds a person. It consumes sim-time, which is what makes overload
     something to anticipate rather than something to fix on the tick it is noticed.
+
+    **Who recruits comes from the scenario.** This function named `stf_rec` and the `hr` room
+    outright until U6 — two default-scenario values sitting in the kernel, so a second company
+    would have tried to assign hiring work to somebody it does not have and raised mid-command.
+    `Scenario.recruiter` derives it: the People line's first non-director in roster order, or its
+    director if the line is one person. The item's room follows the recruiter's own desk, which
+    reproduces `hr` for the shipped company without naming it.
     """
     if director_id not in state.capacity:
         raise CommandRejected(f"{director_id} is not a department")
@@ -1775,13 +2420,14 @@ def request_hire(state: State, director_id: str) -> list[Emitted]:
     if request_id in state.hires:
         raise CommandRejected(f"{person_id} is already being hired")
 
-    target_room = hiring.target_room_for(director_id)
+    target_room = state.scenario.room_of_line(director_id)
+    recruiter = state.scenario.recruiter()
     spec = work.ItemSpec(
         id=item_id,
-        title=f"Hire into {roster.spec(director_id).dept}",
-        brief=f"Recruit and onboard one person for {roster.spec(director_id).name}'s line.",
-        dept="hr",
-        want="stf_rec",
+        title=f"Hire into {target_room}",
+        brief=f"Recruit and onboard one person for {state.name_of(director_id)}'s line.",
+        dept=state.scenario.person(recruiter).dept,
+        want=recruiter,
         effort_hours=hiring.HIRE_EFFORT_HOURS,
         friction="Scheduling interviews.",
         checkpoints=(),
@@ -1810,7 +2456,7 @@ def request_hire(state: State, director_id: str) -> list[Emitted]:
             },
         )
     ]
-    events.extend(assign_direct(state, item_id, "stf_rec"))
+    events.extend(assign_direct(state, item_id, recruiter))
     return events
 
 
@@ -1828,7 +2474,7 @@ def _complete_hire(state: State, item_id: str) -> list[Emitted]:
     )
 
     seat, refusal = hiring.plan_desk(
-        state.floor, hiring.target_room_for(hire.director_id), taken
+        state.floor, state.scenario.room_of_line(hire.director_id), taken
     )
 
     if seat is None:
@@ -1934,7 +2580,7 @@ def resolve_checkpoint(
 
     draw_effective = 0
     if draw_delta:
-        director = work.director_for(spec)
+        director = work.director_for(state.scenario, spec)
         draw_effective = cap.apply_draw_change(state.capacity, director, draw_delta)
 
     # In person the CEO hears what the tray never shows. From the tray they get the
@@ -1955,7 +2601,7 @@ def resolve_checkpoint(
     _refresh_load(state)
 
     person = state.people[item.assignee]
-    manager = roster.spec(person.id).mgr
+    manager = state.manager_of(person.id)
     uninformed = (manager,) if person.bypassed_director and manager else ()
 
     item.decisions.append(
@@ -1989,7 +2635,7 @@ def resolve_checkpoint(
                 "uninformed": list(uninformed),
                 "deltas": effective,
                 "draw_delta": draw_effective,
-                "draw_department": work.director_for(spec) if draw_delta else "",
+                "draw_department": work.director_for(state.scenario, spec) if draw_delta else "",
                 "metrics": dict(state.metrics),
                 "item_status": item.status,
             },
@@ -2147,6 +2793,14 @@ def snapshot(state: State) -> dict[str, Any]:
     Every declared subsystem is present. The ones U7 and U8 fill are empty rather than
     absent, so their arrival is a recorded state-shape change rather than a silent hash
     break.
+
+    **`state.scenario` is deliberately not here**, and the omission is enforced rather than
+    remembered: `hashing.state_hash` refuses an undeclared subsystem, so adding the company to
+    this dictionary would require a `SHAPE_HISTORY` entry and a `STATE_SHAPE_VERSION` bump — a
+    deliberate act with a recorded reason, not an accident. It should not be added. The scenario
+    is an immutable fold-time input whose content hash the genesis event already records and all
+    three R7 guards already check; hashing the same structure per day boundary would cost every
+    golden fixture in the tree to carry a value that cannot move within a run.
     """
     return {
         "world": state.floor.to_state(),

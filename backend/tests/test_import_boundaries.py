@@ -34,6 +34,10 @@ TRANSPORT_MODULES = frozenset(
 )
 STORE_MODULES = frozenset({"sqlalchemy", "psycopg", "psycopg2", "sqlite3", "asyncpg"})
 
+# `modelgw` (U8) is first-party, so neither category above would catch it — and it
+# is where the only provider transport in the tree lives.
+PROVIDER_MODULES = frozenset({"modelgw"})
+
 
 def _python_files(root: Path) -> list[Path]:
     return sorted(p for p in root.rglob("*.py") if "__pycache__" not in p.parts)
@@ -77,6 +81,24 @@ def test_simcore_imports_no_service_transport_or_store(path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("path", _python_files(PACKAGES / "simcore"), ids=lambda p: p.name)
+def test_simcore_does_not_import_the_model_gateway(path: Path) -> None:
+    """R5 again, for the one package the two categories above cannot see.
+
+    `modelgw` is first-party, so it is neither a transport module nor a store module
+    by name — but it holds an HTTP client, a provider key and a network timeout. Inside
+    the fold, any of the three would be a step whose output depended on what a
+    provider said, which is the one thing strict replay cannot reproduce. The bench
+    reaches the kernel through the pending-input contract (U10), never by import.
+    """
+    reached = _imported_roots(path) & PROVIDER_MODULES
+
+    assert not reached, (
+        f"{path.name} imports {sorted(reached)}. R5: a model call inside the fold is a "
+        "step that cannot replay; the bench answers through the pending-input contract."
+    )
+
+
 def test_importing_simcore_pulls_in_nothing_forbidden() -> None:
     """The runtime half: what actually lands in sys.modules on import.
 
@@ -95,7 +117,7 @@ for info in pkgutil.iter_modules(simcore.__path__):
     importlib.import_module(f"simcore.{info.name}")
 
 forbidden = {"fastapi", "starlette", "uvicorn", "grpc", "grpc_tools", "sqlalchemy",
-             "psycopg", "httpx", "kernel", "gateway", "domain", "agents", "report"}
+             "psycopg", "httpx", "modelgw", "kernel", "gateway", "domain", "agents", "report"}
 present = sorted(forbidden & {name.split(".")[0] for name in sys.modules})
 print(",".join(present))
 """
@@ -164,6 +186,62 @@ def test_report_state_reconstruction_resolves_to_the_kernel_library() -> None:
         "these report modules interpret event kinds without importing simcore, "
         f"which is a second fold: {offenders}"
     )
+
+
+def test_the_launcher_is_the_documented_exception_and_sits_outside_the_services() -> None:
+    """R28. One process, five surfaces, and exactly one component that sees more than one.
+
+    The gateway serving the report itself would be the shortest path to M2 and is the
+    import R4 forbids — so the launcher mounts it instead. That makes the launcher the only
+    place in the tree holding two services at once, and this is what keeps it *one* place:
+    a second composer, in `services/` or beside it, would be a second answer to who is
+    allowed to know the topology.
+
+    It sits outside `services/` for the mechanical reason as well as the conceptual one —
+    the two parametrized tests above walk `services/`, so a launcher inside it would fail
+    them for doing its job.
+    """
+    launcher = BACKEND / "single_process.py"
+
+    assert launcher.exists(), "the composition has moved; this rule has to move with it"
+    assert SERVICES not in launcher.parents, (
+        "the launcher is inside services/, where the import-boundary rules apply to it"
+    )
+
+    composed = _imported_roots(launcher) & SERVICE_NAMES
+    assert len(composed) > 1, (
+        f"the launcher composes only {sorted(composed)}; if the surfaces are reached some "
+        "other way now, R28's exception is being spent on nothing"
+    )
+
+    # And nothing else outside `services/` and `tests/` does the same.
+    others = [
+        path
+        for path in _python_files(BACKEND)
+        if SERVICES not in path.parents
+        and PACKAGES not in path.parents
+        and (BACKEND / "tests") not in path.parents
+        and path != launcher
+        and ".venv" not in path.parts
+        and len(_imported_roots(path) & SERVICE_NAMES) > 1
+    ]
+    assert not others, (
+        "a second component composes two services; the launcher is meant to be the only "
+        f"one: {[str(p.relative_to(BACKEND)) for p in others]}"
+    )
+
+
+def test_mounting_a_surface_created_no_import_edge_between_services() -> None:
+    """The point of mounting rather than importing, asserted at the two ends of it.
+
+    The gateway is the app the launcher mounts everything onto and the one whose stream
+    publishes the agents surface's spend counter. Both of those are reasons it might have
+    grown an import, and neither is a reason it may: the kernel client and the spend reader
+    are installed by the launcher through `use_kernel` and `use_spend`.
+    """
+    for path in _python_files(SERVICES / "gateway"):
+        reached = _imported_roots(path) & (SERVICE_NAMES - {"gateway"})
+        assert not reached, f"gateway/{path.name} imports {sorted(reached)}"
 
 
 def test_shared_packages_do_not_import_services() -> None:

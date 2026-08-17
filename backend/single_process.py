@@ -1,32 +1,48 @@
-"""Single-process mode: the same application objects, a different topology (R16).
+"""The launcher: the same application objects, one process (R16).
 
-This is the launcher a contributor uses to work on the simulation without Docker. It composes the
-kernel runtime and the gateway app **in one process**, and that composition is the whole file —
-it reimplements nothing, because anything it reimplemented is where drift would start.
+It composes the kernel runtime and all five service apps **in one process**, and that
+composition is the whole file — it reimplements nothing, because anything it reimplemented is
+where drift would start.
 
-**It lives outside both services on purpose.** R4 forbids a service from importing another
-service's internals, and the gateway genuinely must not import the kernel: in compose they meet
-over gRPC. But *something* has to compose them for single-process mode, and that something cannot
-be either of them. So it is here, at the top of the backend tree, next to `pyproject.toml` — a
-launcher, not a service, and outside the directories the import-boundary tests police.
+**This is no longer a second topology.** It was the mode a contributor used to work on the
+simulation without Docker, while compose ran five backend containers that met over gRPC. The
+`backend` container now runs this file, so there is one composition and two ways to invoke it:
+`docker compose up`, and `uv run python single_process.py` for a contributor with no Docker. The
+gRPC servicer that fronted the old split was deleted with it; the proto stays as the command-kind
+vocabulary, which is what `COMMAND_KINDS` below reads.
 
-**Two things this mode cannot cover**, and a green run here is not evidence for either:
+**It lives outside every service on purpose.** R4 forbids a service from importing another
+service's internals, and the gateway still must not import the kernel — the boundary is an
+import rule, not a transport, and collapsing the deployment did not relax it. But *something* has
+to compose them, and that something cannot be any of them. So it is here, at the top of the
+backend tree, next to `pyproject.toml` — a launcher, not a service, and outside the directories
+the import-boundary tests police. It is the only component in the tree that may see two services
+at once, and `tests/test_import_boundaries.py` says so explicitly rather than by omission.
 
-* the Postgres-only hazards — JSONB key ordering underneath the state hash, and the sequence and
-  transaction-control differences — because it defaults to SQLite;
-* gRPC serialisation, because it wires the kernel in-process and never encodes a message.
+**The report is mounted here rather than reached through the gateway (R28).** M2 puts it among
+the surfaces in one process, and the obvious shortcut — the gateway importing `report.fold` and
+serving the report itself — is exactly the import R4 forbids. Mounting is what gives one port
+five surfaces without any of them learning about another. Each keeps its own prefix, so a caller
+still has to say which surface it wants: `/status` is the gateway's, and the kernel's diagnose
+call is at `/kernel/runs/{id}/diagnose` rather than on the published path where the client's
+own routes live.
 
-Those belong to the compose path and the contract tests. This mode's value is that the kernel,
-determinism, parity and replay suites run fast and need no Docker.
+**What a green run here does not cover**, when it is run on the default store: the Postgres-only
+hazards — JSONB key ordering underneath the state hash, and the sequence and transaction-control
+differences — because the default is SQLite. Those are covered by the same launcher under compose,
+which points it at Postgres, and by the store suite's two dialects. The value of the SQLite default
+is that the kernel, determinism, parity and replay suites run fast and need no Docker.
 
     uv run python single_process.py            # SQLite at var/company-os.sqlite3
     COMPANY_OS_STORE_URL=postgresql+psycopg://... uv run python single_process.py
+    COMPANY_OS_REPORT_STORE_URL=...            # the report's reader; defaults to the writer's
     COMPANY_OS_GATEWAY_PORT=8810 uv run python single_process.py   # a compose stack holds 8800
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -43,12 +59,36 @@ for _root in ("packages", "services"):
 
 from gateway import stream as streaming  # noqa: E402 - after the path bootstrap above
 from gateway.commands import CommandResult, Outcome  # noqa: E402
+from kernel import lease as lease_module  # noqa: E402
 from kernel.loop import KernelRuntime  # noqa: E402
-from kernel.store import LogStore, make_engine  # noqa: E402
+from kernel.store import DdlVersionMismatch, LogStore, make_engine  # noqa: E402
 from servicekit import logging as svclog  # noqa: E402
-from servicekit.probes import store_url  # noqa: E402
+from servicekit.probes import parse_store_url, store_url  # noqa: E402
 
 log = svclog.get_logger("single-process")
+
+#: What the JSON log lines call this process.
+#:
+#: One label rather than five, and it has to be set *after* the surfaces are imported:
+#: `create_service_app` calls `svclog.configure(service)` at import, and configure replaces
+#: the root handler set, so five imports would otherwise leave every line in the container
+#: stamped with whichever service was imported last. `logger` still carries the module that
+#: emitted the record, which is the field that actually distinguishes them.
+LOG_SERVICE = "backend"
+
+#: The surfaces mounted beside the gateway, and the prefix each answers under.
+#:
+#: The gateway keeps the root, because the client's proxy configuration maps `/api/` onto
+#: `/` and moving it would break every call the client makes. Everything else is prefixed,
+#: which is what keeps the published path unambiguous: `/runs/{id}/report` reaching the
+#: report while `/runs/{id}/state` reaches the gateway would be one namespace shared by two
+#: surfaces, and the first collision would be silent.
+SURFACES: tuple[tuple[str, str], ...] = (
+    ("/kernel", "kernel.main"),
+    ("/domain", "domain.main"),
+    ("/agents", "agents.main"),
+    ("/report", "report.main"),
+)
 
 #: Command kinds the gateway accepts, mapped to the kernel's proto enum values. The gateway speaks
 #: strings because that is what arrives over REST; the kernel speaks the enum.
@@ -68,8 +108,9 @@ COMMAND_KINDS = {
 class InProcessKernel:
     """A `KernelClient` backed by a `KernelRuntime` in this process.
 
-    Every method is the same call the gRPC servicer makes, minus the encode/decode. That is what
-    "composing the same application objects" means concretely.
+    The only implementation there is. There was a second — a gRPC servicer in front of the same
+    runtime — and every method here was the same call it made minus the encode/decode, which is
+    what made the split cost a container and a hop and buy nothing on a machine with one operator.
     """
 
     def __init__(self, runtime: KernelRuntime) -> None:
@@ -215,22 +256,235 @@ class InProcessKernel:
         task.cancel()
 
 
+def refuse_a_store_this_build_cannot_read(store: LogStore) -> None:
+    """Check the DDL version **before** anything creates or alters a table.
+
+    `KernelRuntime.start` runs creation, then the lease, then the check, and each of those
+    orderings had a reason — but the consequence was that a store at another version had
+    `create_all` run against it before anything looked at the version row. On a DDL bump that
+    adds a table, that half-migrates the store: the new table appears, the column that the
+    same bump added to an existing table does not, and the refusal that follows leaves behind
+    a schema that is neither version. So the check happens here, first, against a store this
+    process has not touched.
+
+    **A store with none of our tables is not a mismatch.** R16 requires `docker compose up`
+    to provision an empty database with no manual step, so an empty (or foreign) database
+    falls straight through and `create_all` writes the schema and the version row together.
+    Anything carrying even one of our tables is checked, which is what catches the case
+    `check_ddl_version` names first: a store with a log and no version row was not created by
+    this kernel, and creating the row now would assert a version nobody verified.
+
+    Raises `DdlVersionMismatch`, whose message already names both versions and the remedy.
+    The remedy is a wipe: the bump is documented as one, because `create_all` can add a table
+    but cannot add a column to `runs`, so carry-forward would be a real migration with no
+    corpus of old stores to prove itself against — shipped untested on the one component
+    whose failure is silent corruption.
+
+    **What this narrows and does not close.** On a store at a *matching* version, `create_all`
+    still runs before the lease is taken, and its Postgres path is `DROP TRIGGER IF EXISTS`
+    followed by `CREATE TRIGGER` — so a second launcher that is about to be refused by the
+    lease briefly drops the append-only guard on a log another kernel is appending to.
+    Measured directly: the trigger's OID moves. Closing that needs creation to happen behind
+    the lease, which is the ordering `KernelRuntime.start` explains it cannot have, because
+    the lease lives in a table creation is what provides. It wants its own unit and a design;
+    it is out of scope here, and this check at least means a store this build cannot read is
+    never reached by that DDL at all.
+    """
+    from sqlalchemy import inspect
+
+    from logschema import metadata
+
+    present = set(inspect(store.engine).get_table_names())
+    if not present & {table.name for table in metadata.sorted_tables}:
+        return
+
+    store.check_ddl_version()
+
+
 def compose() -> tuple[KernelRuntime, InProcessKernel]:
-    """Build the kernel runtime and hand the gateway an in-process client."""
+    """Build the kernel runtime, hand the gateway an in-process client, mount the rest."""
     from gateway import main as gateway_main
+    from kernel import main as kernel_main
 
     store = LogStore(make_engine(store_url()))
-    runtime = KernelRuntime(store)
-    runtime.start()
+    refuse_a_store_this_build_cannot_read(store)
 
+    runtime = KernelRuntime(store)
     client = InProcessKernel(runtime)
     gateway_main.use_kernel(client)
+    _publish_model_spend(gateway_main)
+    _wire_the_bench(runtime)
+    mount_surfaces(gateway_main.app)
 
+    # After the surfaces are imported and before anything logs. Importing a service app
+    # calls `svclog.configure` with that service's name, so claiming the label any earlier
+    # would have it overwritten by the last import; claiming it any later would stamp the
+    # startup lines — the lease acquisition among them — with a service that did not emit
+    # them.
+    svclog.configure(LOG_SERVICE)
+
+    try:
+        runtime.start()
+    except DdlVersionMismatch:
+        # Unreachable except in a race: the pre-flight above already read the version row,
+        # and this fires only if something changed it between that read and the lease. The
+        # release is here anyway, because the cost of being wrong is a store nobody can start
+        # a kernel against until a thirty-second TTL expires — and the operator's next act
+        # after reading the remedy is to try again.
+        _release_the_lease(runtime)
+        raise
+
+    # After `start`, so what the kernel surface adopts is a runtime that holds the lease.
+    # Before it there would be nothing wrong with the object, but `use_runtime` promises a
+    # started one and a surface reporting on a runtime that never took the lease is the
+    # failure it exists to prevent, one step removed.
+    kernel_main.use_runtime(runtime)
+
+    # The parsed target, never the DSN. This line used to carry `store_url()` whole, which in
+    # compose is `postgresql+psycopg://companyos:companyos@postgres:5432/companyos` — a
+    # password on stdout at every startup, and R6 names stdout explicitly. The redacting
+    # filter in `servicekit.logging` would now catch it, and a leak that survives only
+    # because a filter is watching is still a call site that should not be making it.
+    target = parse_store_url(store_url())
     log.info(
-        "single-process mode composed",
-        extra={"store": store_url(), "lease_owner": runtime.lease.owner},
+        "one process composed",
+        extra={
+            "store": f"{target.backend} at {target.describe()}",
+            "lease_owner": runtime.lease.owner,
+            "surfaces": ",".join(["/"] + [prefix for prefix, _ in SURFACES]),
+        },
     )
     return runtime, client
+
+
+def _release_the_lease(runtime: KernelRuntime) -> None:
+    """Give back a lease taken moments before a refusal, so a retry does not wait it out."""
+    if runtime.lease is None:
+        return
+    try:
+        with runtime.store.engine.begin() as connection:
+            lease_module.release(connection, runtime.lease)
+    except Exception as exc:  # noqa: BLE001 - the refusal is the news; this is a courtesy
+        log.warning("could not release the lease while refusing", extra={"error": str(exc)})
+    finally:
+        runtime.lease = None
+
+
+def _publish_model_spend(gateway_main: Any) -> None:
+    """Point the gateway's stream at the agents surface's spend counter (M28).
+
+    The two ends of this shipped separately and could not meet: the counter and its read are
+    in the agents service, the client's reducer and its HUD tile are in the browser, and the
+    stream between them belongs to the gateway — which may not import the agents service
+    (R4). So the launcher hands the gateway a callable, exactly as it hands it a kernel
+    client, and neither service learns the other exists.
+
+    The gateway is built once and closed over rather than rebuilt per read: it holds the
+    process's one ledger, whose engine is what makes the counter survive a restart, and
+    re-reading the environment every two seconds per subscriber would buy nothing.
+    """
+    from agents import main as agents_main
+
+    bench = agents_main.bench()
+    gateway_main.use_spend(lambda run_id: bench.reading(run_id).to_payload())
+
+
+def _wire_the_bench(runtime: KernelRuntime) -> None:
+    """Point the kernel's statement dispatch at the agents surface's producer (U10).
+
+    The third of these, and the same shape as the other two for the same reason. The kernel raises a
+    statement request inside `step()` and has to carry it to a director; the director lives in the
+    agents service; and neither service may import the other (R4). So the launcher hands the kernel a
+    callable, exactly as it hands the gateway a kernel client and a spend reader, and neither service
+    learns the other exists.
+
+    The direction the proto describes survives the collapse intact: the kernel opens the stream, so
+    nothing in the agents service holds a kernel handle or reaches for a runtime. What was a
+    bidirectional gRPC stream between two containers is a function call between two modules that
+    still may not see each other.
+    """
+    from agents import main as agents_main
+
+    runtime.use_statement_producer(agents_main.produce_statement)
+
+
+def mount_surfaces(app: Any) -> list[Any]:
+    """Mount the four other service apps under their prefixes.
+
+    **The mounts are reconciled, not appended.** `gateway_main.app` is a module-level
+    singleton and `compose()` runs once per test as well as once per process, so a second
+    call has to replace what the first mounted: two sub-apps on one prefix would mean the
+    second's lifespan starting a second copy of everything the first's started, and a suite
+    that reloads a service module would leave a stale app object serving the prefix while
+    the module's own `app` had moved on.
+    """
+    import importlib
+
+    from starlette.routing import Mount
+
+    surfaces = {prefix: importlib.import_module(name).app for prefix, name in SURFACES}
+
+    app.routes[:] = [
+        route
+        for route in app.routes
+        if not (isinstance(route, Mount) and route.path in surfaces)
+    ]
+    for prefix, surface in surfaces.items():
+        app.mount(prefix, surface)
+
+    app.state.surfaces = list(surfaces.values())
+    return app.state.surfaces
+
+
+def _wrap_lifespan(app: Any, runtime: KernelRuntime) -> None:
+    """Start the runtime's background work inside the app's existing lifespan.
+
+    **Not `@app.on_event("startup")`, and the difference is silent.** `create_service_app`
+    constructs every service app with an explicit `lifespan=`, and Starlette runs the
+    `on_startup`/`on_shutdown` lists only under its *default* lifespan — so a handler
+    registered with `on_event` after the fact is never called and never complains. What that
+    cost here was the whole of `start_background`: no lease heartbeat, so the lease became
+    reclaimable thirty seconds in; no `resume_all`, so a restart brought the process up holding
+    the log and advancing nothing; and no `stop`, so the lease was left to expire rather than
+    released. The symptom is a run that is frozen after a restart, which reads as a broken
+    kernel and is a startup hook that never ran.
+
+    Wrapping the context the app already has is what keeps `servicekit`'s own logging and
+    teardown intact: the runtime starts after the service reports started, and stops before it
+    reports stopped.
+
+    **The mounted surfaces' lifespans are entered here too, and they have to be.** Starlette
+    runs the lifespan of the *top-level* app only — a `Mount`ed sub-app's `lifespan=` is never
+    invoked, silently, in the same way `on_event` was never invoked. What that would cost is
+    the same shape of loss as before: the agents surface announces its spend ceiling in
+    `on_start`, and an explicitly unlimited ceiling is meant to be the loudest line at
+    startup; the kernel surface's store watch is what makes its status endpoint report
+    reachability rather than "not probed yet"; and neither would have run. So each surface is
+    entered on the stack in mount order and unwound in reverse, which is what a nested
+    `async with` per surface would have given without the loop.
+    """
+    from contextlib import AsyncExitStack, asynccontextmanager
+
+    inner = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(scoped_app: Any) -> Any:
+        surfaces = getattr(scoped_app.state, "surfaces", ())
+
+        async with AsyncExitStack() as stack:
+            await stack.enter_async_context(inner(scoped_app))
+            for surface in surfaces:
+                await stack.enter_async_context(surface.router.lifespan_context(surface))
+
+            # Last, so a run is resumed and ticking only once every surface that might be
+            # asked about it is answering.
+            await runtime.start_background()
+            try:
+                yield
+            finally:
+                await runtime.stop()
+
+    app.router.lifespan_context = lifespan
 
 
 def main() -> None:
@@ -240,24 +494,27 @@ def main() -> None:
     from gateway import main as gateway_main
     from servicekit.runtime import bind_host
 
-    runtime, _ = compose()
+    try:
+        runtime, _ = compose()
+    except (DdlVersionMismatch, lease_module.LeaseHeld) as refusal:
+        # A sentence and a non-zero exit, not a traceback. Both of these carry the whole
+        # answer already — which versions disagree and that the remedy is a wipe; who holds
+        # the lease and when it becomes reclaimable — and a traceback in front of that
+        # sentence buries the one line the operator needs under thirty they cannot act on.
+        # `from None` is what suppresses the chained frames.
+        #
+        # The same shape `kernel.main.main` uses for its own fatal reasons, which is where
+        # this came from rather than being invented here.
+        print(refusal, file=sys.stderr)
+        raise SystemExit(1) from None
 
     app: FastAPI = gateway_main.app
+    _wrap_lifespan(app, runtime)
 
-    @app.on_event("startup")
-    async def _start() -> None:
-        await runtime.start_background()
-
-    @app.on_event("shutdown")
-    async def _stop() -> None:
-        await runtime.stop()
-
-    # The same routes on the same port and path prefix as the compose gateway, so the client's
-    # proxy configuration is byte-identical across both topologies. The override exists for the one
-    # case that byte-identity cannot cover: a compose stack already holding 8800, which is exactly
-    # when a contributor reaches for this mode to work on the simulation.
-    import os
-
+    # The same routes on the same port and path prefix whether this runs in the `backend`
+    # container or on a laptop, so the client's proxy configuration is byte-identical either way.
+    # The override exists for the one case byte-identity cannot cover: a compose stack already
+    # holding 8800, which is exactly when a contributor reaches for the host invocation.
     port = int(os.environ.get("COMPANY_OS_GATEWAY_PORT", "8800"))
     uvicorn.run(app, host=bind_host(), port=port, log_config=None, access_log=False)
 

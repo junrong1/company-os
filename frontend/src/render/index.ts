@@ -56,8 +56,15 @@ export interface RendererOptions {
    * channel by which it could, not because nothing writes to one.
    */
   runSeed?: number
-  /** Where the actors are this frame. Read from the store, not from React state. */
-  actors?: () => Actor[]
+  /**
+   * Where the actors are this frame. Read from the store, not from React state.
+   *
+   * Given the render clock's tick, because staff positions are interpolated from a path and the
+   * tick it started on (R15) and the store's tick is not the one to interpolate against: it
+   * moves only when an event lands, so a walk driven by it would advance a tile at a time and
+   * stall between events. The clock is the smooth estimate of the same quantity.
+   */
+  actors?: (tick: bigint) => Actor[]
   /** Injectable so tests can supply a canvas without a DOM. */
   makeCanvas?: () => HTMLCanvasElement
   /** Called once per frame with the tick to draw. */
@@ -85,7 +92,7 @@ export class Renderer {
   private canvas: HTMLCanvasElement
   private floor?: FloorData
   private runSeed: number
-  private actors: () => Actor[]
+  private actors: (tick: bigint) => Actor[]
   private makeCanvas: () => HTMLCanvasElement
   private onFrame?: (tick: bigint, stalled: boolean) => void
   private requestFrame: (callback: (time: number) => void) => number
@@ -208,7 +215,7 @@ export class Renderer {
    * staff so one depth sort covers everyone — and if there is nobody to follow the camera
    * simply holds, which is what happens for the frames between attaching and genesis.
    */
-  private trackCamera(): { x: number; y: number } {
+  private trackCamera(present: Actor[]): { x: number; y: number } {
     if (this.floor === undefined) return { x: this.camera.x, y: this.camera.y }
 
     const view = {
@@ -217,7 +224,7 @@ export class Renderer {
     }
     const world = { width: this.floor.cols * TILE, height: this.floor.rows * TILE }
 
-    const player = this.actors().find((actor) => actor.id === CEO_ID)
+    const player = present.find((actor) => actor.id === CEO_ID)
     if (player === undefined) return { x: this.camera.x, y: this.camera.y }
 
     const { left, feet } = placement(player)
@@ -308,9 +315,16 @@ export class Renderer {
     context.save()
     context.scale(this.zoom, this.zoom)
 
+    // Projected once per frame and shared with the camera. It used to be called twice — once
+    // here and once inside `trackCamera` — which was merely wasteful while positions were read
+    // straight off the store, and is a genuine hazard now that they are interpolated: two calls
+    // are two reads of the clock, so the camera could follow the CEO to one tick while the
+    // office was drawn at another.
+    const present = this.actors(this.clock.tick)
+
     // Then translated by whole logical pixels. Rounded *before* the zoom multiplies it: a
     // fractional offset resamples every pixel in the office and it stops being pixel art.
-    const view = this.trackCamera()
+    const view = this.trackCamera(present)
     context.translate(-view.x, -view.y)
 
     if (this.staticLayer !== null) context.drawImage(this.staticLayer, 0, 0)
@@ -333,7 +347,6 @@ export class Renderer {
     // and every run opens with the CEO flashing over nothing.
     const cache = this.floor === undefined ? null : this.sheets
     if (cache !== null) {
-      const present = this.actors()
       this.stride.retain(present.map((actor) => actor.id))
 
       for (const actor of present) {

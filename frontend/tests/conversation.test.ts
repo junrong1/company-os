@@ -70,6 +70,14 @@ function person(id: string, xMilli: number, yMilli: number, over: Partial<Person
     state: 'idle',
     itemId: '',
     waiting: false,
+    // Standing still, which is what "resting default" means for a walker: an empty path is
+    // the kernel's own convention for not walking, so the start tick and the arrival state
+    // are both meaningless rather than merely unset. Spelled out rather than left off,
+    // because `Partial<PersonView>` would otherwise widen them to `undefined` and the only
+    // thing that notices is `tsc` — which `npm test` does not run.
+    path: [],
+    pathStartTick: 0n,
+    arrivesIn: '',
     ...over,
   }
 }
@@ -878,15 +886,21 @@ describe('the comparison', () => {
     expect(nameOnly).toBeDefined()
     expect(nameOnly?.querySelector('[data-authored-tuning]')).toBeNull()
 
-    // The org chart's own progress figure is marked in the source but cannot be reached from
-    // here: its row reads `PersonView.itemId`, which no event ever sets — the client's copy of
-    // person state is whatever genesis or a resync said, which is the "staff do not move on
-    // the client" hole this phase inherits and does not touch. Asserted as the reason the rows
-    // above are all idle, so a future person-state event turns this into real coverage rather
-    // than quietly leaving an unmarked figure behind.
+    // The org chart's own progress figure, which this test used to record as unreachable: the
+    // row reads `PersonView.itemId` and no event set it, so every row rendered as idle and the
+    // marking in the source was never exercised. `WORK_ASSIGNED` sets it now, so the figure is
+    // real coverage — one row shows a percentage, and it is marked like any other.
     const tasks = [...host.querySelectorAll('.person__task')]
     expect(tasks.length).toBeGreaterThan(0)
-    expect(withDigits(tasks)).toHaveLength(0)
+
+    const withProgress = withDigits(tasks)
+    expect(withProgress).toHaveLength(1)
+    for (const figure of withProgress) {
+      expect(
+        figure.querySelector('[data-authored-tuning]'),
+        `unmarked figure: ${figure.textContent}`,
+      ).not.toBeNull()
+    }
 
     act(() => root.unmount())
     host.remove()

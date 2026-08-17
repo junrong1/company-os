@@ -21,13 +21,18 @@ from contracts import canonical
 from contracts.envelope import Envelope, EventKind, build
 from simcore import compare
 from simcore import hashing
-from simcore import items as work
 from simcore import lifecycle
 from simcore import log as folder
+from simcore import scenario as sc
 from simcore import rates
+from simcore import snapshot as snapshotting
 from simcore import step as sim
 from simcore import time as simtime
 from simcore.rates import RULES_VERSION, TUNING
+
+#: The company these branches run in. The catalog is authored in `scenarios/default.toml`
+#: now, so a checkpoint's options are read off the loaded scenario rather than a constant.
+SHIPPED = sc.load_default()
 
 RUN = "run-compare"
 SEED = 0xC0FFEE
@@ -137,7 +142,7 @@ def test_every_option_leaves_the_parent_byte_identical(run: Recorder) -> None:
     finishing state, and only the first summary would be right.
     """
     before = run.hash
-    options = work.spec("wi_ap_map").checkpoints[0].options
+    options = SHIPPED.item("wi_ap_map").checkpoints[0].options
 
     for option_index in range(len(options)):
         compare.run_branch(run.state, "wi_ap_map", 0, option_index, in_person=True)
@@ -204,6 +209,96 @@ def test_the_same_branch_computed_twice_is_identical(run: Recorder) -> None:
     second = compare.run_branch(run.state, "wi_ap_map", 0, 1, in_person=False)
 
     assert first.to_state() == second.to_state()
+
+
+# =========================================================================
+# The capture, taken while the parent may be moving
+# =========================================================================
+#
+# `snapshot.capture` reads the state twice — once to hash it, once to encode it — so a tick
+# landing between those two reads produces a snapshot whose recorded hash describes a state the
+# encoded bytes no longer contain. The tests below force that window open on one thread rather
+# than waiting for two threads to hit it by luck, because a torn read is silent by construction
+# and the version of this that waited for luck was
+# `test_every_branch_of_a_comparison_forks_from_one_instant` — which passed five times out of
+# five in isolation and failed under suite-level thread contention.
+#
+# Stepping the parent from inside `to_wire` is the whole trick: the hash has already been taken
+# by the time `to_wire` is called, which is exactly the instant the tear needs.
+
+
+def _tears_the_next_captures(monkeypatch, count: int) -> list[int]:
+    """Advance the parent between the hash and the encode, `count` times. Returns the counter."""
+    remaining = [count]
+    original = snapshotting.to_wire
+
+    def hashed_but_not_yet_encoded(state: sim.State) -> Any:
+        if remaining[0]:
+            remaining[0] -= 1
+            sim.step(state)
+        return original(state)
+
+    monkeypatch.setattr(snapshotting, "to_wire", hashed_but_not_yet_encoded)
+    return remaining
+
+
+def test_a_tick_between_the_hash_and_the_encode_is_retried(run: Recorder, monkeypatch) -> None:
+    """The retry has to wrap the restore, because that is where a torn capture surfaces.
+
+    `capture` raises nothing on a tear — it returns a `Snapshot` whose hash and whose bytes
+    disagree, and the disagreement is only detected by `restore`, which re-hashes what it
+    rebuilt. So a retry around `capture` alone catches the dict-changed-size variant and never
+    this one, and `SnapshotInvalid` escapes from `_branch_from` where no `except` covers it.
+
+    That is the intermittent failure this file used to carry.
+    """
+    remaining = _tears_the_next_captures(monkeypatch, 1)
+
+    summaries = compare.run_comparison(run.state, "wi_ap_map", 0, in_person=True)
+
+    assert remaining[0] == 0, "the tear never fired, so nothing was retried"
+    assert len({summary.fork_tick for summary in summaries}) == 1
+
+
+def test_a_parent_that_tears_every_capture_is_refused_with_a_reason(
+    run: Recorder, monkeypatch
+) -> None:
+    """Exhausting the attempts is a refusal naming the reason, not an opaque `SnapshotInvalid`.
+
+    The refusal already existed and was unreachable for this failure mode: the attempts were
+    spent on a call that does not raise, so the loop returned a torn snapshot on its first pass
+    and the sentence below was only ever produced for the other variant.
+    """
+    _tears_the_next_captures(monkeypatch, compare.CAPTURE_ATTEMPTS)
+
+    with pytest.raises(sim.CommandRejected) as refusal:
+        compare.run_comparison(run.state, "wi_ap_map", 0, in_person=True)
+
+    assert str(compare.CAPTURE_ATTEMPTS) in str(refusal.value)
+    assert "single instant" in str(refusal.value)
+
+
+def test_a_retried_capture_projects_from_the_instant_it_finally_photographed(
+    run: Recorder, monkeypatch
+) -> None:
+    """A retried comparison is the comparison of the instant it succeeded at, figure for figure.
+
+    The tear advances the parent, so a retry legitimately forks a tick later than the first
+    attempt would have — what must not happen is a projection assembled from *both* instants.
+    Every branch is compared against the single-branch runner computed from the parent as it
+    stands afterwards, which is an independent route to the same numbers.
+    """
+    remaining = _tears_the_next_captures(monkeypatch, 1)
+
+    summaries = compare.run_comparison(run.state, "wi_ap_map", 0, in_person=True)
+
+    assert remaining[0] == 0
+    assert run.state.tick == summaries[0].fork_tick, "the retry forked from somewhere else"
+    for summary in summaries:
+        alone = compare.run_branch(
+            run.state, "wi_ap_map", 0, summary.option_index, in_person=True
+        )
+        assert summary.to_state() == alone.to_state(), f"option {summary.option_index} differs"
 
 
 # =========================================================================
@@ -408,7 +503,7 @@ def test_one_command_costs_the_same_however_long_the_run_is() -> None:
 
 
 def test_a_branch_carries_the_option_it_is_a_branch_of(run: Recorder) -> None:
-    option = work.spec("wi_ap_map").checkpoints[0].options[2]
+    option = SHIPPED.item("wi_ap_map").checkpoints[0].options[2]
     summary = compare.run_branch(run.state, "wi_ap_map", 0, 2, in_person=False)
 
     assert summary.option_label == option.label
@@ -446,7 +541,7 @@ def test_two_options_that_gate_differently_produce_different_unlock_sets(
     """
     sets = [
         set(compare.run_branch(run.state, "wi_ap_map", 0, index, in_person=True).unlocked)
-        for index in range(len(work.spec("wi_ap_map").checkpoints[0].options))
+        for index in range(len(SHIPPED.item("wi_ap_map").checkpoints[0].options))
     ]
 
     assert any(sets[i] != sets[j] for i in range(len(sets)) for j in range(i + 1, len(sets))), (
@@ -537,7 +632,7 @@ def test_a_branch_of_an_item_that_is_not_stopped_is_refused() -> None:
 
     # The item's own title, not its id: a refusal is the sentence the client shows, and the
     # existing rejections all name work the way the CEO sees it named.
-    assert work.spec("wi_ap_map").title in str(refusal.value)
+    assert SHIPPED.item("wi_ap_map").title in str(refusal.value)
 
 
 def test_a_branch_of_an_option_that_does_not_exist_is_refused(run: Recorder) -> None:
@@ -672,7 +767,7 @@ def test_a_comparison_produces_one_event_carrying_every_branch(run: Recorder) ->
     assert payload["cp_index"] == 0
     assert payload["person"] == "stf_ap"
     assert payload["tick"] == run.state.tick
-    assert len(payload["branches"]) == len(work.spec("wi_ap_map").checkpoints[0].options)
+    assert len(payload["branches"]) == len(SHIPPED.item("wi_ap_map").checkpoints[0].options)
     for index, branch in enumerate(payload["branches"]):
         assert branch["option_index"] == index
         assert branch["fork_tick"] == run.state.tick
@@ -773,7 +868,7 @@ def test_a_branch_runway_is_always_knowable(run: Recorder) -> None:
     """
     assert rates.TUNING["fixed_cost_per_day"] > 0
 
-    for index in range(len(work.spec("wi_ap_map").checkpoints[0].options)):
+    for index in range(len(SHIPPED.item("wi_ap_map").checkpoints[0].options)):
         summary = compare.run_branch(run.state, "wi_ap_map", 0, index, in_person=True)
         assert summary.runway.value is not None
         assert summary.daily_cost.value is not None and summary.daily_cost.value > 0
@@ -899,7 +994,7 @@ def test_a_tag_that_has_run_away_from_the_clock_is_refused(run: Recorder) -> Non
 def test_a_comparison_of_a_checkpoint_the_item_is_not_stopped_at_is_refused() -> None:
     """The closing-cycle item carries two, and it is stopped at exactly one of them."""
     run = blocked_at_the_closing_cycle()
-    assert len(work.spec("wi_close").checkpoints) == 2
+    assert len(SHIPPED.item("wi_close").checkpoints) == 2
 
     with pytest.raises(sim.CommandRejected):
         sim.compare_options(run.state, "wi_close", 1, "dir_admin", run.state.tick, in_person=True)

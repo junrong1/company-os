@@ -9,6 +9,12 @@ The recurring half is what makes hiring a real trade against automating work: au
 reduces a department's draw and therefore its burn (R60), hiring raises headcount and
 therefore the burn. Without both terms pulling, one strictly dominates.
 
+**Which room, and which recruiter, come from the scenario.** `target_room_for` lived here and
+read a module-level roster; it is `Scenario.room_of_line` now, next to `Scenario.recruiter`,
+because both answers are properties of the company the run was created against. A new hire
+sits in their director's own room: Priya's split between room and reporting line is authored
+sample data, deliberately, and a *new* hire has no reason to inherit that mismatch.
+
 **The floor planner guarantees a desk inside the hire's own department, or refuses with a
 reason** (R25). Refusing is the interesting half. Seating someone on an arbitrary tile would
 be the easy fallback and would quietly break the thing the office is *for*: you can see who
@@ -21,7 +27,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from simcore import people as roster
 from simcore.world import Floor, walkable
 
 #: Cash on arrival, in $K — the unit the metric displays.
@@ -108,15 +113,6 @@ def plan_desk(
         f"a person sitting outside their department would make the floor stop meaning "
         f"anything."
     )
-
-
-def target_room_for(director_id: str) -> str:
-    """Which room a new member of this line sits in.
-
-    The director's own room. Priya's split between room and reporting line is authored sample
-    data, deliberately; a *new* hire has no reason to inherit that mismatch.
-    """
-    return roster.spec(director_id).dept
 
 
 def salary_total(hires: dict[str, Hire]) -> int:

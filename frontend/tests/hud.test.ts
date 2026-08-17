@@ -6,11 +6,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   AUTHORED_TUNING,
   LOAD_RAMP,
+  MEASURED,
   RESERVED_BEAM,
   authoredTuningLabel,
   direction,
   loadColour,
   loadFillPermille,
+  measuredLabel,
   overCeiling,
 } from '../src/design/tokens'
 import { Hud, type HudProps } from '../src/ui/Hud'
@@ -18,18 +20,22 @@ import { type Frame, type MetricDefLike, useRunStore } from './helpers/store-hel
 import {
   COMPOSITION_STORAGE_KEY,
   DEFAULT_COMPOSITION,
+  MEASURED_TILES,
   NON_REMOVABLE,
   PRESSURE_TILE,
   RUNWAY_TILE,
+  SPEND_TILE,
   TileNotRemovable,
   addTile,
   decisionPressure,
+  formatBound,
   loadComposition,
   pressureColour,
   removeTile,
   runwayDays,
   saveComposition,
   sparklinePoints,
+  spendLines,
   trajectoryDirection,
 } from '../src/ui/hud-model'
 import { catalogFixture, genesisFrame, itemFrame, loadFrame, metricsFrame } from './helpers/frames'
@@ -521,22 +527,56 @@ describe('the marking sweep over the HUD', () => {
     })
   }
 
-  it('marks every tile in the default composition (R27, AE11)', () => {
+  it('marks every tile in the default composition, and exempts only the named ones', () => {
+    // R27, AE11, and U9's one exception. A sweep rather than one assertion per tile: the
+    // failure mode is a tile added later without a marking, and a per-tile list would
+    // silently not cover it.
+    //
+    // The rule is **exactly one of the two markings on every tile**, with which one decided
+    // by `MEASURED_TILES`. Accepting "either marking" would have turned the exemption into a
+    // hole — any tile could then have carried the measured label and passed — so the
+    // exemption is a named list read from the model, and it is checked in both directions.
     mountHud()
 
     const tiles = Array.from(host.querySelectorAll('[data-tile]'))
-    // A sweep rather than one assertion per tile: the failure mode is a tile added later
-    // without the marking, and a per-tile list would silently not cover it.
     expect(tiles.map((tile) => tile.getAttribute('data-tile')).sort()).toEqual(
       [...DEFAULT_COMPOSITION].sort(),
     )
 
     for (const tile of tiles) {
-      expect(
-        tile.querySelector('[data-authored-tuning]'),
-        `${tile.getAttribute('data-tile')} renders a figure with no authored-tuning marking`,
-      ).not.toBeNull()
+      const name = tile.getAttribute('data-tile') ?? ''
+      const authored = tile.querySelector('[data-authored-tuning]')
+      const measured = tile.querySelector('[data-measured]')
+
+      if (MEASURED_TILES.includes(name)) {
+        expect(measured, `${name} is exempt but carries no measured marking`).not.toBeNull()
+        expect(
+          authored,
+          `${name} renders measured figures and must not claim they are authored`,
+        ).toBeNull()
+      } else {
+        expect(
+          authored,
+          `${name} renders a figure with no authored-tuning marking`,
+        ).not.toBeNull()
+        expect(measured, `${name} renders authored figures and must not claim otherwise`).toBeNull()
+      }
     }
+  })
+
+  it('names its exemption rather than discovering it, and the list is closed', () => {
+    // What makes the exemption deliberate. `MEASURED_TILES` is the only way a tile escapes
+    // the authored sweep, every entry in it has to be a tile the HUD actually renders, and
+    // the entry is there because calls and tokens are the one figure in the product that is
+    // not invented.
+    expect(MEASURED_TILES).toEqual([SPEND_TILE])
+    for (const tile of MEASURED_TILES) {
+      expect(DEFAULT_COMPOSITION).toContain(tile)
+    }
+    // And the two markings are different attributes, which is what lets the sweep require
+    // one and forbid the other rather than accepting whichever turned up.
+    expect(MEASURED.glyph).not.toBe(AUTHORED_TUNING.glyph)
+    expect(MEASURED.label).not.toBe(AUTHORED_TUNING.label)
   })
 
   it('fails the sweep for a tile added to the composition without one', () => {
@@ -549,9 +589,31 @@ describe('the marking sweep over the HUD', () => {
     host.querySelector('.hud')?.appendChild(unmarked)
 
     const missing = Array.from(host.querySelectorAll('[data-tile]')).filter(
-      (tile) => tile.querySelector('[data-authored-tuning]') === null,
+      (tile) =>
+        tile.querySelector('[data-authored-tuning]') === null &&
+        tile.querySelector('[data-measured]') === null,
     )
     expect(missing.map((tile) => tile.getAttribute('data-tile'))).toEqual(['smuggled'])
+  })
+
+  it('fails the sweep for an unlisted tile that claims to be measured', () => {
+    // The other negative, and the one that keeps the exemption honest. A tile that reached
+    // for the measured marking without being named in `MEASURED_TILES` would otherwise have
+    // opted itself out of R27 — which is exactly how a completeness claim rots.
+    mountHud()
+
+    const pretender = document.createElement('article')
+    pretender.setAttribute('data-tile', 'pretender')
+    const badge = document.createElement('span')
+    badge.setAttribute('data-measured', MEASURED.glyph)
+    pretender.appendChild(badge)
+    host.querySelector('.hud')?.appendChild(pretender)
+
+    const cheating = Array.from(host.querySelectorAll('[data-tile]')).filter((tile) => {
+      const name = tile.getAttribute('data-tile') ?? ''
+      return !MEASURED_TILES.includes(name) && tile.querySelector('[data-measured]') !== null
+    })
+    expect(cheating.map((tile) => tile.getAttribute('data-tile'))).toEqual(['pretender'])
   })
 
   it('marks a metric with too little history to draw a trajectory', () => {
@@ -803,5 +865,210 @@ describe('the store as a projection', () => {
         entry.requires.items.length === 0 && (gate === null || 6 >= gate)
       expect(items[entry.id].unlocked, entry.id).toBe(expected)
     }
+  })
+})
+
+// =========================================================================
+// M28: what the run has spent, on screen, while it runs
+// =========================================================================
+//
+// The tile's rules are strings decided from four numbers, so most of this is stated without a
+// DOM. The two tests that render are the ones whose claim is about the surface: that the tile
+// carries the *measured* marking rather than the authored one, and that it moves during a run.
+
+/** One `MODEL_SPEND` control frame, in the shape the wire sends it. */
+function spendFrame(over: Partial<Record<string, unknown>> = {}): Frame {
+  return {
+    kind: 'MODEL_SPEND',
+    run_id: 'run-1',
+    calls: 0,
+    tokens: 0,
+    cache_hits: 0,
+    max_calls: 200,
+    max_tokens: 600000,
+    lineage_calls: 0,
+    lineage_tokens: 0,
+    bench_present: true,
+    quiet: false,
+    ...over,
+  } as unknown as Frame
+}
+
+describe('model spend', () => {
+  it('reads this run against this run’s ceiling, with the lineage total beside it', () => {
+    useRunStore.getState().apply(
+      spendFrame({
+        calls: 12,
+        tokens: 34_500,
+        lineage_calls: 41,
+        lineage_tokens: 120_800,
+      }),
+    )
+
+    const spend = useRunStore.getState().spend
+    const lines = spendLines(spend)
+
+    expect(lines.calls).toBe('12 of 200')
+    expect(lines.tokens).toBe('34,500 of 600,000')
+    // The lineage total is a figure, never a bound. The ceiling is enforced per run, because a
+    // lineage-wide budget would leave a child at its parent's exhaustion point and the
+    // timeline diff would present budget as consequence.
+    expect(lines.lineage).toBe('41 calls, 120,800 tokens')
+    expect(spend.maxCalls).toBe(200)
+  })
+
+  it('never accumulates, so a dropped frame cannot make it disagree with the ceiling', () => {
+    // The backend's counter is the authority: it is what refuses a call, and it survives a
+    // restart. A client adding up deltas would drift the moment one frame was lost.
+    useRunStore.getState().apply(spendFrame({ calls: 5, tokens: 100 }))
+    useRunStore.getState().apply(spendFrame({ calls: 9, tokens: 260 }))
+
+    expect(useRunStore.getState().spend.calls).toBe(9)
+    expect(useRunStore.getState().spend.tokens).toBe(260)
+  })
+
+  it('says nothing about a ceiling it has not been told about yet', () => {
+    // The state on page load, before any frame. Naming a ceiling here would claim something
+    // about the backend's configuration on no evidence.
+    expect(spendLines(useRunStore.getState().spend).calls).toBe('0 of —')
+  })
+
+  it('renders zero with the bench absent rather than hiding, and calls that a state', () => {
+    // Every shipped scenario is playable with no provider (M20), and the ceiling still exists
+    // for a run that has no bench to spend it. A tile that removed itself would leave the
+    // player unable to tell "no bench" from "a broken bench" — which is why the note names the
+    // one and never the other.
+    useRunStore.getState().apply(spendFrame({ bench_present: false }))
+
+    const lines = spendLines(useRunStore.getState().spend)
+    expect(lines.calls).toBe('0 of 200')
+    expect(lines.tokens).toBe('0 of 600,000')
+    expect(lines.note).toBe('no bench configured')
+    // Absent is not ceiling-limited: with no provider there is no ceiling to have reached.
+    expect(useRunStore.getState().spend.quiet).toBe(false)
+  })
+
+  it('says the bench went quiet, and never that the run stopped', () => {
+    useRunStore.getState().apply(spendFrame({ calls: 200, tokens: 400_000, quiet: true }))
+
+    const lines = spendLines(useRunStore.getState().spend)
+    expect(lines.note).toBe('ceiling reached — scripted replies')
+    expect(lines.calls).toBe('200 of 200')
+  })
+
+  it('says how many turns the cache answered, since those are not calls', () => {
+    // Otherwise "the count is not moving while the bench is talking" has no explanation on
+    // screen, and the obvious reading of it is that the counter is broken.
+    useRunStore.getState().apply(spendFrame({ calls: 3, cache_hits: 7 }))
+
+    expect(spendLines(useRunStore.getState().spend).note).toBe('7 served from cache, not called')
+  })
+
+  it('tells an unlimited ceiling apart from one it has not been told yet', () => {
+    // Three states, and they are genuinely three. Saying "no ceiling" before a frame arrives
+    // would claim something about the backend's configuration on no evidence — and the shipped
+    // default is finite, so the claim would usually be false.
+    expect(formatBound(null, false)).toBe('—')
+    expect(formatBound(null, true)).toBe('no ceiling')
+    expect(formatBound(200, true)).toBe('200')
+
+    useRunStore.getState().apply(spendFrame({ max_calls: null, max_tokens: null, calls: 4 }))
+    expect(spendLines(useRunStore.getState().spend).calls).toBe('4 of no ceiling')
+  })
+
+  it('reads a malformed bound as unknown rather than as zero', () => {
+    // `0 of 0` would say the bench is at its ceiling when in fact the frame was unreadable.
+    useRunStore.getState().apply(spendFrame({ max_calls: 'lots', calls: 2 }))
+    expect(useRunStore.getState().spend.maxCalls).toBeNull()
+  })
+})
+
+describe('the spend tile on the surface', () => {
+  let host: HTMLDivElement
+  let root: ReturnType<typeof createRoot> | null = null
+
+  beforeEach(() => {
+    host = document.createElement('div')
+    document.body.appendChild(host)
+  })
+
+  afterEach(() => {
+    act(() => root?.unmount())
+    root = null
+    host.remove()
+  })
+
+  function mount(): void {
+    act(() => {
+      root = createRoot(host)
+      root.render(createElement<HudProps>(Hud, { storage: null }))
+    })
+  }
+
+  it('carries the measured marking and not the authored one', () => {
+    // The exemption, from the tile's side. Marking calls and tokens as authored tuning would
+    // be a lie in the one place the product has a real measurement; leaving them unmarked
+    // would read as an oversight, because the reader has learned that unmarked means missing.
+    mount()
+
+    const tile = host.querySelector(`[data-tile="${SPEND_TILE}"]`)
+    expect(tile).not.toBeNull()
+    expect(tile?.querySelector('[data-measured]')).not.toBeNull()
+    expect(tile?.querySelector('[data-authored-tuning]')).toBeNull()
+    expect(tile?.querySelector('[data-measured]')?.getAttribute('aria-label')).toBe(
+      measuredLabel('Model spend'),
+    )
+    expect(tile?.textContent).toContain(MEASURED.label)
+  })
+
+  it('reads with every hue removed, and never reaches for the reserved beam', () => {
+    // R36 for the second marking. All of its meaning is in the glyph and the label, so
+    // flattening every colour loses nothing — and a "this one is real" signal expressed as
+    // hue would have spent the reserve amber holds for a person waiting on the CEO.
+    mount()
+
+    const tile = host.querySelector(`[data-tile="${SPEND_TILE}"]`)
+    expect(tile?.innerHTML.toLowerCase()).not.toContain(RESERVED_BEAM.toLowerCase())
+    for (const value of Object.values(MEASURED)) {
+      expect(value).not.toMatch(/^#[0-9a-f]{3,8}$/i)
+      expect(value).not.toBe(RESERVED_BEAM)
+    }
+  })
+
+  it('updates during a run', () => {
+    // The half of M28 a static reading cannot show. Two frames, and the tile follows.
+    mount()
+
+    const tile = host.querySelector(`[data-tile="${SPEND_TILE}"]`)
+    expect(tile?.textContent).toContain('0 of —')
+
+    act(() => {
+      useRunStore.getState().apply(spendFrame({ calls: 3, tokens: 1_200, lineage_calls: 3 }))
+    })
+    expect(tile?.textContent).toContain('3 of 200')
+    expect(tile?.textContent).toContain('1,200 of 600,000')
+
+    act(() => {
+      useRunStore
+        .getState()
+        .apply(spendFrame({ calls: 4, tokens: 1_700, lineage_calls: 9, lineage_tokens: 5_000 }))
+    })
+    expect(tile?.textContent).toContain('4 of 200')
+    expect(tile?.textContent).toContain('9 calls, 5,000 tokens')
+    expect(tile?.getAttribute('data-quiet')).toBe('false')
+
+    act(() => {
+      useRunStore.getState().apply(spendFrame({ calls: 200, quiet: true }))
+    })
+    expect(tile?.getAttribute('data-quiet')).toBe('true')
+    expect(tile?.textContent).toContain('ceiling reached')
+  })
+
+  it('can be removed, unlike runway and decision pressure', () => {
+    // Composition is the CEO's except where absence changes what a run means. What the tool
+    // cost to run is not that: a HUD without it can still show a company sliding into
+    // insolvency, which is the test the two fixed tiles pass and this one does not.
+    expect(NON_REMOVABLE).not.toContain(SPEND_TILE)
+    expect(removeTile(DEFAULT_COMPOSITION, SPEND_TILE)).not.toContain(SPEND_TILE)
   })
 })

@@ -84,6 +84,9 @@ class EventKind(IntEnum):
     # Commands whose outcome must survive a client reconnect (R30).
     COMMAND_REJECTED = 50
 
+    # Movement. One event per resolved walk, never one per tick (R15).
+    STAFF_MOVED = 60
+
 
 # Payload schema version per event type. Adding a kind is additive — existing
 # events keep their kind and version, so replay is unaffected — but it is a
@@ -101,14 +104,33 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     # withholding `catalog_to_state`'s docstring used to state (R35). Additive, but a consumer
     # that needs an option's consequence has to be able to tell whether the event it is holding
     # carries it — the same argument that bumped this for the catalog and the roster names.
-    EventKind.GENESIS: 4,  # U4/U8
+    # 5: The MVP's U6 made a company a file, and genesis records which one: `scenario` carries the
+    # id, the canonical content hash and the hash version (R7), and each roster entry gained the
+    # `responsibility`, `tools`, `mcp_servers` and `skills` a scenario now authors for everybody
+    # (M15). One bump for both, because the payload changes once — the data move and the schema
+    # extension land together so the golden fixtures regenerate once rather than twice. A run
+    # written at version 4 records no scenario identity, and `scenario.load_recorded` refuses it
+    # by name with the remedy rather than folding it against whatever is on disk.
+    EventKind.GENESIS: 5,  # U4/U8, MVP U6
     EventKind.DAY_CHECKPOINT: 1,  # U3/U15
     EventKind.RATE_CHANGED: 1,  # U9
     EventKind.RUN_TERMINATED: 1,  # U8
     EventKind.RUN_FORKED: 1,  # U15
     EventKind.STORE_RECOVERED: 1,  # U6/U9
-    EventKind.REQUEST_RAISED: 1,  # U11
-    EventKind.INPUT_RECEIVED: 1,  # U11
+    # 2: the MVP's U10 added a third leg to the pending-input contract. A statement request carries
+    # the director it was raised on, the checkpoint it is about, and the authorized scope the leg
+    # must query under (R23) — present only on that leg, so a period consult's payload is
+    # byte-identical to version 1 and a log written before this unit still replays strictly. The
+    # bump is for the consumer that has to be able to tell whether the event it is holding can carry
+    # a director at all.
+    EventKind.REQUEST_RAISED: 2,  # U11, MVP U10
+    # 2: the answer to a statement request rides here rather than on a new kind, which is what keeps
+    # it inside the partial unique index that already enforces one answer per request per run. The
+    # discriminator is on the payload: `service` names the leg, and the answer then carries the
+    # prose, the objection, the citations, the retrieved context and the producer identity (R2, M31,
+    # M32). Additive — a resolution and a period consult are unchanged — and versioned because a
+    # client rendering a briefing has to know whether this event can hold one.
+    EventKind.INPUT_RECEIVED: 2,  # U11, MVP U10
     EventKind.ANSWER_REJECTED: 1,  # U11
     EventKind.CEO_INPUT: 1,  # U4
     # 2: U13/U14 added `item_status`, the status the item landed in. Every kind that moves
@@ -145,6 +167,10 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     EventKind.ATTRITION: 2,  # U7 — 2: `item_status` for a returned item (U13/U14)
     EventKind.DAILY_COSTS_APPLIED: 1,  # U7
     EventKind.COMMAND_REJECTED: 1,  # U10
+    # A walk: the person, the tiles they will cross, and the tick the crossing started.
+    # Version 1 and expected to stay there — the payload is a path and a tick, and the whole
+    # design claim is that nothing per-tick has to be added to it.
+    EventKind.STAFF_MOVED: 1,  # MVP U3
 }
 
 # --- the classification R11 requires --------------------------------------

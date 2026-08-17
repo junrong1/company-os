@@ -88,6 +88,93 @@ export function toTile(milli: bigint): bigint {
   return floorDiv(milli + MILLI_TILES_PER_TILE / 2n, MILLI_TILES_PER_TILE)
 }
 
+/** One tile of a resolved path, as `STAFF_MOVED` carries it. */
+export type Tile = readonly [bigint, bigint]
+
+/** Where a walker is, and which way they are facing while they get there. */
+export interface WalkPose {
+  xMilli: bigint
+  yMilli: bigint
+  /** The direction of travel, or `null` when there is nothing to face along. */
+  facing: 'up' | 'down' | 'left' | 'right' | null
+  /** True once the path has run out. The walker is standing on its last tile. */
+  arrived: boolean
+}
+
+/**
+ * Where a walking person is at `elapsedTicks`, in milli-tiles.
+ *
+ * The client half of `simcore.time.walk_position_milli`, golden-vectored against it by
+ * `walk.json`'s `track`. The kernel snaps a walker to whole tiles — a sub-tile coordinate in
+ * hashed state would be a hashed value nothing reads — so this is the one piece of the movement
+ * arithmetic that exists on both sides and is only *evaluated* on this one. That makes the
+ * vector the whole of the guard, which is why it is generated from a real walk on the shipped
+ * floor rather than written by hand.
+ *
+ * `path` follows the kernel's `find_path`: the origin is excluded and the destination included,
+ * so after `n` whole tiles the walker is on `path[n - 1]`, and `origin` is where `n` is zero.
+ * **`origin` is therefore only read for the first tile**, which is what lets a resync feed the
+ * walker's *current* tile in as the origin: a snapshot taken after the first tile has no record
+ * of where the walk began, and by then nothing needs one.
+ *
+ * Progress past the end of the path is the destination, not an extrapolation. Arrival is a
+ * clamp, and `walkDurationTicks(path.length)` is the tick it happens on.
+ */
+export function walkPose(origin: Tile, path: readonly Tile[], elapsedTicks: bigint): WalkPose {
+  if (elapsedTicks < 0n) throw new RangeError('sim-time does not run before tick 0')
+
+  if (path.length === 0) {
+    return {
+      xMilli: origin[0] * MILLI_TILES_PER_TILE,
+      yMilli: origin[1] * MILLI_TILES_PER_TILE,
+      facing: null,
+      arrived: true,
+    }
+  }
+
+  const milli = milliTilesProgressed(elapsedTicks)
+  const covered = floorDiv(milli, MILLI_TILES_PER_TILE)
+  const within = milli - covered * MILLI_TILES_PER_TILE
+
+  if (covered >= BigInt(path.length)) {
+    const last = path[path.length - 1]
+    return {
+      xMilli: last[0] * MILLI_TILES_PER_TILE,
+      yMilli: last[1] * MILLI_TILES_PER_TILE,
+      // Faced along the final step, so a walker who has just stopped is not facing the way
+      // they were standing before they set off.
+      facing: facingBetween(path.length === 1 ? origin : path[path.length - 2], last),
+      arrived: true,
+    }
+  }
+
+  // Safe as a `number` index: `covered` is below `path.length` here, and a path is bounded by
+  // the floor. The arithmetic that reached this point was not.
+  const here = covered === 0n ? origin : path[Number(covered) - 1]
+  const ahead = path[Number(covered)]
+
+  return {
+    xMilli: here[0] * MILLI_TILES_PER_TILE + (ahead[0] - here[0]) * within,
+    yMilli: here[1] * MILLI_TILES_PER_TILE + (ahead[1] - here[1]) * within,
+    facing: facingBetween(here, ahead),
+    arrived: false,
+  }
+}
+
+/**
+ * Which way somebody stepping from `from` to `to` is facing.
+ *
+ * Unambiguous rather than a port of the kernel's `_facing`, and the difference is worth stating:
+ * `_facing` breaks a tie with `abs(dx) > abs(dy)` because it is given two arbitrary tiles, while
+ * these two are always adjacent on a four-connected path, so exactly one axis moves. There is no
+ * tie to break and therefore nothing that could be broken differently here than there.
+ */
+function facingBetween(from: Tile, to: Tile): WalkPose['facing'] {
+  if (to[0] !== from[0]) return to[0] > from[0] ? 'right' : 'left'
+  if (to[1] !== from[1]) return to[1] > from[1] ? 'down' : 'up'
+  return null
+}
+
 /** The 1-based day number containing `tick`. Tick 0 is day 1. */
 export function dayOf(tick: bigint): bigint {
   if (tick < 0n) throw new RangeError('sim-time does not run before tick 0')

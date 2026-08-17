@@ -23,6 +23,7 @@ from contracts.envelope import Envelope, EventKind, build
 from simcore import export as exporter
 from simcore import hashing
 from simcore import log as folder
+from simcore import pending as pend
 from simcore import snapshot as snapshots
 from simcore import step as sim
 from simcore import time as simtime
@@ -168,6 +169,138 @@ def test_the_fold_reproduces_an_actor_mid_walk() -> None:
     assert restored.pos == live.pos
     assert restored.path == live.path
     assert restored.path_start_tick == live.path_start_tick
+
+
+def test_replaying_a_log_of_walks_reproduces_the_same_position_track() -> None:
+    """R15: the walk is on the wire, and the wire's copy is a check rather than the source.
+
+    The whole track, tick by tick, from a log whose movement events the fold *regenerates*
+    rather than applies. If the fold read positions off the payloads this would agree by
+    construction and prove nothing; regenerating them means a divergence at any tick fails.
+    """
+    # Either side of the first tile, mid-walk, either side of arrival, and well past it.
+    sampled = (1, 12, 13, 14, 84, 167, 168, 169, 250, 400)
+
+    recorder = Recorder()
+    recorder.record(sim.assign_via_manager(recorder.state, "wi_ap_map"))
+
+    live_track = {}
+    for _ in range(max(sampled)):
+        recorder.advance(1)
+        if recorder.state.tick in sampled:
+            live_track[recorder.state.tick] = recorder.state.people["dir_admin"].pos
+
+    # Folded from a prefix per sampled tick, because a fold refuses a `through_tick` its own
+    # log has already passed — the same guard that catches a run row behind its log.
+    replayed_track = {}
+    for tick in sampled:
+        prefix = [envelope for envelope in recorder.log if envelope.tick <= tick]
+        folded = folder.fold(prefix, at_live_head=False, strict=True, through_tick=tick)
+        replayed_track[tick] = folded.state.people["dir_admin"].pos
+
+    assert replayed_track == live_track
+    assert len(set(live_track.values())) > 5, "sanity: the walk actually moved"
+
+
+def test_strict_replay_detects_a_tampered_walk() -> None:
+    """A movement event is an output, so a wrong path in the log is caught.
+
+    The reason movement is classified as an output rather than as an input: a path the fold
+    applied would make the log the authority on where somebody walked, and an edited path
+    would replay as fact.
+    """
+    recorder = Recorder()
+    recorder.record(sim.assign_via_manager(recorder.state, "wi_ap_map"))
+    recorder.advance(200)
+
+    tampered = []
+    for envelope in recorder.log:
+        if envelope.kind is EventKind.STAFF_MOVED:
+            payload = envelope.decoded_payload()
+            payload["path"] = payload["path"][:-1]
+            envelope = build(
+                seq=envelope.seq,
+                tick=envelope.tick,
+                kind=envelope.kind,
+                rules_ver=envelope.rules_ver,
+                payload=payload,
+                run_id=envelope.run_id,
+            )
+        tampered.append(envelope)
+
+    with pytest.raises(folder.ReplayDiverged) as excinfo:
+        folder.fold(tampered, at_live_head=False, strict=True, through_tick=recorder.state.tick)
+
+    assert "STAFF_MOVED" in str(excinfo.value)
+
+
+def test_strict_replay_detects_a_walk_missing_from_the_log() -> None:
+    recorder = Recorder()
+    recorder.record(sim.assign_via_manager(recorder.state, "wi_ap_map"))
+    recorder.advance(200)
+
+    pruned = [e for e in recorder.log if e.kind is not EventKind.STAFF_MOVED]
+    assert len(pruned) < len(recorder.log), "sanity: there were walks to drop"
+
+    with pytest.raises(folder.ReplayDiverged, match="STAFF_MOVED"):
+        folder.fold(pruned, at_live_head=False, strict=True, through_tick=recorder.state.tick)
+
+
+def test_strict_replay_detects_a_walk_the_step_never_produced() -> None:
+    """The half of the old count check that a two-producer tick made non-obvious.
+
+    A command's walk is appended after the step's outputs at the same tick, so the step's own
+    comparison cannot insist on an exhausted list — a remainder is the normal case in between.
+    Something has to insist afterwards, or an output event nothing regenerated would replay
+    clean and the log would be trusted about a walk that never happened.
+    """
+    recorder = Recorder()
+    recorder.record(sim.assign_via_manager(recorder.state, "wi_ap_map"))
+    recorder.advance(200)
+
+    walk = next(e for e in recorder.log if e.kind is EventKind.STAFF_MOVED)
+    padded = [*recorder.log, build(
+        seq=recorder.log[-1].seq + 1,
+        tick=walk.tick,
+        kind=walk.kind,
+        rules_ver=walk.rules_ver,
+        payload=walk.decoded_payload(),
+        run_id=walk.run_id,
+    )]
+
+    with pytest.raises(folder.ReplayDiverged, match="did not produce"):
+        folder.fold(padded, at_live_head=False, strict=True, through_tick=recorder.state.tick)
+
+
+def test_a_walk_a_command_derived_is_compared_as_strictly_as_the_steps_own() -> None:
+    """The first output event a *command* produces, so the fold had to learn to compare it.
+
+    Isolated to the command's own tick: the assignment and its walk are the only things at tick
+    zero, so a divergence here cannot be a step's.
+    """
+    recorder = Recorder()
+    recorder.record(sim.assign_via_manager(recorder.state, "wi_ap_map"))
+    recorder.advance(1)
+
+    at_zero = [e for e in recorder.log if e.tick == 0 and e.kind is EventKind.STAFF_MOVED]
+    assert len(at_zero) == 1, "the walk is appended at the tick the command was applied"
+
+    tampered = [
+        build(
+            seq=e.seq,
+            tick=e.tick,
+            kind=e.kind,
+            rules_ver=e.rules_ver,
+            payload={**e.decoded_payload(), "start_tick": 99},
+            run_id=e.run_id,
+        )
+        if e is at_zero[0]
+        else e
+        for e in recorder.log
+    ]
+
+    with pytest.raises(folder.ReplayDiverged, match="STAFF_MOVED"):
+        folder.fold(tampered, at_live_head=False, strict=True, through_tick=recorder.state.tick)
 
 
 def test_the_fold_reproduces_the_ceos_input_derived_position() -> None:
@@ -418,6 +551,33 @@ def test_a_snapshot_preserves_an_actor_mid_walk() -> None:
     assert back.path == live.path
     assert back.path_start_tick == live.path_start_tick
     assert back.arrive == live.arrive
+
+
+def test_the_resync_snapshot_carries_an_in_flight_path() -> None:
+    """R15's other half: a client attaching mid-walk must join the walk, not skip to the desk.
+
+    The frame the gateway sends on a resync is `sim.snapshot(state)` — the same projection the
+    state hash is taken over — so this asserts against that shape rather than against a
+    client-shaped one. Without the path and its start tick a reconnecting client would have only
+    the walker's current tile, and every walk in progress would freeze there until the walker's
+    next event.
+    """
+    recorder = Recorder()
+    recorder.record(sim.assign_via_manager(recorder.state, "wi_ap_map"))
+    recorder.advance(80)  # mid-walk: the walk takes 168 ticks
+
+    wire = sim.snapshot(recorder.state)
+    grace = wire["people"]["dir_admin"]
+
+    assert grace["state"] == sim.STATE_WALKING
+    assert grace["path"] == [list(tile) for tile in recorder.state.people["dir_admin"].path]
+    assert grace["path_start_tick"] == recorder.state.people["dir_admin"].path_start_tick
+    assert grace["pos"] != grace["path"][-1], "sanity: the walk has not finished"
+
+    # And the remaining path plus the start tick locate the walker: the tick the snapshot was
+    # taken at, minus the start, is how far along the client should draw them.
+    elapsed = wire["lifecycle"]["tick"] - grace["path_start_tick"]
+    assert simtime.tiles_progressed(elapsed) < len(grace["path"])
 
 
 def test_editing_a_tuning_constant_invalidates_a_snapshot(monkeypatch) -> None:
@@ -737,6 +897,237 @@ def test_a_rejected_answer_also_clears_the_outstanding_request() -> None:
 
     result = folder.fold(recorder.log, at_live_head=False, through_tick=recorder.state.tick)
     assert result.outstanding_requests == {}
+
+
+# =========================================================================
+# Statements replay because the step reproduces them (M31, M32, R17)
+# =========================================================================
+#
+# The harness comes from `test_pending_input`, imported rather than copied. The three `Recorder`
+# classes in this tree are deliberately near-identical — each suite owns its own — but the CEO
+# driver is forty lines of pathfinding whose whole purpose is to put the *inputs* in the log, and a
+# second copy of that is a second thing that can be subtly wrong in a way these tests would not
+# notice. What matters here is that the CEO's position comes from `CEO_INPUT` events, because a
+# position set on `state.ceo` directly is a position the fold was never asked to reproduce.
+
+
+def _a_run_with_a_statement() -> tuple[object, object]:
+    """A log carrying one statement, answered by a scripted producer. Returns (recorder, request).
+
+    Takes no run id, deliberately. It had one and ignored it, which made the byte-identity test below
+    read as "two runs" while building one twice under the same label. Every caller here wants the same
+    run: what these tests compare is a log against its own replay, and R11's projection excludes
+    `run_id` from the comparison in any case.
+    """
+    import test_pending_input as bench_harness
+
+    recorder = bench_harness.Recorder(horizon_tick=simtime.TICKS_PER_SIM_DAY * 40)
+    request = recorder.open_a_checkpoint_in_person()
+    recorder.record(
+        sim.receive_answer(
+            recorder.state, request.request_id, recorder.statement_answer(request)
+        )
+    )
+    recorder.advance_until(lambda s: request.request_id not in s.pending)
+    recorder.advance(20)
+    return recorder, request
+
+
+def test_strict_replay_of_a_log_carrying_statements_passes() -> None:
+    """M31, R17. Every output event in a log with a briefing in it is regenerated by the step.
+
+    **No hostile-producer patch here, and its absence is the honest version.** The sibling test in
+    `test_pending_input.py` patches the domain model during a fold, and that bites because the fold
+    *could* reach it — `log._apply_input` re-issues `ask_person`, and a fold that re-derived a domain
+    answer would call the patched function. There is no such path to the bench: the dispatch lives in
+    `kernel/loop.py`, and `simcore.log` cannot reach it at all. Patching `produce_statement` around a
+    fold reads as proof and proves nothing. What carries that half is
+    `test_the_fold_never_reissues_outside_the_live_head`, which asserts the fold imports no transport,
+    and the tamper tests below, which show the comparison is real.
+    """
+    original, _ = _a_run_with_a_statement()
+    expected_hash = hashing.state_hash(sim.snapshot(original.state)).overall
+
+    replayed = folder.fold(
+        original.log,
+        at_live_head=False,
+        strict=True,
+        through_tick=original.state.tick,
+    )
+
+    assert hashing.state_hash(sim.snapshot(replayed.state)).overall == expected_hash
+    # And the log really did carry a statement, so the pass is about something.
+    assert [
+        envelope
+        for envelope in original.log
+        if envelope.kind is EventKind.REQUEST_RAISED
+        and envelope.decoded_payload().get("service") == "bench"
+    ]
+    assert [envelope for envelope in original.log if envelope.kind is EventKind.INPUT_RECEIVED]
+
+
+def test_the_fold_cannot_reach_the_bench_at_all() -> None:
+    """The structural half of "replay never asks", for the seam a patch cannot demonstrate.
+
+    The bench is reached from `kernel/loop.py`, which the fold does not import — and cannot, because
+    `simcore` may not import a service (R5). So the guarantee is an import-graph fact rather than a
+    behaviour to observe, and asserting it here is what keeps the test above from having to pretend.
+    """
+    import ast
+
+    tree = ast.parse(Path(folder.__file__).read_text())
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+
+    assert not imported & {"kernel", "agents", "gateway", "modelgw"}, imported
+
+
+def test_strict_replay_detects_a_tampered_statement_request() -> None:
+    """Which is what makes the test above mean something.
+
+    A strict fold that *read* the request from the log rather than regenerating it would pass just as
+    happily. The proof that it regenerates is that changing the logged copy is caught — and the field
+    changed here is the authorized scope, because that is the one an attacker would want to widen.
+    """
+    original, request = _a_run_with_a_statement()
+
+    tampered = []
+    for envelope in original.log:
+        payload = envelope.decoded_payload()
+        if envelope.kind is EventKind.REQUEST_RAISED and payload.get("service") == "bench":
+            payload["scope"] = {"people": ["dir_hr", "stf_cs"], "items": ["wi_hiring", "wi_faq"]}
+            envelope = build(
+                seq=envelope.seq,
+                tick=envelope.tick,
+                kind=envelope.kind,
+                rules_ver=envelope.rules_ver,
+                payload=payload,
+                run_id=envelope.run_id,
+                request_id=envelope.request_id,
+            )
+        tampered.append(envelope)
+
+    with pytest.raises(folder.ReplayDiverged, match="REQUEST_RAISED"):
+        folder.fold(
+            tampered, at_live_head=False, strict=True, through_tick=original.state.tick
+        )
+    assert request.service == "bench", "the fixture stopped producing a bench request"
+
+
+def test_strict_replay_detects_a_statement_request_the_step_never_produced() -> None:
+    """The other direction: an event in the log with nothing regenerated to match it."""
+    original, _ = _a_run_with_a_statement()
+
+    at_tick = original.log[-1].tick
+    injected = [
+        *original.log,
+        build(
+            seq=original.log[-1].seq + 1,
+            tick=at_tick,
+            kind=EventKind.REQUEST_RAISED,
+            rules_ver=RULES_VERSION,
+            payload={
+                "tick": at_tick,
+                "service": "bench",
+                "owning_item": "wi_hiring",
+                "deadline_tick": at_tick + pend.STATEMENT_DEADLINE_TICKS,
+                "period_index": 0,
+                "person": "dir_hr",
+                "cp_index": 0,
+                "scope": {"people": ["dir_hr"], "items": ["wi_hiring"]},
+            },
+            run_id=RUN,
+            request_id="99999999-9999-5999-8999-999999999999",
+        ),
+    ]
+
+    with pytest.raises(folder.ReplayDiverged):
+        folder.fold(injected, at_live_head=False, strict=True, through_tick=at_tick)
+
+
+def test_the_retrieved_context_is_read_from_the_log_and_not_regenerated() -> None:
+    """M32. What the director saw survives, because it is on an *input* event.
+
+    **The obvious form of this test is vacuous, so it is written the other way round.** Reading the
+    same envelope before and after the fold and asserting equality is `x == x` — the fold does not
+    mutate log rows, so it would pass if the context were regenerated, ignored, or deleted. What
+    proves the context is *read* is that an edited one survives: the fold accepts a value it could
+    not have produced, and the request it belongs to stops being outstanding. Regenerating would be
+    the alternative the plan forbids — a re-queried retrieval hands the director a different world
+    while the log claims fidelity.
+    """
+    from simcore import statement as statements
+
+    original, request = _a_run_with_a_statement()
+    edited = []
+    substituted: dict | None = None
+    for envelope in original.log:
+        if envelope.kind is EventKind.INPUT_RECEIVED:
+            payload = envelope.decoded_payload()
+            context = payload["answer"][statements.KEY_CONTEXT]
+            assert context["events"], "the fixture logged an empty context"
+            # A value the retrieval would never produce for this run: the same events, with the note
+            # a re-query could not invent. Inside the guard's caps, so the statement still stands.
+            context["unlocking_note"] = "read from the log, not re-queried"
+            substituted = context
+            envelope = build(
+                seq=envelope.seq,
+                tick=envelope.tick,
+                kind=envelope.kind,
+                rules_ver=envelope.rules_ver,
+                payload=payload,
+                run_id=envelope.run_id,
+                request_id=envelope.request_id,
+            )
+        edited.append(envelope)
+
+    assert substituted is not None, "the fixture logged no statement"
+
+    replayed = folder.fold(
+        edited, at_live_head=False, strict=True, through_tick=original.state.tick
+    )
+
+    # It folded, so the edited context was accepted rather than replaced by a fresh retrieval — and
+    # the statement was applied, so the request is no longer outstanding.
+    #
+    # Not "nothing is outstanding": the CEO in this fixture is still standing at the desk after the
+    # statement landed, so the step raises the next one, which is the documented consequence of
+    # holding the "already asked" memory in `pending` rather than on the item.
+    assert request.request_id not in replayed.outstanding_requests
+    reread = [e for e in edited if e.kind is EventKind.INPUT_RECEIVED][-1].decoded_payload()
+    assert reread["answer"][statements.KEY_CONTEXT] == substituted
+
+
+def test_two_fresh_runs_with_a_statement_produce_byte_identical_logs() -> None:
+    """The verification U10 states: one seed, one script, two fresh runs, identical bytes.
+
+    Compared over `canonical_log_projection`, which is the whole-log form R11 specifies — sequence,
+    tick, kind, both schema versions and payload, and never the metadata group, because ingest time
+    and correlation ids differ between two runs that are in fact identical. Two *separately
+    constructed* runs, so genesis, the walk, the request, the retrieved context and the landing tick
+    are all produced twice from the same seed rather than read twice from one log.
+
+    This is the byte-identity half; `test_strict_replay_of_a_log_carrying_statements_passes` is the
+    replay half, and the tamper tests are what stop either from passing vacuously.
+    """
+    from contracts.envelope import canonical_log_projection
+
+    first, _ = _a_run_with_a_statement()
+    second, _ = _a_run_with_a_statement()
+
+    assert first is not second
+    assert canonical_log_projection(first.log) == canonical_log_projection(second.log)
+    # And a statement really is in there, with its context, in both.
+    for recorder in (first, second):
+        assert any(
+            envelope.kind is EventKind.REQUEST_RAISED
+            and envelope.decoded_payload().get("service") == "bench"
+            for envelope in recorder.log
+        )
 
 
 # =========================================================================

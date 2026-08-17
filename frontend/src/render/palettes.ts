@@ -166,7 +166,7 @@ export const DAYLIGHT_STRENGTH = 0.3
  * The CEO's sprite id, matching the prototype's `drawSprite(S.ceo, 'you')`.
  *
  * Not on the roster: the CEO is the player, so they have no desk, no reporting line and no
- * `PersonSpec`. Everything keyed by person id — the sheet cache, the manifest lookup — still
+ * scenario entry. Everything keyed by person id — the sheet cache, the manifest lookup — still
  * keys on this one, which is why it is a constant rather than a literal spelled in four
  * places.
  */

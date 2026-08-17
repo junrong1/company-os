@@ -31,3 +31,8 @@ backend/var/
 
 # Local Compound Engineering prototypes and session artifacts
 .context/compound-engineering/
+
+# Agent worktrees. `.claude/skills/` is tracked, so without this an isolated
+# worktree checked out under `.claude/` reads as untracked files inside a
+# tracked directory — and one `git add .claude` would commit a whole checkout.
+.claude/worktrees/

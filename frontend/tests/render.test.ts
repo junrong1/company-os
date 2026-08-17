@@ -781,6 +781,45 @@ describe('a frame', () => {
     expect(calls.indexOf('save')).toBeLessThan(calls.indexOf('restore'))
   })
 
+  it('projects actors once per frame, against its own clock', () => {
+    /*
+     * Staff positions are interpolated from a path and the tick it began on (R15), so which tick
+     * the projection is asked for *is* where people are drawn. Two things are asserted, and the
+     * second is the one that was a real bug in the making: the tick comes from the render clock
+     * rather than from the store — the store's moves only when an event lands, so a walk driven
+     * by it would advance a tile at a time — and the projection is called *once*, because the
+     * camera used to call it a second time and two reads of a moving clock would let the camera
+     * follow the CEO to one tick while the office was drawn at another.
+     */
+    const asked: bigint[] = []
+    const frames = fakeFrames()
+    const instance = new Renderer({
+      canvas: recordingCanvas().canvas,
+      floor: FLOOR_FIXTURE,
+      actors: (tick) => {
+        asked.push(tick)
+        return [ACTOR]
+      },
+      makeCanvas: () => recordingCanvas().canvas,
+      requestFrame: frames.request,
+      cancelFrame: frames.cancel,
+      now: frames.now,
+    })
+
+    instance.start()
+    frames.advance(16)
+    frames.runOne()
+    expect(asked).toHaveLength(1)
+    expect(asked[0]).toBe(instance.clock.tick)
+
+    // A second frame's worth of wall time advances the clock, so the tick moves without any
+    // event having landed.
+    frames.advance(wallMsFor(20n))
+    frames.runOne()
+    expect(asked).toHaveLength(2)
+    expect(asked[1]).toBeGreaterThan(asked[0])
+  })
+
   it('draws a person in front of the desk below them and behind their own', () => {
     /* The reason props are not baked into the floor: they have to sort against people. */
     const order: string[] = []

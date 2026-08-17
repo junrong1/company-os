@@ -29,6 +29,14 @@ import { runState, subscribeTo, useRunStore } from '../net/store'
 import { comparePayload } from './comparison-model'
 import { Conversation } from './Conversation'
 import { selectConversation } from './conversation-model'
+import {
+  TALK_HINT,
+  WALK_HINT,
+  dismiss,
+  loadDismissed,
+  pendingHints,
+  saveDismissed,
+} from './hints'
 import { Hud } from './Hud'
 import { Panels } from './Panels'
 import {
@@ -38,6 +46,7 @@ import {
   actorsFromStore,
   bitmaskFor,
   inputLeadTicks,
+  posedPeople,
   shouldRestateHeldInput,
   typingTarget,
 } from './stage'
@@ -60,9 +69,18 @@ export interface ShellProps {
    * arrow would tear the socket down and reconnect on every render.
    */
   makeStream?: (runId: string, onFrame?: () => void) => { start(): void; stop(): void }
+  /**
+   * Where the first-run hints remember having been dismissed (M7).
+   *
+   * Injectable for the same reason the HUD's is: a hint that survives a reload is the whole
+   * property, and asserting it against a real browser store would make one test's dismissal
+   * the next test's starting state. `null` disables persistence, which is also what a browser
+   * with storage blocked looks like.
+   */
+  storage?: Pick<Storage, 'getItem' | 'setItem'> | null
 }
 
-export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
+export function Shell({ runId, makeStream, onStartRun, storage }: ShellProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
   const [stage, setStage] = useState<Stage>('office')
@@ -83,6 +101,17 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
     predictionRef.current = { runId, value: new CeoPrediction() }
   }
   const prediction = predictionRef.current.value
+
+  // Which of the two first-run hints are done with. Read once, at mount, from the browser
+  // rather than from the run: a hint scoped to the run would come back on the second one, and
+  // the product is built around comparing two runs in a sitting.
+  const resolvedStorage =
+    storage === undefined ? (typeof localStorage === 'undefined' ? null : localStorage) : storage
+  const [dismissed, setDismissed] = useState<string[]>(() => loadDismissed(resolvedStorage))
+
+  useEffect(() => {
+    saveDismissed(resolvedStorage, dismissed)
+  }, [resolvedStorage, dismissed])
 
   const connection = useRunStore((state) => state.connection)
   const sequenceGap = useRunStore((state) => state.sequenceGap)
@@ -120,7 +149,7 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
       // Read straight from the store inside the frame callback. No subscription, because a
       // notification would only tell the loop something its next frame was going to read
       // anyway.
-      actors: () => actorsFromStore(prediction.pose()),
+      actors: (tick) => actorsFromStore(prediction.pose(), tick),
       onFrame: (tick) => {
         // The render clock is the client's estimate of the kernel's tick — smooth, and
         // re-anchored every time the authority speaks. Walking the prediction along it is
@@ -144,7 +173,15 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
         // meetings, so the person the CEO is talking to can leave a conversation the CEO is
         // standing perfectly still in. Pushed into React only when the answer changes, so a
         // frame loop does not re-render the tree sixty times a second.
-        const next = selectConversation(prediction.pose(), runState().people, nearbyRef.current)
+        //
+        // Posed at the clock's tick rather than read from the store, because the store holds
+        // where a walk *began*. Reading that would price proximity against a desk somebody left
+        // a sim-hour ago, and the conversation would open on a person standing across the room.
+        const next = selectConversation(
+          prediction.pose(),
+          posedPeople(runState().people, tick),
+          nearbyRef.current,
+        )
         if (next !== nearbyRef.current) {
           nearbyRef.current = next
           setNearby(next)
@@ -221,6 +258,12 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
       // walking again.
       if (mask === lastMask.current && !force) return
       lastMask.current = mask
+
+      // The walk hint is earned rather than read: somebody who has just walked does not need
+      // to be told how. Zero is excluded because a release and a blur both send it, and a hint
+      // must not be cleared by the CEO letting go of a key they never pressed.
+      if (mask !== 0) setDismissed((current) => dismiss(current, WALK_HINT))
+
       const state = runState()
       // From the *render* clock, not the store's tick. The store's tick is the last one the
       // kernel actually said out loud, and it says so rarely — events land on about five ticks
@@ -268,6 +311,14 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
     },
     [runId, prediction],
   )
+
+  // The other half of earning a hint: the CEO is standing next to somebody, so the panel that
+  // opened has already said what the hint was going to. Driven off `nearby` rather than off the
+  // panel's own render, because the panel is what the hint describes and a hint that outlives
+  // the thing it describes is the failure being avoided.
+  useEffect(() => {
+    if (nearby !== null) setDismissed((current) => dismiss(current, TALK_HINT))
+  }, [nearby])
 
   // A key held across a pause fires no keydown on resume, so without re-stating the held
   // direction the CEO stays frozen until the player lets go and presses again — which reads
@@ -371,6 +422,8 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
     [command],
   )
 
+  const hints = useMemo(() => pendingHints(dismissed), [dismissed])
+
   const banner = useMemo(() => {
     if (terminal !== null) return `The run ended: ${terminal.reason}`
     if (rejection !== null) return rejection
@@ -448,6 +501,30 @@ export function Shell({ runId, makeStream, onStartRun }: ShellProps) {
         <div className="dag-host" data-hidden={stage !== 'dag'}>
           <Dag active={stage === 'dag'} />
         </div>
+
+        {/* Only over the office, for the same reason the conversation is: both hints describe
+            things you do on the floor, and neither is performable on the chain view. Opposite
+            corner from the conversation, so earning the second hint never hides the panel that
+            proves it was earned. */}
+        {stage === 'office' && hints.length > 0 && (
+          <ul className="hints" aria-label="Getting started">
+            {hints.map((hint) => (
+              <li key={hint.id} className="hints__card" data-hint={hint.id}>
+                {hint.text}
+                <button
+                  type="button"
+                  className="hints__dismiss"
+                  // Labelled with the hint it closes: two buttons reading "Got it" are two
+                  // identical controls to a screen reader moving through them by label.
+                  aria-label={`Got it: ${hint.text}`}
+                  onClick={() => setDismissed((current) => dismiss(current, hint.id))}
+                >
+                  Got it
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
 
         {/* Only over the office. On the chain view there is no floor to be standing on, and a
             conversation panel there would claim a proximity the stage is not showing. */}

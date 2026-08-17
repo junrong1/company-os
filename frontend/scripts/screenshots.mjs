@@ -27,7 +27,21 @@ const OUT = new URL('../../docs/assets/company-os-visual-redesign/verification/'
 
 /** A fixed run, so two captures of the same build are the same picture. */
 const RUN_ID = 'run_verification'
-const WAITING_PERSON = 'dir_sales'
+
+/**
+ * The person a real day-zero run is waiting on, and what they are stopped at.
+ *
+ * Injected rather than played, and the injection stays: this harness runs against a recorded
+ * genesis so that looking at the art needs no Python stack, and a genesis event alone puts
+ * nobody in front of a decision — the first `CHECKPOINT_RAISED` arrives a tick later, from the
+ * kernel. What the injection must not do is *invent* a state the product never reaches, which
+ * is what it used to do: it named Marcus in Sales stopped at the AP map, while M6's authored
+ * seed opens every run with Ruth in People stopped at the hiring item. These three values are
+ * that event's, taken from a live day-zero log rather than chosen.
+ */
+const WAITING_PERSON = 'dir_hr'
+const WAITING_ITEM = 'wi_hiring'
+const WAITING_LABEL = 'Information'
 
 /**
  * The genesis the office is drawn from.
@@ -86,7 +100,7 @@ try {
     // store the running client is reading — no product hook, no test-only global, and no
     // second opinion about what a genesis event means.
     await page.evaluate(
-      async ([genesis, waitingFor]) => {
+      async ([genesis, waitingFor, waitingItem, waitingLabel]) => {
         const { useRunStore } = await import('/src/net/store.ts')
         useRunStore.getState().apply(genesis)
         useRunStore.getState().setConnection('open')
@@ -97,18 +111,18 @@ try {
         useRunStore.setState({
           tray: [
             {
-              itemId: 'wi_ap_map',
+              itemId: waitingItem,
               personId: waitingFor,
               cpIndex: 0,
-              label: 'Route through the director',
-              kind: 'decision',
-              atTick: 0n,
-              atSeq: 1n,
+              label: waitingLabel,
+              kind: 'info',
+              atTick: 1n,
+              atSeq: 2n,
             },
           ],
         })
       },
-      [genesisFrame, WAITING_PERSON],
+      [genesisFrame, WAITING_PERSON, WAITING_ITEM, WAITING_LABEL],
     )
 
     // Long enough for the renderer to bake the floor, compose eleven sheets and draw.

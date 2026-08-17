@@ -1307,126 +1307,279 @@
       "dir_admin": {
         "dept": "admin",
         "initials": "GO",
+        "mcp_servers": [
+          "ledger",
+          "approval-queue"
+        ],
         "mgr": "",
         "name": "Grace Okafor",
         "rank": "director",
+        "responsibility": "Runs the month-end close, and owns the manager approval threshold.",
         "seat": [
           21,
           13
         ],
-        "title": "Director, Administration"
+        "skills": [
+          "month-end-close",
+          "authority-policy",
+          "supplier-relations"
+        ],
+        "title": "Director, Administration",
+        "tools": [
+          "Ledger",
+          "Approval queue",
+          "Close checklist"
+        ]
       },
       "dir_cs": {
         "dept": "support",
         "initials": "NK",
+        "mcp_servers": [
+          "ticket-desk"
+        ],
         "mgr": "",
         "name": "Nina Kaur",
         "rank": "director",
+        "responsibility": "Owns first-line response time, and takes every cancellation and legal ticket herself.",
         "seat": [
           13,
           13
         ],
-        "title": "Customer Support Manager"
+        "skills": [
+          "escalation-handling",
+          "response-time-review",
+          "template-authoring"
+        ],
+        "title": "Customer Support Manager",
+        "tools": [
+          "Ticket desk",
+          "Answer templates",
+          "Escalation board"
+        ]
       },
       "dir_hr": {
         "dept": "hr",
         "initials": "RB",
+        "mcp_servers": [
+          "applicant-tracker",
+          "calendar"
+        ],
         "mgr": "",
         "name": "Ruth Bello",
         "rank": "director",
+        "responsibility": "Owns hiring lead time, and translates what a hiring manager wants into a posting.",
         "seat": [
           5,
           13
         ],
-        "title": "People Manager"
+        "skills": [
+          "requirements-gathering",
+          "posting-authoring",
+          "offer-negotiation"
+        ],
+        "title": "People Manager",
+        "tools": [
+          "Applicant tracker",
+          "Job board",
+          "Interview calendar"
+        ]
       },
       "dir_sales": {
         "dept": "sales",
         "initials": "MW",
+        "mcp_servers": [
+          "crm",
+          "reporting-warehouse"
+        ],
         "mgr": "",
         "name": "Marcus Webb",
         "rank": "director",
+        "responsibility": "Owns the revenue number, and is the only approval for credit terms and discounts.",
         "seat": [
           14,
           3
         ],
-        "title": "VP, Sales"
+        "skills": [
+          "pipeline-review",
+          "discount-approval",
+          "territory-planning"
+        ],
+        "title": "VP, Sales",
+        "tools": [
+          "Sales CRM",
+          "Forecast workbook",
+          "Email"
+        ]
       },
       "stf_ap": {
         "dept": "accounting",
         "initials": "PR",
+        "mcp_servers": [
+          "ledger",
+          "document-store"
+        ],
         "mgr": "dir_admin",
         "name": "Priya Raman",
         "rank": "staff",
+        "responsibility": "Reconciles every invoice against its paper copy, and releases the payment run.",
         "seat": [
           18,
           3
         ],
-        "title": "Accounts Payable"
+        "skills": [
+          "invoice-matching",
+          "payment-release",
+          "supplier-reconciliation"
+        ],
+        "title": "Accounts Payable",
+        "tools": [
+          "Ledger",
+          "Invoice scanner",
+          "Payment run"
+        ]
       },
       "stf_buyer": {
         "dept": "admin",
         "initials": "VH",
+        "mcp_servers": [
+          "purchasing",
+          "supplier-directory"
+        ],
         "mgr": "dir_admin",
         "name": "Victor Hale",
         "rank": "staff",
+        "responsibility": "Collects competing quotes, and places every purchase order.",
         "seat": [
           18,
           13
         ],
-        "title": "Procurement Buyer"
+        "skills": [
+          "quote-collection",
+          "single-source-justification",
+          "purchase-ordering"
+        ],
+        "title": "Procurement Buyer",
+        "tools": [
+          "Purchase order system",
+          "Quote tracker",
+          "Supplier directory"
+        ]
       },
       "stf_cs": {
         "dept": "support",
         "initials": "OC",
+        "mcp_servers": [
+          "ticket-desk",
+          "knowledge-base"
+        ],
         "mgr": "dir_cs",
         "name": "Owen Cole",
         "rank": "staff",
+        "responsibility": "Answers the first-line queue, and decides what goes to engineering.",
         "seat": [
           10,
           13
         ],
-        "title": "Support, First Line"
+        "skills": [
+          "ticket-triage",
+          "answer-drafting",
+          "engineering-handoff"
+        ],
+        "title": "Support, First Line",
+        "tools": [
+          "Ticket desk",
+          "Answer templates",
+          "Knowledge base"
+        ]
       },
       "stf_field": {
         "dept": "sales",
         "initials": "TB",
+        "mcp_servers": [
+          "crm"
+        ],
         "mgr": "dir_sales",
         "name": "Tom Baird",
         "rank": "staff",
+        "responsibility": "Carries the customer relationship on the road, and promises delivery dates at the table.",
         "seat": [
           12,
           3
         ],
-        "title": "Account Executive"
+        "skills": [
+          "account-visits",
+          "verbal-order-intake",
+          "delivery-promising"
+        ],
+        "title": "Account Executive",
+        "tools": [
+          "Sales CRM",
+          "Personal delivery spreadsheet",
+          "Mobile phone"
+        ]
       },
       "stf_order": {
         "dept": "sales",
         "initials": "DR",
+        "mcp_servers": [
+          "order-system",
+          "inventory"
+        ],
         "mgr": "dir_sales",
         "name": "Dana Reyes",
         "rank": "staff",
+        "responsibility": "Enters every order into the order system, and holds the delivery dates the floor promised.",
         "seat": [
           10,
           3
         ],
-        "title": "Order Processing Specialist"
+        "skills": [
+          "order-entry",
+          "stock-reservation",
+          "delivery-date-check"
+        ],
+        "title": "Order Processing Specialist",
+        "tools": [
+          "Order System",
+          "Sales spreadsheet",
+          "Stock enquiry terminal"
+        ]
       },
       "stf_rec": {
         "dept": "hr",
         "initials": "SD",
+        "mcp_servers": [
+          "applicant-tracker",
+          "calendar"
+        ],
         "mgr": "dir_hr",
         "name": "Sam Delgado",
         "rank": "staff",
+        "responsibility": "Sources candidates, sets the first-round bar, and schedules every interview.",
         "seat": [
           2,
           13
         ],
-        "title": "Recruiter"
+        "skills": [
+          "candidate-sourcing",
+          "first-round-screening",
+          "interview-scheduling"
+        ],
+        "title": "Recruiter",
+        "tools": [
+          "Applicant tracker",
+          "Job board",
+          "Interview calendar"
+        ]
       }
     },
     "rules_ver": "a3ca0b2bc04d69b51cad6d3315fff9d1",
-    "run_seed": 12648430
+    "run_seed": 12648430,
+    "scenario": {
+      "content_hash": "e0292a4f4c0b4efac9eefb1b50747ade",
+      "hash_ver": 1,
+      "id": "default"
+    }
   },
-  "schema_ver": 4
+  "schema_ver": 5
 }

@@ -12,9 +12,11 @@ reported a match, which is the single nastiest failure this design can have. R36
 version is what closes it: the key changes automatically when any constant does.
 
 **The wire form carries slightly more than the hash view.** The state hash covers simulation
-state; reconstructing a run additionally needs the seed and the grid, because the floor is
-regenerated rather than stored. Keeping those separate is deliberate — putting the seed into
-the hashed set would be harmless today and wrong the first time a fork changed it.
+state; reconstructing a run additionally needs the seed, the grid and the scenario identity,
+because the floor is regenerated rather than stored and the company is reloaded by name rather
+than stored. Keeping those separate is deliberate — putting the seed into the hashed set would
+be harmless today and wrong the first time a fork changed it, and putting the scenario there
+would hash a value that cannot change within a run at every day boundary.
 """
 
 from __future__ import annotations
@@ -35,7 +37,13 @@ class SnapshotInvalid(Exception):
 
 #: Bumped when the wire form changes shape. Distinct from the state-shape version, which
 #: covers what the *hash* spans.
-SNAPSHOT_FORMAT_VERSION = 1
+#:
+#: 2: U6 added `scenario`, the identity of the company the state was built against (R7). A
+#: snapshot restore is a way of obtaining state that bypasses the fold entirely, so it is one of
+#: the three sites that has to check it — and it cannot check what it does not carry. The bump
+#: makes every pre-U6 snapshot a documented drop-and-refold, which the format-version refusal
+#: below already words as "a snapshot is a cache, so nothing is lost".
+SNAPSHOT_FORMAT_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +66,12 @@ def to_wire(state: sim.State) -> dict[str, Any]:
     return {
         "format": SNAPSHOT_FORMAT_VERSION,
         "run_seed": state.run_seed,
+        # The company, by identity rather than by value (R7). Three fields instead of a whole
+        # roster and catalog: the file is on disk and `from_wire` reloads it by name, which is
+        # also what gives the restore something to refuse against. Storing the structure would
+        # make a snapshot a second copy of the scenario that could disagree with the file while
+        # reproducing its own hash.
+        "scenario": state.scenario.identity(),
         "grid": [state.floor.cols, state.floor.rows],
         "tick": state.tick,
         "metrics": dict(state.metrics),
@@ -135,16 +149,24 @@ def from_wire(wire: dict[str, Any]) -> sim.State:
     from simcore import items as work
     from simcore import morale as mor
     from simcore import people as roster
+    from simcore import scenario as sc
 
-    seats = roster.assign_seats(floor)
+    # One of R7's three guard sites, and the one that bypasses the fold: a restore builds state
+    # without replaying a genesis event, so nothing else on this path would notice that the
+    # company had been edited under it. `at` names the site so the refusal says which of the
+    # three fired.
+    company = sc.load_recorded(wire.get("scenario"), at="a snapshot restore")
 
-    # An arrived hire is a person `people.PEOPLE` does not know about, so their seat comes
-    # from the snapshot. Restored before the roster loop below, which reads `seats`.
+    seats = roster.assign_seats(company, floor)
+
+    # An arrived hire is a person no scenario authored, so their seat comes from the snapshot.
+    # Restored before the roster loop below, which reads `seats`.
     for recorded_hire in wire["hires"].values():
         if recorded_hire["status"] == "arrived" and recorded_hire["seat"]:
             seats[recorded_hire["person"]] = tuple(recorded_hire["seat"])
     state = sim.State(
         run_seed=int(wire["run_seed"]),
+        scenario=company,
         tick=int(wire["tick"]),
         floor=floor,
         seats=seats,

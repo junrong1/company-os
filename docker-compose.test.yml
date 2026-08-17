@@ -4,7 +4,7 @@
 #   cd backend && uv run pytest tests/test_store.py
 #
 # This exists as a separate file rather than as a port in docker-compose.yml because
-# R34 is deliberate: only the gateway and the client are published, and the store is
+# R34 is deliberate: only the backend and the client are published, and the store is
 # reachable on the compose network alone. A test needing host access to Postgres is not
 # a reason to open the running system's store to the host.
 #

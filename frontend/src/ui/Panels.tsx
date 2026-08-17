@@ -28,6 +28,7 @@ import type { CompareSender } from './comparison-model'
 import { OptionConsequence } from './Consequence'
 import { FROM_TRAY_COST, resolvePayload } from './conversation-model'
 import { STATUS_LABEL, lockReason, progressPercent } from './panels-model'
+import { personPose } from './stage'
 
 export interface CommandSender {
   (kind: string, payload: Record<string, unknown>): void
@@ -46,12 +47,17 @@ export interface CommandSender {
  */
 export function OrgPanel({ onWalkTo }: { onWalkTo?: (personId: string) => void }) {
   const roster = useRunStore(useShallow((state) => state.genesis?.roster ?? {}))
+  // Posed at the store's tick, not read raw. A walk states its own end — the path and the tick
+  // it began on — so a row would otherwise read "Walking" for the rest of the run for anyone
+  // whose last walk was home from a hand-off. The store's tick is accurate to within the event
+  // cadence, which is the right precision for a word and the wrong one for a position; the
+  // canvas poses against the render clock instead.
   const people = useRunStore(
     useShallow((state) =>
       Object.fromEntries(
         Object.entries(state.people).map(([id, person]) => [
           id,
-          `${person.state}|${person.itemId}|${person.waiting ? '1' : '0'}`,
+          `${personPose(person, state.tick).state}|${person.itemId}|${person.waiting ? '1' : '0'}`,
         ]),
       ),
     ),

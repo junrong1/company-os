@@ -138,6 +138,12 @@ def test_the_answer_streams_are_bidirectional_and_kernel_initiated() -> None:
     resolve = agents_pb2.DESCRIPTOR.services_by_name["AgentResolver"].methods_by_name["Resolve"]
     assert resolve.client_streaming and resolve.server_streaming
 
+    # U10's bench leg, and the direction is the half of this that survived the compose collapse:
+    # the transport is now a callable the launcher installs, and the kernel is still the side that
+    # opens it, so nothing in the agents service holds a kernel handle.
+    brief = agents_pb2.DESCRIPTOR.services_by_name["DirectorBench"].methods_by_name["Brief"]
+    assert brief.client_streaming and brief.server_streaming
+
 
 def test_no_service_definition_lives_on_the_kernel_for_inbound_answers() -> None:
     """There must be no inbound delivery endpoint on the kernel.

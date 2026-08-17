@@ -35,6 +35,7 @@ class EventKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     ATTRITION: _ClassVar[EventKind]
     DAILY_COSTS_APPLIED: _ClassVar[EventKind]
     COMMAND_REJECTED: _ClassVar[EventKind]
+    STAFF_MOVED: _ClassVar[EventKind]
 EVENT_KIND_UNSPECIFIED: EventKind
 GENESIS: EventKind
 DAY_CHECKPOINT: EventKind
@@ -63,6 +64,7 @@ HIRE_REFUSED: EventKind
 ATTRITION: EventKind
 DAILY_COSTS_APPLIED: EventKind
 COMMAND_REJECTED: EventKind
+STAFF_MOVED: EventKind
 
 class Envelope(_message.Message):
     __slots__ = ("seq", "tick", "kind", "schema_ver", "rules_ver", "payload", "run_id", "command_id", "request_id", "ingested_at")

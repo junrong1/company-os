@@ -1,9 +1,11 @@
 """The gateway: the client's only contact surface.
 
-Driven through the single-process composition, which is a production path (R16) rather than a test
-harness — the same application objects the compose topology uses, wired without gRPC. What that
-does not cover is stated in `single_process.py`: the Postgres-only hazards and gRPC serialisation,
-which belong to the compose path and the contract tests.
+Driven through `single_process.compose()`, which is *the* production composition rather than a test
+harness — it is what the `backend` container runs, so these tests exercise the wiring the one
+command ships and not a second topology built for them. What a run here does not cover is stated in
+`single_process.py`: the Postgres-only hazards, because the store defaults to SQLite. Those belong
+to the store suite's two dialects and to the compose path, which points this same launcher at
+Postgres.
 """
 
 from __future__ import annotations
@@ -11,8 +13,10 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+from fastapi import WebSocketDisconnect
 from fastapi.testclient import TestClient
 
+from agents import main as agents_main
 from contracts import canonical
 from contracts.envelope import EventKind
 from gateway import main as gateway_main
@@ -33,6 +37,17 @@ def composed(tmp_path, monkeypatch):
 
     import single_process
 
+    # The spend ledger holds one engine for the process, built on first use — which is
+    # inside `compose()`. Left over from a previous test it would still be pointed at that
+    # test's store, so the spend frame this run published would be counting somebody else's
+    # calls. Cleared *before* composing, because composing is what builds it.
+    #
+    # The statement leg's log reader (U10) is the same shape of per-process handle and needs the
+    # same clearing, and the consequence of forgetting is worse rather than merely different: a
+    # director would be briefed from the events of whichever store the previous test wrote.
+    agents_main._LEDGER = None
+    agents_main._dispose_log_engine()
+
     runtime, client = single_process.compose()
     runtime.create_run(RUN, SEED, horizon_tick=simtime.TICKS_PER_SIM_DAY * 30)
 
@@ -42,6 +57,9 @@ def composed(tmp_path, monkeypatch):
 
     yield runtime, client
     runtime.writer.stop()
+    agents_main.ledger().dispose()
+    agents_main._LEDGER = None
+    agents_main._dispose_log_engine()
 
 
 @pytest.fixture
@@ -708,6 +726,198 @@ def test_a_subscriber_never_receives_an_event_beyond_the_durable_head(api) -> No
 
 
 # =========================================================================
+# Request origin (R26)
+# =========================================================================
+
+
+def test_a_stream_connection_from_another_origin_is_refused(api) -> None:
+    """R26. Loopback is not a boundary against a browser.
+
+    A WebSocket handshake is exempt from every cross-origin rule the browser applies to
+    `fetch`: no preflight, no `Access-Control-*`, the socket simply connects. So any page
+    the operator has open could read a run's event stream — and this port now fronts the
+    report, the diagnose call and the domain surface too.
+    """
+    with pytest.raises(WebSocketDisconnect) as refused:
+        with api.websocket_connect(
+            f"/ws/{RUN}", headers={"origin": "https://evil.example", "host": "testserver"}
+        ) as socket:
+            socket.receive_json()
+
+    assert refused.value.code == 1008, "policy violation is the close code for this"
+
+
+def test_a_stream_connection_from_the_clients_own_origin_is_accepted(api) -> None:
+    """The other half, and the half that would silently break the product if it failed.
+
+    "Its own" is the `Host` header rather than a configured hostname: the client reaches
+    this port under three authorities — direct, through nginx, through the dev server —
+    and pinning a list would mean editing the backend to change a published port.
+    """
+    with api.websocket_connect(
+        f"/ws/{RUN}", headers={"origin": "http://testserver", "host": "testserver"}
+    ) as socket:
+        assert socket.receive_json()["kind"] == "GENESIS"
+
+
+def test_a_handshake_with_no_origin_at_all_is_accepted(api) -> None:
+    """curl, `websocat`, the CLI and this test client send none.
+
+    A browser always sends `Origin` on a handshake, so its absence means the caller is not
+    a browser — and a hostile page cannot become one by omitting the header, because the
+    browser writes it. Refusing them would harden nothing and would break every
+    non-browser consumer of the stream.
+    """
+    with api.websocket_connect(f"/ws/{RUN}") as socket:
+        assert socket.receive_json()["kind"] == "GENESIS"
+
+
+def test_the_authority_is_compared_and_the_scheme_is_not() -> None:
+    """Behind a proxy this process cannot see the scheme, and must not guess at it.
+
+    nginx sends no `X-Forwarded-Proto`, so `https` upstream is indistinguishable from
+    `http`; the vite dev server rewrites the origin to its own target, which it spells
+    `ws://` where the same address reached directly is spelled `http://`. A foreign
+    origin differs in the authority every time, which is what is compared.
+    """
+    assert gateway_main.origin_is_our_own("http://127.0.0.1:8790", "127.0.0.1:8790")
+    assert gateway_main.origin_is_our_own("ws://127.0.0.1:8800", "127.0.0.1:8800")
+    assert gateway_main.origin_is_our_own("https://127.0.0.1:8790", "127.0.0.1:8790")
+
+    assert not gateway_main.origin_is_our_own("http://evil.example", "127.0.0.1:8790")
+    # A port is part of an authority: another server on this machine is not this server.
+    assert not gateway_main.origin_is_our_own("http://127.0.0.1:5173", "127.0.0.1:8800")
+
+
+def test_a_deliberate_second_front_end_can_be_named(monkeypatch) -> None:
+    """The escape hatch, for a proxy that does not forward `Host` unchanged.
+
+    Empty in every shipped configuration — nginx forwards `$http_host` and the dev server
+    rewrites the origin, so both are same-origin by construction. A value here is
+    somebody's decision rather than something the product needs.
+    """
+    monkeypatch.setenv(gateway_main.ENV_ALLOWED_ORIGINS, "http://studio.local:3000, http://x:1")
+
+    assert gateway_main.origin_is_our_own("http://studio.local:3000", "127.0.0.1:8800")
+    assert not gateway_main.origin_is_our_own("http://studio.local:3001", "127.0.0.1:8800")
+
+
+# =========================================================================
+# The model-spend control frame (M28)
+# =========================================================================
+
+
+def test_the_spend_frame_reaches_a_subscriber_on_connect(api) -> None:
+    """M28's tile has nothing to render until something publishes.
+
+    U9 built the counter, the read and the client's reducer, and nothing sent the frame —
+    so the tile showed its zero-and-absent state for the life of every run, keyed or not.
+    The first frame matters even for a keyless run, because it is what carries the
+    ceiling: before it the tile shows "of —", which is honest and useless.
+    """
+    frame = _first_spend_frame(api)
+
+    assert frame is not None, "no MODEL_SPEND frame was published"
+    assert frame["run_id"] == RUN
+    assert frame["max_calls"] == 200, "the shipped ceiling, reported rather than guessed"
+    assert frame["bench_present"] is False, "no key configured is a supported state"
+
+
+def test_the_spend_frame_carries_every_field_the_clients_reducer_reads(api) -> None:
+    """The wire contract, from the side that sends it.
+
+    `readSpend` in `frontend/src/net/store.ts` reads these nine keys and defends against
+    each being absent — which means a publisher that omitted one would produce a tile
+    showing zero rather than an error anybody could see. Asserting the keys here is what
+    turns that defence into a belt rather than the only strap.
+    """
+    frame = _first_spend_frame(api)
+
+    assert frame is not None
+    for field in (
+        "calls",
+        "tokens",
+        "cache_hits",
+        "max_calls",
+        "max_tokens",
+        "lineage_calls",
+        "lineage_tokens",
+        "bench_present",
+        "quiet",
+    ):
+        assert field in frame, field
+
+    # R6 by omission: which provider answered is not on this wire, and the tile has no
+    # use for it. `ModelGateway.describe()` reports it where an operator wants it.
+    assert "provider" not in frame and "model" not in frame and "api_key" not in frame
+
+
+def test_the_spend_frame_moves_during_a_run(api, monkeypatch) -> None:
+    """M28 says the HUD updates *during* a run, which is the whole of why this exists.
+
+    A counter read once at connect would satisfy a screenshot and nothing else: the
+    figure it is about is the one that grows while the player is briefing somebody.
+    """
+    from modelgw.ceiling import Spend
+
+    # Shortened rather than waited out: the claim is that a moving counter reaches the
+    # client, not that it takes two seconds to. The route reads this when a connection
+    # opens, which is what makes it overridable here at all.
+    monkeypatch.setattr(streaming, "SPEND_POLL_SECONDS", 0.02)
+
+    with api.websocket_connect(f"/ws/{RUN}") as socket:
+        first = _drain_for_spend(socket)
+        assert first is not None and first["calls"] == 0
+
+        agents_main.ledger().add(RUN, Spend(calls=3, input_tokens=120, output_tokens=40))
+
+        moved = _drain_for_spend(socket, limit=200)
+
+    assert moved is not None, "the counter moved and the stream never said so"
+    assert moved["calls"] == 3
+    assert moved["tokens"] == 160
+    # The lineage total is a join to `runs.lineage_root_id`, and a run is its own root at
+    # creation — so it equals this run's spend until U16 makes a child point at a parent.
+    assert moved["lineage_calls"] == 3
+
+
+def test_the_spend_frame_is_not_an_event(api) -> None:
+    """A control frame, and U9's docstring says why it can never be anything else.
+
+    What a call cost depends on which provider answered and what it counted, so an event
+    carrying it would be an output the fold cannot reproduce — strict replay would then
+    fail on every run that used the bench. The client's `isEventFrame` discriminates on
+    `seq` being a string, so a sequence on this frame would route it into the event fold.
+    """
+    frame = _first_spend_frame(api)
+
+    assert frame is not None
+    assert "seq" not in frame, "a sequence would make the client fold this as an event"
+    assert gateway_main._kernel.read_events(RUN, after_seq=0), "the run does have events"
+    for envelope in gateway_main._kernel.read_events(RUN, after_seq=0):
+        assert "SPEND" not in envelope.kind.name, "spend must not be in the log"
+
+
+def _first_spend_frame(api) -> dict | None:
+    with api.websocket_connect(f"/ws/{RUN}") as socket:
+        return _drain_for_spend(socket)
+
+
+def _drain_for_spend(socket, limit: int = 40) -> dict | None:
+    """Read frames until the spend frame arrives, or give up.
+
+    The stream carries the event backlog and position echoes on the same socket, so this
+    cannot assume the spend frame is first — and asserting on frame *order* between two
+    independent publishers would be a test of the scheduler.
+    """
+    for _ in range(limit):
+        frame = socket.receive_json()
+        if frame.get("kind") == "MODEL_SPEND":
+            return frame
+    return None
+
+
+# =========================================================================
 # Exposure (R34) and the kernel dependency
 # =========================================================================
 
@@ -718,14 +928,16 @@ def test_the_gateway_reports_an_in_process_kernel(api) -> None:
 
     assert kernel_dep["name"] == "kernel"
     assert kernel_dep["required"] is False
-    assert "single-process" in kernel_dep["detail"]
+    assert "in-process kernel" in kernel_dep["detail"]
 
 
 def test_the_gateway_does_not_import_the_kernel() -> None:
-    """R4: the gateway and the kernel meet at a proto contract.
+    """R4: the gateway does not reach into the kernel.
 
-    The single-process composition lives outside both services, because composing them is
-    neither service's job.
+    Still true, and still worth asserting now that both live in one process: the boundary was
+    never the gRPC hop, it was the import rule, and the collapse deleted the hop rather than
+    the rule. The composition lives outside both services because composing them is neither
+    service's job.
     """
     import ast
     import pathlib
@@ -928,6 +1140,60 @@ def test_a_restart_resumes_the_clock_of_a_running_run(tmp_path, monkeypatch) -> 
     asyncio.run(restart())
 
 
+def test_the_launcher_starts_the_runtimes_background_work_on_startup(tmp_path, monkeypatch) -> None:
+    """`resume_all` and the lease heartbeat have to run because the *app* started.
+
+    Every other test here calls `resume_all` itself, which is why nothing caught the launcher
+    registering it on a hook that never fires: `create_service_app` builds each app with an
+    explicit `lifespan=`, and Starlette runs the `on_startup` list only under its default one.
+    So a run was resumed by every test and by nothing in production, the lease was never
+    renewed past its thirty-second TTL, and neither failure raised anything.
+
+    Driven through `main()` with the server stubbed out, rather than by calling the wrapper
+    directly: the assertion worth having is that the launcher's own entrypoint installs it, so
+    deleting the one line that does would fail here.
+    """
+    monkeypatch.setenv("COMPANY_OS_STORE_URL", f"sqlite:///{tmp_path}/lifespan.sqlite3")
+
+    import uvicorn
+
+    import single_process
+    from kernel import lease as lease_module
+
+    async def restart() -> None:
+        first, _ = single_process.compose()
+        first.create_run("run-lifespan", SEED, horizon_tick=simtime.TICKS_PER_SIM_DAY * 5)
+        await first.stop()
+
+        # The app is a module-level singleton, so the wrapper it is about to be given has to
+        # come back off afterwards or every later test inherits a second runtime's startup.
+        original = gateway_main.app.router.lifespan_context
+        served: dict = {}
+        monkeypatch.setattr(uvicorn, "run", lambda app, **kwargs: served.update(app=app))
+
+        single_process.main()
+
+        app = served["app"]
+        assert app is gateway_main.app
+        second = gateway_main._kernel.runtime
+        try:
+            async with app.router.lifespan_context(app):
+                assert "run-lifespan" in second.runs, "startup did not resume the run"
+                assert second.runs["run-lifespan"].task is not None, "its clock is not running"
+                assert second._heartbeat is not None, "the lease heartbeat never started"
+
+            # And the teardown is the one that releases the lease, so a restart takes it back
+            # immediately rather than waiting out the thirty-second TTL. A further acquisition
+            # succeeding in milliseconds is only possible if `stop` ran.
+            with second.store.engine.begin() as connection:
+                lease_module.acquire(connection)
+        finally:
+            gateway_main.app.router.lifespan_context = original
+            await second.stop()
+
+    asyncio.run(restart())
+
+
 def test_resumption_skips_a_terminated_run(tmp_path, monkeypatch) -> None:
     """Nothing appends after a terminal event, so a loop for one would wake forever with no work."""
     monkeypatch.setenv("COMPANY_OS_STORE_URL", f"sqlite:///{tmp_path}/terminal.sqlite3")
@@ -960,3 +1226,128 @@ def test_listing_runs_is_ordered_deterministically(composed) -> None:
 
     assert RUN in ids and "run-a" in ids and "run-b" in ids
     assert ids == [row["run_id"] for row in runtime.store.list_runs()], "unstable ordering"
+
+
+# =========================================================================
+# The bench leg, over the production composition (U10)
+# =========================================================================
+
+
+def test_the_launcher_wires_the_kernel_to_the_agents_surfaces_producer(composed) -> None:
+    """The third thing the launcher hands over, and the reason it has to.
+
+    The kernel raises a statement request inside `step()`; the director lives in the agents service;
+    and neither service may import the other (R4). So the wiring is a callable installed from
+    outside both, exactly as the kernel client and the spend reader are — and if it were forgotten,
+    every run would raise briefings nobody ever answered, which reads as a broken bench rather than
+    as a missing line.
+    """
+    runtime, _ = composed
+
+    assert runtime._statement_producer is agents_main.produce_statement
+
+
+def test_a_briefing_crosses_the_whole_leg_and_lands_in_the_log(composed, monkeypatch) -> None:
+    """End to end over `compose()`: the tick raises it, the agents surface answers it, the log holds it.
+
+    Every other test of this leg stubs one side. This one stubs only the *prose* — which is U11's,
+    and the one thing U10 does not build — so the store read, the line-scoped retrieval, the guard
+    both processes share, the writer and the publisher are all the shipped code. What it proves is
+    the thing the plan's Risks section says is most likely to be missed: that the transport exists.
+    """
+    from test_kernel_service import _walk_the_ceo_to_a_briefing
+
+    from simcore import statement as statements
+
+    runtime, _ = composed
+    seen: list[object] = []
+
+    def compose_prose(_request, retrieved):
+        # The context is the shipped retrieval's, drawn under the scope the request carried.
+        seen.append(retrieved)
+        return (
+            "The recruiter is the constraint.",
+            "And cutting review is how the last mis-hire got through.",
+            retrieved.citable()[:1],
+            "",
+            statements.PRODUCER_SCRIPTED,
+        )
+
+    monkeypatch.setattr(agents_main, "compose_statement", compose_prose)
+
+    async def drive() -> None:
+        _walk_the_ceo_to_a_briefing(runtime, RUN)
+        run = runtime.runs[RUN]
+        for _ in range(50):
+            if not run.statement_tasks:
+                break
+            await asyncio.gather(*list(run.statement_tasks), return_exceptions=True)
+
+    asyncio.run(drive())
+
+    assert len(seen) == 1, "the agents surface was not asked exactly once"
+    assert seen[0].director == "dir_hr"
+    assert seen[0].events, "the retrieval read nothing out of the real store"
+
+    received = [
+        envelope
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind is EventKind.INPUT_RECEIVED
+    ]
+    assert len(received) == 1
+    answer = received[0].decoded_payload()["answer"]
+    assert answer[statements.KEY_PRODUCER] == "dir_hr"
+    assert answer[statements.KEY_CONTEXT]["events"], "M32: the context is not in the log"
+
+    # And then the clock is run *to the landing tick*, because that is where the guard runs. Without
+    # this the absence of an `ANSWER_REJECTED` below would mean nothing had been checked yet rather
+    # than that the check passed — which is what it meant when this test was first written.
+    run = runtime.runs[RUN]
+    landing = int(received[0].decoded_payload()["tick"])
+    assert landing > run.state.tick, "the fixture already passed the landing tick"
+    runtime._advance(run, landing - run.state.tick)
+
+    request_id = received[0].request_id
+    assert request_id not in run.state.pending, "the statement never applied"
+    # This request's rejections only. The window is two sim-days wide, so the period consult raised
+    # at the first day boundary reaches its own one-sim-day deadline inside it and is abandoned —
+    # which is the shared deadline doing exactly what R18 says it does, on a different leg.
+    assert not [
+        envelope
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind is EventKind.ANSWER_REJECTED and envelope.request_id == request_id
+    ], "the shared guard refused a statement its own retrieval assembled"
+
+
+def test_with_no_bench_configured_the_request_is_raised_and_left(composed) -> None:
+    """M20's shape for U10 alone: the shipped `compose_statement` declines, and nothing breaks.
+
+    Declining is the whole of what a keyless build does here, and it is deliberately not the same as
+    the leg being absent — the request is raised, published, and left for its deadline, so the client
+    has a pending block to render and then a labelled fallback to replace it with (U11's surface).
+    """
+    from test_kernel_service import _walk_the_ceo_to_a_briefing
+
+    runtime, _ = composed
+
+    async def drive() -> None:
+        _walk_the_ceo_to_a_briefing(runtime, RUN)
+        run = runtime.runs[RUN]
+        for _ in range(50):
+            if not run.statement_tasks:
+                break
+            await asyncio.gather(*list(run.statement_tasks), return_exceptions=True)
+
+    asyncio.run(drive())
+
+    run = runtime.runs[RUN]
+    assert [request for request in run.state.pending.values() if request.is_statement]
+    assert not [
+        envelope
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind is EventKind.INPUT_RECEIVED
+    ]
+
+    before = run.state.tick
+    runtime._advance(run, 40)
+    assert run.state.tick == before + 40, "the clock waited for a bench that declined"

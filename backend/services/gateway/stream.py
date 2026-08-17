@@ -37,6 +37,18 @@ OUTBOUND_QUEUE_LIMIT = 512
 #: a month of history to a client that only needs current state is slower than resetting it.
 RESUME_WINDOW_EVENTS = 1000
 
+#: How often the spend counter is re-read for a connected client. Wall-clock, not ticks:
+#: what a run has spent is not sim state and does not advance with the clock, so a paused
+#: run whose last provider call is still in flight still has a figure that moves.
+#:
+#: Two seconds because the figure is a bookkeeping display rather than a control: fast
+#: enough that a briefing's cost lands while the player is still looking at the briefing,
+#: slow enough that one store query per client per interval is not worth thinking about.
+#:
+#: Passed in by the route rather than read as a default inside `publish_spend`, so the
+#: cadence is resolved when a connection opens instead of when this module was imported.
+SPEND_POLL_SECONDS = 2.0
+
 
 class ResyncRequired(Exception):
     """The client is too far behind to catch up by replay."""
@@ -156,6 +168,55 @@ class Connection:
             with contextlib.suppress(asyncio.CancelledError):
                 await self.sender
             self.sender = None
+
+
+async def publish_spend(connection: Connection, run_id: str, read, interval: float) -> None:
+    """Publish `MODEL_SPEND` for one connection, whenever the figures move (M28).
+
+    **A control frame, never an event, and that is not a stylistic choice.** What a call
+    cost depends on which provider answered and what it counted, so an event carrying it
+    would be an output the fold cannot reproduce — strict replay would then fail on every
+    run that used the bench. The counter is bookkeeping beside the log, so it travels on
+    the same channel `POSITION_ECHO` uses for derived state the log knows nothing about,
+    and it carries no sequence.
+
+    **Polled rather than pushed, deliberately.** The counter is written by the agents
+    surface on a worker thread while a provider call completes; a push would mean that
+    thread reaching into a per-connection queue on the event loop, which is the hazard
+    `_echo_position` already has and which nothing here needs to acquire a second time. A
+    read on an interval also self-heals: a dropped frame is corrected two seconds later
+    rather than leaving the tile permanently behind, which is what the client's
+    "read, never accumulated" reducer is written against.
+
+    **Sent only when it changed.** A keyless run's figures never move, so after the first
+    frame — which the tile does need, because it carries the ceiling and the bench-absent
+    state — this goes quiet rather than putting an identical frame on the wire every two
+    seconds for the length of the run.
+    """
+    last: dict[str, Any] | None = None
+
+    while not connection.closed:
+        try:
+            # Off the event loop: the reader is a store query, and the tick loop's
+            # publishes and every socket's sends share this loop.
+            payload = await asyncio.to_thread(read, run_id)
+        except Exception as exc:  # noqa: BLE001 - an unreadable counter is not a dead stream
+            # Logged once per occurrence and then retried. The run is unaffected: nothing
+            # in this loop can stop a simulation, and a tile that stops moving is a better
+            # failure than a stream that closes because a display could not be read.
+            log.warning(
+                "could not read the model spend for a subscriber",
+                extra={"run": run_id, "error": str(exc)},
+            )
+            payload = None
+
+        if payload is not None and payload != last:
+            last = payload
+            if not connection.offer({"kind": "MODEL_SPEND", **payload}):
+                await connection.close()
+                return
+
+        await asyncio.sleep(interval)
 
 
 def envelope_frame(envelope) -> dict[str, Any]:

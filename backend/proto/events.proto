@@ -87,7 +87,13 @@ enum EventKind {
   RUN_FORKED = 5;
   STORE_RECOVERED = 6;
 
-  // The pending-input contract.
+  // The pending-input contract. Three legs share these three kinds, and the payload's
+  // `service` field is the discriminator: a period consult asks the domain service for
+  // metric effects, a resolution asks for a choice, and a statement asks a director for
+  // prose and citations. A statement rides INPUT_RECEIVED rather than taking a kind of
+  // its own, which is what keeps it inside the partial unique index that already enforces
+  // one answer per request per run — a second kind would need a second index, and the two
+  // would then disagree about what "answered" means.
   REQUEST_RAISED = 10;
   INPUT_RECEIVED = 11;
   ANSWER_REJECTED = 12;
@@ -121,4 +127,11 @@ enum EventKind {
 
   // Commands whose outcome must survive a client reconnect (R30).
   COMMAND_REJECTED = 50;
+
+  // One resolved walk: the person, the tiles they will cross and the tick they set
+  // off. Never one event per tick — position is a function of `tick - start_tick`,
+  // so the client interpolates every intermediate position from this one row, and a
+  // per-tick event would make movement the log's dominant write source while
+  // carrying nothing the path does not already say (R15).
+  STAFF_MOVED = 60;
 }
