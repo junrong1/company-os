@@ -20,9 +20,12 @@ with nothing left to decide — which reads as a failing company rather than as 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
-from simcore import items as work
 from simcore import time as simtime
+
+if TYPE_CHECKING:  # pragma: no cover - annotations only
+    from simcore.scenario import Scenario
 
 #: Sim-days a run gets by default.
 #:
@@ -39,9 +42,14 @@ def default_horizon_tick() -> int:
     return DEFAULT_HORIZON_DAYS * simtime.TICKS_PER_SIM_DAY
 
 
-def decision_supply() -> int:
-    """How many decisions the authored work offers. The real bound on a useful run."""
-    return work.TOTAL_CHECKPOINTS
+def decision_supply(scenario: Scenario) -> int:
+    """How many decisions this company's authored work offers. The bound on a useful run.
+
+    Read off the scenario rather than off a module constant, so a second company gets its own
+    figure. The report reads it back from the genesis and termination payloads instead of
+    recomputing it, which is what keeps an exported run's outcome self-describing.
+    """
+    return scenario.total_checkpoints
 
 
 @dataclass(frozen=True, slots=True)

@@ -26,6 +26,24 @@ for a whitespace change.
 **Every authored string has to be bounded and printable** (R9, R19). All of it reaches a director's
 prompt eventually. The cap and the character rule live in the loader so that U11 can assemble a
 prompt from scenario text without re-deriving either.
+
+The second half of the file — everything below "The wiring" — runs the simulation, because that is
+what the second pass of this unit changed. The loader had no callers when it landed, which is why
+it moved no fixture; the roster and the catalog now come off `state.scenario` at fold and step
+time, and three more properties become assertable:
+
+**The move moved nothing** (M10). `DAY_ZERO_STATE_HASH` was captured before the data left its
+module constants and has to still hold. The four digests above prove the *file* is faithful; the
+state hash proves the *run built from it* is.
+
+**Two companies tick in one process without seeing each other.** This is what the whole
+state-parameterisation is for, and it is asserted against a serial reference per company rather
+than by inspection — a scenario in a global would leave each run disagreeing with its own
+reference while looking internally consistent. Verified sensitive: with `new_run` reduced to
+ignoring its `scenario` argument, both concurrency tests fail.
+
+**The guard is installed at all three sites that obtain state**, each with its own wording, and
+the resume-from-snapshot one is the site nothing else on that path would report.
 """
 
 from __future__ import annotations
@@ -35,14 +53,19 @@ import copy
 import re
 import shutil
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
+from contracts.envelope import KIND_SCHEMA_VERSIONS, Envelope, EventKind, build
 from simcore import hashing
+from simcore import log as folder
 from simcore import people as roster
 from simcore import scenario as sc
+from simcore import snapshot as snapshotting
 from simcore import step as sim
+from simcore.rates import RULES_VERSION
 from simcore.world import DEFAULT_COLS, DEFAULT_ROWS, plan_floor
 
 BACKEND = Path(__file__).resolve().parent.parent
@@ -1492,30 +1515,749 @@ def test_two_scenarios_load_side_by_side_without_sharing_anything(directory: Pat
 
 
 def _seats_of(company: sc.Scenario) -> dict[str, tuple[int, int]]:
-    """Seat resolution, walking the scenario's roster in order.
+    """Seat resolution at the default grid, through the kernel's own seater.
 
-    A local copy of `people.assign_seats`'s traversal rather than a call to it: that function
-    still reads the module-level roster in this pass, so calling it would seat the constant
-    rather than the file. Both walk the roster in order and take the first free slot at or after
-    each person's own, which is the property this file's ordering carries.
+    Pass 1 carried a local copy of the traversal, because `people.assign_seats` still read the
+    module-level roster then and calling it would have seated the constant rather than the file.
+    Pass 2 removed the constant and the function takes the scenario, so this calls it — which
+    makes the pinned seat digest an assertion about the seating a run actually gets rather than
+    about a re-derivation of it.
     """
-    floor = plan_floor(DEFAULT_COLS, DEFAULT_ROWS)
-    taken: set[tuple[int, int]] = set()
-    seats: dict[str, tuple[int, int]] = {}
+    return roster.assign_seats(company, plan_floor(DEFAULT_COLS, DEFAULT_ROWS))
 
-    for person in company.people:
-        room = next((candidate for candidate in floor.rooms if candidate.id == person.dept), None)
-        slots = room.slots if room else []
-        spot = next(
-            (
-                slot
-                for index, slot in enumerate(slots)
-                if index >= person.slot and slot not in taken
-            ),
-            None,
-        ) or next((slot for slot in slots if slot not in taken), None)
-        assert spot is not None, person.id
-        taken.add(spot)
-        seats[person.id] = spot
 
-    return seats
+# =========================================================================
+# The wiring: the company rides on `State`, and nothing reads a global
+# =========================================================================
+#
+# Everything above this line exercises the loader without a run. Everything below runs the
+# simulation, because that is what pass 2 changed: the roster and the catalog were module
+# constants read at fold and step time, and they are now read off `state.scenario`.
+
+#: The day-zero state hash, captured before the roster and the catalog moved off their module
+#: constants and pinned here as the evidence that the move moved nothing.
+#:
+#: This is the tripwire that distinguishes "the company is now a file" from "the company is now a
+#: different company". It has to *not* move, and it is a stronger statement than the four digests
+#: above: they cover the authored data, this covers the whole day-zero world the authored data
+#: produces — seats, work in flight, capacity, morale, metrics and the CEO.
+#:
+#: The genesis *payload* digest moved in the same change, deliberately and exactly once, and
+#: `tests/fixtures/golden/genesis.json` is where that is recorded.
+DAY_ZERO_STATE_HASH = "4e43a9d06f9d5559e906db2765cdf98b"
+
+SEED = 0xC0FFEE
+
+
+@pytest.fixture
+def installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """The shipped file, in a scenarios directory the test may edit.
+
+    `SCENARIO_DIR` is redirected rather than a `directory=` argument threaded through, because
+    the three guard sites deliberately take no directory: a run records a *name*, and the fold
+    resolves it inside the scenarios directory (R9). Redirecting the directory is therefore the
+    only way to exercise the real guard rather than a call to the function behind it.
+    """
+    shutil.copy(SHIPPED_PATH, tmp_path / "default.toml")
+    monkeypatch.setattr(sc, "SCENARIO_DIR", tmp_path)
+    return tmp_path
+
+
+def edit(directory: Path, *replacements: tuple[str, str]) -> None:
+    """Rewrite the installed scenario, so a run folded afterwards meets a changed company."""
+    (directory / "default.toml").write_text(variant(*replacements))
+
+
+class Recorded:
+    """A run and the log the kernel service would have written for it.
+
+    A local copy of `test_replay.py`'s recorder rather than an import, and for one reason: this
+    one takes a scenario. Sequence assignment belongs to the store, which is why it happens here
+    and not in `simcore`.
+    """
+
+    def __init__(self, scenario: sc.Scenario | None = None, seed: int = SEED) -> None:
+        self.state, genesis = sim.new_run(run_seed=seed, scenario=scenario)
+        self.log: list[Envelope] = []
+        self._seq = 0
+        self.record(genesis)
+
+    def record(self, emitted: list[sim.Emitted]) -> None:
+        for item in emitted:
+            self._seq += 1
+            self.log.append(
+                build(
+                    seq=self._seq,
+                    tick=int(item.payload.get("tick", self.state.tick)),
+                    kind=item.kind,
+                    rules_ver=RULES_VERSION,
+                    payload=item.payload,
+                    run_id="run-scenario",
+                    request_id=item.request_id,
+                )
+            )
+
+    def advance(self, ticks: int) -> None:
+        for _ in range(ticks):
+            self.record(sim.step(self.state))
+
+    @property
+    def hash(self) -> str:
+        return hashing.state_hash(sim.snapshot(self.state)).overall
+
+
+def test_a_run_from_the_file_is_the_run_the_constants_produced() -> None:
+    """Covers M10, at the one place it can be settled: a whole day-zero world.
+
+    The four digests above prove the *file* holds what the constants held. This proves the run
+    built from it is the run they built — same seats, same work in flight, same capacity, same
+    morale, same metrics — by pinning the state hash captured before anything moved.
+    """
+    state, _ = sim.new_run(run_seed=SEED)
+
+    assert hashing.state_hash(sim.snapshot(state)).overall == DAY_ZERO_STATE_HASH
+
+
+def test_the_run_reproduces_every_pinned_digest_through_the_state_it_built() -> None:
+    """The same four digests, reached the way the kernel reaches them.
+
+    Asserted off the run rather than off a freshly loaded scenario, because what pass 2 could
+    have got wrong is the *wiring*: a `new_run` that loaded a different file, or a genesis payload
+    projected from something other than the company on `State`, would satisfy every test above
+    this line.
+    """
+    state, emitted = sim.new_run(run_seed=SEED)
+    company = state.scenario
+
+    assert hashing.digest({pid: list(seat) for pid, seat in state.seats.items()}) == (
+        PRE_MOVE_SEATS_DIGEST
+    )
+    # The pre-M15 projection of the payload's own roster: the four fields M15 adds are new
+    # content, so they are dropped here to keep "the other seven did not move" checkable.
+    assert (
+        hashing.digest(
+            {
+                pid: {
+                    key: entry[key]
+                    for key in ("name", "initials", "title", "dept", "mgr", "rank", "seat")
+                }
+                for pid, entry in emitted[0].payload["roster"].items()
+            }
+        )
+        == PRE_MOVE_ROSTER_DIGEST
+    )
+    assert hashing.digest(emitted[0].payload["catalog"]) == PRE_MOVE_CATALOG_DIGEST
+    assert (
+        hashing.digest(
+            {
+                "voice": {p.id: dict(p.voice) for p in company.people},
+                "deflections": {p.id: p.deflection for p in company.people},
+            }
+        )
+        == PRE_MOVE_VOICE_DIGEST
+    )
+
+
+def test_the_state_carries_the_company_and_the_hash_does_not_see_it() -> None:
+    """The scenario is a fold-time input, not hashed state — and that is enforced.
+
+    Hashing it would move `STATE_SHAPE_VERSION` and regenerate every golden fixture in the tree
+    to carry a value that cannot change within a run, since the genesis event already records its
+    content hash. The second half of this test is the enforcement: `state_hash` refuses an
+    undeclared subsystem, so somebody adding the company to `sim.snapshot` cannot do it quietly.
+    """
+    state, _ = sim.new_run(run_seed=SEED)
+
+    assert state.scenario.scenario_id == "default"
+    assert "scenario" not in sim.snapshot(state)
+
+    with pytest.raises(ValueError) as caught:
+        hashing.state_hash({**sim.snapshot(state), "scenario": state.scenario.identity()})
+
+    assert "undeclared subsystems" in str(caught.value)
+    assert "SHAPE_HISTORY" in str(caught.value)
+
+
+def test_genesis_records_which_company_and_which_revision_of_it() -> None:
+    """R7: the id, the canonical content hash, and the version the hash was taken under."""
+    state, emitted = sim.new_run(run_seed=SEED)
+    recorded = emitted[0].payload["scenario"]
+
+    assert recorded == {
+        "id": "default",
+        "content_hash": state.scenario.content_hash,
+        "hash_ver": sc.SCENARIO_HASH_VERSION,
+    }
+    # The payload changes exactly once for this unit, and this is the bump that says so.
+    assert KIND_SCHEMA_VERSIONS[EventKind.GENESIS] == 5
+
+
+def test_every_person_reaches_the_client_with_their_whole_schema() -> None:
+    """Covers M15's second half: authored for everyone, *and* carried to the client.
+
+    The first half is asserted on the file above. This is the half a client can act on — U7's
+    conversation surface reads these fields, and it reads them off genesis rather than a lookup,
+    so an exported run stays self-contained (R32).
+    """
+    state, emitted = sim.new_run(run_seed=SEED)
+    payload_roster = emitted[0].payload["roster"]
+
+    assert set(payload_roster) == {person.id for person in state.scenario.people}
+    for person in state.scenario.people:
+        entry = payload_roster[person.id]
+        assert entry["dept"] == person.dept
+        assert entry["title"] == person.title
+        assert entry["responsibility"] == person.responsibility
+        assert entry["tools"] == list(person.tools) and entry["tools"]
+        assert entry["mcp_servers"] == list(person.mcp_servers) and entry["mcp_servers"]
+        assert entry["skills"] == list(person.skills) and entry["skills"]
+
+
+# =========================================================================
+# R7 at the three sites that actually obtain state
+# =========================================================================
+#
+# The section further up exercises `load_recorded` and `verify_unchanged` directly. These
+# exercise the three *call sites*, which is a different claim: each is a distinct way of getting
+# a `State`, and a guard installed at two of them would leave the third carrying a state built
+# from one company into a process running another.
+#
+# The wording is asserted verbatim per site. Three guards producing one indistinguishable string
+# would tell a contributor that their scenario changed and not where they were when it was
+# noticed — and the resume path in particular is the one nothing else on it would report.
+
+FROM_ZERO = "Refused at the from-zero fold, replaying genesis"
+RESTORE = "Refused at a snapshot restore"
+RESUME = "Refused at a fold resumed from a snapshot, which skips genesis"
+
+
+def test_the_from_zero_fold_refuses_a_scenario_that_changed_under_it(installed: Path) -> None:
+    recorded = Recorded()
+    recorded.advance(30)
+
+    edit(installed, ('title = "Accounts Payable"', 'title = "Senior Accounts Payable"'))
+
+    with pytest.raises(sc.ScenarioMismatch) as caught:
+        folder.replay_to_state(recorded.log, through_tick=recorded.state.tick)
+
+    reason = str(caught.value)
+    assert FROM_ZERO in reason
+    # The recorded roster is handed to this guard, so it can name the person rather than only
+    # the two digests. That is the whole reason `_apply_genesis` passes it.
+    assert "stf_ap changed: title 'Accounts Payable' -> 'Senior Accounts Payable'" in reason
+
+
+def test_a_snapshot_restore_refuses_a_scenario_that_changed_under_it(installed: Path) -> None:
+    """The path that bypasses the fold entirely, so nothing else on it would notice."""
+    recorded = Recorded()
+    recorded.advance(30)
+    taken = snapshotting.capture("run-scenario", recorded.state, through_seq=recorded._seq)
+
+    edit(installed, ('effort_hours = 22', 'effort_hours = 24'))
+
+    with pytest.raises(sc.ScenarioMismatch) as caught:
+        snapshotting.restore(taken)
+
+    reason = str(caught.value)
+    assert RESTORE in reason
+    assert recorded.state.scenario.content_hash in reason
+
+
+def test_a_fold_resumed_from_a_snapshot_refuses_too(installed: Path) -> None:
+    """The one that skips genesis, and would therefore forgo the check.
+
+    A resume reads no genesis event, so there is no recorded identity anywhere on this path — the
+    check is against the `Scenario` the state is already carrying, which is why this site uses
+    `verify_unchanged` rather than `load_recorded`.
+    """
+    recorded = Recorded()
+    recorded.advance(30)
+    resumed_from = (recorded.state, recorded._seq)
+
+    edit(installed, ('draw_hours_per_month = 120', 'draw_hours_per_month = 130'))
+
+    with pytest.raises(sc.ScenarioMismatch) as caught:
+        folder.fold(
+            [],
+            at_live_head=True,
+            resume_from=resumed_from,
+            through_tick=recorded.state.tick,
+        )
+
+    reason = str(caught.value)
+    assert RESUME in reason
+    # A draw is not on the recorded roster or catalog, so the drift report cannot name it — and
+    # says so rather than reporting nothing.
+    assert "a field the recorded payload does not carry" in reason
+
+
+def test_the_resume_path_has_no_genesis_event_to_read(installed: Path) -> None:
+    """Why the third guard is a third guard rather than a repetition of the first.
+
+    The events handed to a resumed fold are the ones *after* the snapshot's sequence. There is no
+    GENESIS among them by construction, so `_apply_genesis` — and its guard — never runs.
+    """
+    recorded = Recorded()
+    recorded.advance(30)
+
+    after_the_snapshot = [
+        envelope for envelope in recorded.log if envelope.seq > recorded.log[0].seq
+    ]
+
+    assert recorded.log[0].kind is EventKind.GENESIS
+    assert all(envelope.kind is not EventKind.GENESIS for envelope in after_the_snapshot)
+    # And unedited, the resume passes the guard and folds.
+    resumed = folder.fold(
+        after_the_snapshot,
+        at_live_head=True,
+        resume_from=(recorded.state, recorded.log[0].seq),
+        through_tick=recorded.state.tick,
+    )
+    assert resumed.state.scenario.content_hash == recorded.state.scenario.content_hash
+
+
+def test_the_three_guard_sites_say_which_one_fired() -> None:
+    """Three distinct strings, and none of them a prefix of another."""
+    sites = (FROM_ZERO, RESTORE, RESUME)
+
+    assert len({*sites}) == 3
+    for site in sites:
+        assert sum(1 for other in sites if other.startswith(site)) == 1
+
+
+def test_a_fork_inherits_its_parents_scenario_id_and_hash(installed: Path) -> None:
+    """R7's second sentence, by both of the ways a fork is made.
+
+    A run-level fork copies the parent's event rows as a prefix (`LogStore.fork_run`), so the
+    child folds the parent's own genesis and inherits the identity from it. A comparison branch
+    forks through the snapshot round-trip instead. Both are asserted, because they read the
+    identity from two different places — a payload and a snapshot — and only one of them would
+    have been noticed if the other had been missed.
+    """
+    parent = Recorded()
+    parent.advance(30)
+
+    child = folder.replay_to_state(parent.log, through_tick=parent.state.tick)
+
+    assert child.scenario.identity() == parent.state.scenario.identity()
+    # The same object, not a copy: the loader is content-addressed, so a hundred forks of one
+    # scenario hold one company between them rather than a hundred.
+    assert child.scenario is parent.state.scenario
+
+    branch = snapshotting.restore(
+        snapshotting.capture("branch", parent.state, through_seq=parent._seq)
+    )
+    assert branch.scenario.identity() == parent.state.scenario.identity()
+    assert branch.scenario is parent.state.scenario
+
+
+# =========================================================================
+# M16: what a scenario names is description, across the whole backend
+# =========================================================================
+
+
+def test_nothing_in_the_backend_can_execute_what_a_scenario_names() -> None:
+    """The simcore scan above, widened to every module a scenario's text can reach.
+
+    `simcore` is where a loaded scenario lives, but the genesis payload carries the tool lists
+    onward through the kernel service and the gateway — so "there is nothing to dispatch a name
+    through" has to hold for those too, or M16 would rest on the boundary tests alone.
+
+    Two exclusions, both deliberate. The test tree, because a test asserting `subprocess` is
+    absent has to be able to spawn one. And `single_process.py`, whose `importlib.import_module`
+    resolves the fixed five-entry `SURFACES` table and nothing else — it is a launcher composing
+    its own modules, and the test below is what says no scenario text reaches it.
+    """
+    forbidden_modules = {
+        "subprocess",
+        "importlib",
+        "runpy",
+        "pty",
+        "multiprocessing",
+        "ctypes",
+    }
+    forbidden_builtins = {"eval", "exec", "compile", "__import__"}
+    forbidden_attributes = {"system", "popen", "spawn", "spawnv", "execv", "fork"}
+
+    roots = [BACKEND / "packages", BACKEND / "services"]
+    paths = [path for root in roots for path in sorted(root.rglob("*.py"))]
+
+    offences: list[str] = []
+    for path in paths:
+        if "__pycache__" in path.parts:
+            continue
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.split(".")[0] in forbidden_modules:
+                        offences.append(f"{path.name} imports {alias.name}")
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                if node.module.split(".")[0] in forbidden_modules:
+                    offences.append(f"{path.name} imports from {node.module}")
+            elif isinstance(node, ast.Call):
+                target = node.func
+                if isinstance(target, ast.Name) and target.id in forbidden_builtins:
+                    offences.append(f"{path.name}:{node.lineno} calls {target.id}")
+                elif isinstance(target, ast.Attribute) and target.attr in forbidden_attributes:
+                    offences.append(f"{path.name}:{node.lineno} calls .{target.attr}")
+
+    assert not offences, (
+        "M16: a tool, MCP server or skill named in a scenario is description, and nothing in "
+        "the backend may be able to execute one. Found: " + "; ".join(offences)
+    )
+
+
+def test_the_tool_lists_have_exactly_two_readers_and_neither_calls_anything() -> None:
+    """M16 as a reachability statement rather than as an absence of one call.
+
+    A tool name is loaded (`scenario.py`), projected onto genesis (`people.py`), and read by
+    nobody else in the backend — so there is no third site where a dispatch could be added
+    without this failing. `envelope.py` is in the set because the schema-version table records
+    *why* the payload grew these fields; it holds a comment, not a reader.
+    """
+    naming = {
+        path.relative_to(BACKEND).as_posix()
+        for root in (BACKEND / "packages", BACKEND / "services", BACKEND / "scripts")
+        for path in [*root.rglob("*.py"), BACKEND / "single_process.py"]
+        if "__pycache__" not in path.parts
+        and any(
+            token in path.read_text()
+            for token in ("mcp_servers", ".skills", '"skills"', ".tools", '"tools"')
+        )
+    }
+
+    assert naming == {
+        "packages/simcore/scenario.py",
+        "packages/simcore/people.py",
+        "packages/contracts/envelope.py",
+    }, f"a third module reads what a scenario describes: {sorted(naming)}"
+
+
+# =========================================================================
+# Two companies, one process
+# =========================================================================
+#
+# This is the section the whole state-parameterisation exists for. One process ticks many runs at
+# once, so a scenario in a module global would be a single company shared across runs of
+# different ones — and the symptom would not be an exception. It would be a run seating people
+# from somebody else's roster, allocating a draw to a department it does not have, and hashing to
+# a state neither company describes.
+#
+# Both tests below compare a concurrent run against a *serial reference* of the same company at
+# the same seed, because that is the only assertion that catches the failure rather than
+# describing it: a shared global would make the two runs disagree with their own references while
+# each still looked internally consistent.
+
+#: Long enough to cross two day boundaries — 540 ticks a day — so the draw expires and reissues,
+#: morale rolls, and each run reads its own capacity table more than once.
+CONCURRENT_TICKS = 1_500
+
+
+def _first_work(company: sc.Scenario) -> tuple[str, str]:
+    """An item this company has, and somebody it has to do it.
+
+    Derived rather than named, so the same helper drives both companies: the first authored item
+    with no prerequisites, assigned to the person it wants.
+    """
+    from simcore import items as work
+
+    item = next(item for item in company.items if item.requires == work.Requires())
+    return item.id, item.want
+
+
+def _play(company: sc.Scenario, ticks: int = CONCURRENT_TICKS) -> dict[str, object]:
+    """One run of this company: assign its first item, tick, and report what it became."""
+    state, _ = sim.new_run(run_seed=SEED, scenario=company)
+    item_id, person_id = _first_work(company)
+    sim.assign_direct(state, item_id, person_id)
+    for _ in range(ticks):
+        sim.step(state)
+
+    return {
+        "hash": hashing.state_hash(sim.snapshot(state)).overall,
+        "people": sorted(state.people),
+        "items": sorted(state.items),
+        "draws": {director: dept.monthly_hours for director, dept in state.capacity.items()},
+        "manual_hours": state.metrics["manualHours"],
+        "scenario": state.scenario.identity(),
+    }
+
+
+@pytest.fixture
+def two_companies(installed: Path) -> tuple[sc.Scenario, sc.Scenario]:
+    """The shipped company and `MINIMAL`, both resolvable by name from one directory."""
+    (installed / "minimal.toml").write_text(MINIMAL)
+    return sc.load("default"), sc.load("minimal")
+
+
+def test_two_scenarios_are_two_companies_and_share_no_structure(
+    two_companies: tuple[sc.Scenario, sc.Scenario],
+) -> None:
+    """What "cross-contamination" would even mean, stated before it is ruled out."""
+    shipped, small = two_companies
+
+    assert shipped.content_hash != small.content_hash
+    assert len(shipped.people) == 10 and len(small.people) == 4
+    assert set(shipped.people_by_id) & set(small.people_by_id) == set()
+    assert set(shipped.items_by_id) & set(small.items_by_id) == set()
+    assert shipped.initial_manual_hours == 340 and small.initial_manual_hours == 160
+
+
+def test_two_runs_on_different_scenarios_interleave_tick_by_tick_without_contamination(
+    two_companies: tuple[sc.Scenario, sc.Scenario],
+) -> None:
+    """Alternating `step()` between two companies, against each one's serial reference.
+
+    The deterministic half of the proof, and the one that fails every time rather than under
+    load: a module-level roster would be replaced by whichever run loaded last, so the very first
+    alternation would seat, allocate and burn against the wrong company.
+    """
+    shipped, small = two_companies
+    reference = {"default": _play(shipped), "minimal": _play(small)}
+
+    big_state, _ = sim.new_run(run_seed=SEED, scenario=shipped)
+    small_state, _ = sim.new_run(run_seed=SEED, scenario=small)
+    for state, company in ((big_state, shipped), (small_state, small)):
+        item_id, person_id = _first_work(company)
+        sim.assign_direct(state, item_id, person_id)
+
+    for _ in range(CONCURRENT_TICKS):
+        sim.step(big_state)
+        sim.step(small_state)
+
+    for state, name in ((big_state, "default"), (small_state, "minimal")):
+        assert hashing.state_hash(sim.snapshot(state)).overall == reference[name]["hash"], name
+        assert sorted(state.people) == reference[name]["people"], name
+        assert sorted(state.items) == reference[name]["items"], name
+
+    # And no person, item or department of one appears in the other.
+    assert set(big_state.people) & set(small_state.people) == set()
+    assert set(big_state.items) & set(small_state.items) == set()
+    assert set(big_state.capacity) & set(small_state.capacity) == set()
+    assert big_state.metrics["manualHours"] == 340
+    assert small_state.metrics["manualHours"] == 160
+
+
+def test_two_runs_on_different_scenarios_tick_concurrently_on_two_threads(
+    two_companies: tuple[sc.Scenario, sc.Scenario],
+) -> None:
+    """The same claim under real concurrency, which is how the kernel actually ticks.
+
+    `KernelRuntime` runs one tick task per run against a shared process, so the interleaving is
+    the interpreter's rather than a loop's. A `Barrier` makes both threads start inside the same
+    instant so the interleaving is genuine, and each result is compared against the serial
+    reference for its own company — so a shared global fails here whichever way the switches fell.
+    """
+    shipped, small = two_companies
+    reference = {"default": _play(shipped), "minimal": _play(small)}
+
+    ready = threading.Barrier(2)
+    outcomes: dict[str, dict[str, object]] = {}
+    failures: list[BaseException] = []
+
+    def play(company: sc.Scenario) -> None:
+        try:
+            ready.wait(timeout=5)
+            outcomes[company.scenario_id] = _play(company)
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the main thread below
+            failures.append(exc)
+
+    threads = [threading.Thread(target=play, args=(company,)) for company in (shipped, small)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+        assert not thread.is_alive(), "a concurrent run never finished"
+
+    assert not failures, failures
+    assert outcomes == reference
+
+
+# =========================================================================
+# The image has to carry the companies
+# =========================================================================
+
+
+def test_a_run_created_inside_the_container_resolves_the_default_scenario() -> None:
+    """The `Dockerfile` copies `scenarios/`, and the resolution rule makes that enough.
+
+    This is the failure mode the unit was warned about: the image copied `packages/` and
+    `services/` and nothing else, so every run created inside the container would have failed at
+    genesis with `ScenarioNotFound` listing no scenarios at all — while this suite, run on the
+    host next to the real directory, passed.
+
+    Asserted statically here, and run for real against the daemon, which is the convention
+    `test_compose.py` sets for anything needing built images. Measured with
+    `docker compose up -d --build backend`:
+
+        SCENARIO_DIR: /app/scenarios
+        available: ('default',)
+        identity: id 'default', content_hash 'e0292a4f4c0b4efac9eefb1b50747ade', hash_ver 1
+
+    `POST /runs` answered `run-5ca103c0d69f` with `manualHours: 340`, and the GENESIS row in
+    Postgres carried that same `scenario` object and Priya's authored tool list — the same content
+    hash the host computes, which is the point: one company, byte-identical in both places.
+
+    The same boot also demonstrated the pre-U6 refusal on real data. Three runs already in the
+    volume, written before genesis recorded an identity, were each refused at the from-zero fold
+    with "this run records no scenario identity ... Remedy: start a new run", logged per run, and
+    the service started anyway. A scenario change invalidates the runs written against it; it does
+    not stop the kernel.
+    """
+    dockerfile = (BACKEND / "Dockerfile").read_text()
+
+    assert "COPY scenarios/ scenarios/" in dockerfile
+    # And the reason the copy lands where the loader looks: `SCENARIO_DIR` is resolved two
+    # parents up from `packages/simcore/scenario.py`, which is the backend root on the host and
+    # `/app` in the image — so `WORKDIR /app` plus this one COPY is the whole of it.
+    assert sc.SCENARIO_DIR == BACKEND / "scenarios"
+    assert sc.SCENARIO_DIR.parent == Path(sc.__file__).resolve().parents[2]
+    assert "WORKDIR /app" in dockerfile
+
+
+# =========================================================================
+# The arrived hire, whom no scenario authored
+# =========================================================================
+#
+# State-parameterising the roster lookups was the moment to close three latent `KeyError`s.
+# `PersonRuntime.rank`, the provenance line's `roster.spec(person.id).name` and the two
+# `roster.spec(person_id).mgr` reads all raised for somebody in `state.people` who is on no
+# authored roster — which is exactly what an arrived hire is. Nothing reached them because no test
+# had ever assigned work to a hire. These do.
+
+
+def _a_hire_arrives(state: sim.State, director: str = "dir_cs") -> str:
+    """Request a hire and run until they are seated. Returns their person id."""
+    sim.request_hire(state, director)
+    hire = next(h for h in state.hires.values() if h.director_id == director)
+    for _ in range(40_000):
+        if hire.status != "requested":
+            break
+        sim.step(state)
+    assert hire.status == "arrived", hire.refusal or "the hire never arrived"
+    return hire.person_id
+
+
+def test_work_can_be_assigned_to_an_arrived_hire() -> None:
+    """Three lookups that raised `KeyError` for a hire, exercised in one command.
+
+    `assign_direct` reads their manager to price the bypass, `_burn_this_tick` reads their rank to
+    decide the director multiplier, and completion reads their name for the deliverable's
+    provenance. A `KeyError` on any of them escapes past where `CommandRejected` is caught, which
+    would leave state changed with no event to explain it — the one failure this kernel exists to
+    prevent.
+    """
+    state, _ = sim.new_run(run_seed=SEED)
+    newcomer = _a_hire_arrives(state)
+
+    assert newcomer not in state.scenario.people_by_id
+    assert state.rank_of(newcomer) == "staff"
+    assert state.name_of(newcomer) == newcomer
+    assert state.manager_of(newcomer) == "dir_cs"
+
+    emitted = sim.assign_direct(state, "wi_faq", newcomer)
+
+    assigned = next(e for e in emitted if e.kind is EventKind.WORK_ASSIGNED)
+    # Assigned around their director, so it costs what a bypass costs — the answer `manager_of`
+    # gives a hire is what makes that come out the same as for anybody else at their level.
+    assert assigned.payload["bypassed_director"] is True
+    assert assigned.payload["uninformed"] == ["dir_cs"]
+
+    for _ in range(40_000):
+        if state.items["wi_faq"].status == sim.STATUS_DONE:
+            break
+        for event in sim.step(state):
+            if event.kind is EventKind.CHECKPOINT_RAISED:
+                sim.resolve_checkpoint(
+                    state,
+                    event.payload["item"],
+                    int(event.payload["cp_index"]),
+                    0,
+                    in_person=False,
+                )
+
+    assert state.items["wi_faq"].status == sim.STATUS_DONE
+    delivered = next(output for output in state.outputs if output.item_id == "wi_faq")
+    # The provenance names them by id rather than by a placeholder, because a deliverable's
+    # provenance is an audit line and the id is what the log already carries.
+    assert delivered.provenance[0].startswith(f"{newcomer} — ")
+
+
+def test_a_hire_and_an_authored_person_reassign_within_one_line() -> None:
+    """The fourth site: `reassign` compared two authored roster entries and raised for a hire."""
+    state, _ = sim.new_run(run_seed=SEED)
+    newcomer = _a_hire_arrives(state)
+
+    sim.assign_direct(state, "wi_faq", "stf_cs")
+    emitted = sim.reassign(state, "wi_faq", newcomer)
+
+    assert emitted[0].payload["to"] == newcomer
+    assert state.items["wi_faq"].assignee == newcomer
+
+    # And across lines it is still refused, with a message that can name both of them.
+    with pytest.raises(sim.CommandRejected) as caught:
+        sim.reassign(state, "wi_faq", "stf_ap")
+    assert "different reporting line" in str(caught.value)
+    assert newcomer in str(caught.value)
+
+
+def test_an_authored_persons_manager_and_rank_are_exactly_what_the_file_says() -> None:
+    """The fallbacks cost no shipped value, which is why this unit moved no state hash."""
+    state, _ = sim.new_run(run_seed=SEED)
+
+    for person in state.scenario.people:
+        assert state.rank_of(person.id) == person.rank
+        assert state.name_of(person.id) == person.name
+        assert state.manager_of(person.id) == person.mgr
+    # A director's manager is the empty string, not themselves. `manager_of` returning their own
+    # line would make every direct assignment to a director read as a bypass of nobody.
+    assert state.manager_of("dir_hr") == ""
+
+
+# =========================================================================
+# Hiring names nobody: the recruiter comes from the scenario
+# =========================================================================
+
+
+def test_the_recruiter_is_derived_from_the_people_line_rather_than_named() -> None:
+    """`request_hire` hardcoded `want="stf_rec"` and `dept="hr"` — two default-scenario ids.
+
+    A second company would have tried to assign hiring work to a person it does not have, and the
+    `KeyError` would have surfaced mid-command. Derived, the shipped answer is unchanged and
+    `MINIMAL` — whose People line is one director — gets its own.
+    """
+    shipped = sc.load_default()
+    small = sc.parse(MINIMAL.encode(), name="minimal")
+
+    assert shipped.recruiter() == "stf_rec"
+    assert shipped.director_of("hr") == "dir_hr"
+    # One-person line: the director recruits, because refusing would leave a four-person company
+    # unable to grow.
+    assert small.recruiter() == "dir_four"
+    assert small.director_of("hr") == "dir_four"
+
+
+def test_a_second_company_can_hire_without_the_default_scenarios_ids() -> None:
+    small = sc.parse(MINIMAL.encode(), name="minimal")
+    state, _ = sim.new_run(run_seed=SEED, scenario=small)
+
+    emitted = sim.request_hire(state, "dir_four")
+
+    requested = next(e for e in emitted if e.kind is EventKind.HIRE_REQUESTED)
+    item = state.dynamic_items[requested.payload["item"]]
+    assert item.want == "dir_four"
+    assert item.dept == "hr"
+    assert state.items[item.id].assignee == "dir_four"
+
+
+def test_the_shipped_hiring_item_is_the_one_it_always_was() -> None:
+    """Derivation reproduces the hardcoded values exactly, so no fixture moved for it."""
+    state, _ = sim.new_run(run_seed=SEED)
+
+    sim.request_hire(state, "dir_cs")
+    item = next(iter(state.dynamic_items.values()))
+
+    assert (item.want, item.dept) == ("stf_rec", "hr")
+    assert item.title == "Hire into support"
+    assert item.brief == "Recruit and onboard one person for Nina Kaur's line."

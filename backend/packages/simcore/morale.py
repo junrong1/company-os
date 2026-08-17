@@ -30,10 +30,12 @@ hiring item that would fix it takes longer, forever.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from simcore import people as roster
 from simcore.rates import Multiplier
+
+if TYPE_CHECKING:  # pragma: no cover - annotations only
+    from simcore.scenario import Scenario
 
 #: Everyone starts here, so the aggregate matches the prototype's authored 72.
 INITIAL_MORALE = 72
@@ -66,8 +68,9 @@ class PersonMorale:
         return {"value": self.value, "days_below": self.days_below}
 
 
-def new_morale() -> dict[str, PersonMorale]:
-    return {person.id: PersonMorale() for person in roster.PEOPLE}
+def new_morale(scenario: Scenario) -> dict[str, PersonMorale]:
+    """Everyone on the authored roster, at the starting value. Hires are added on arrival."""
+    return {person.id: PersonMorale() for person in scenario.people}
 
 
 def company_morale(morale: dict[str, PersonMorale]) -> int:
@@ -132,7 +135,10 @@ def roll_day(morale: dict[str, PersonMorale]) -> dict[str, int]:
 
 
 def attrition_candidate(
-    morale: dict[str, PersonMorale], director_id: str, present: set[str]
+    scenario: Scenario,
+    morale: dict[str, PersonMorale],
+    director_id: str,
+    present: set[str],
 ) -> str | None:
     """Who leaves, if anyone: the lowest-morale non-director still in this line (R38).
 
@@ -140,11 +146,18 @@ def attrition_candidate(
     director has no reporting line to assign through and no one to allocate a draw across,
     so removing one would make the department unreachable rather than overloaded.
 
-    Ties break on roster order, so the answer is deterministic.
+    Ties break on roster order, so the answer is deterministic. The order comes from the
+    scenario the run was created against rather than from a global, so two runs on two
+    companies never break a tie against each other's roster.
+
+    **An arrived hire is not a candidate**, because `scenario.lines` holds only authored
+    people. That is unchanged behaviour rather than a decision taken here: a hire with
+    collapsed morale stays, which is a gap worth its own unit and not worth changing inside a
+    fixture-regenerating one.
     """
     members = [
         person_id
-        for person_id in roster.reporting_lines()[director_id]
+        for person_id in scenario.lines.get(director_id, ())
         if person_id != director_id and person_id in present
     ]
     eligible = [

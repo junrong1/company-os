@@ -29,8 +29,9 @@ mechanical: `pytest -m effort_timed`. Nothing here asserts anything about manual
 so U7's manual-hours work needs no exemption.
 
 **Two of them have already changed, and the change is recorded rather than absorbed** (R16).
-M6 opens a run on one authored assignment — `items.SEEDED_ASSIGNMENTS` — so the floor is no
-longer idle at tick zero and one more item is blocked for the whole of the harness's script.
+M6 opens a run on one authored assignment — `[[seeded_assignment]]` in the scenario file, and a
+module constant when U2 wrote this — so the floor is no longer idle at tick zero and one more item
+is blocked for the whole of the harness's script.
 Exactly two ported assertions move with it, and neither is `effort_timed`:
 
 | harness check | was | is |
@@ -43,16 +44,18 @@ readable as the whole of the change: the seed lands in Ruth's line, and the harn
 works Priya's and Dana's items. Every `effort_timed` assertion measures a burn rate in a
 department the seed does not touch, so none of them shifted by a single unit.
 
-**And the golden vectors did not move at all.** R16 expects them to, so the absence is recorded
-rather than left looking like a regeneration somebody forgot: `generate_golden.py` was run and
-its output is byte-identical. Four of the five vectors pin arithmetic — walk speed, the clock,
-the CEO's step, avatar palettes — and none reads day-zero state. The fifth, `genesis.json`, is
-the GENESIS *payload*, and the seed is deliberately not on it: the fold rebuilds the seed by
-calling `new_run`, so recording it would be a payload key and a schema-version bump for a fact
-no consumer can check until U6 puts the scenario hash on genesis (R7). What did move is the
-day-zero state hash, which no fixture holds — `items`, `people` and `capacity` sub-hashes, and
-nothing else; `state_shape_ver` and RULES_VERSION are unchanged, because no `to_state()` shape
-and no tuning constant changed.
+**And the golden vectors did not move at all** when the seed arrived. R16 expects them to, so the
+absence was recorded rather than left looking like a regeneration somebody forgot: four of the five
+vectors pin arithmetic — walk speed, the clock, the CEO's step, avatar palettes — and none reads
+day-zero state, while the fifth is the GENESIS *payload* and the seed is deliberately not on it.
+What moved then was the day-zero state hash, which no fixture holds.
+
+**U6 moved the payload, once, and left that hash where it was.** The roster and the work graph now
+come off the scenario file, so `genesis.json` gained the scenario identity and four fields per
+person; the seed is still not on the payload, and the reason is now the settled one rather than a
+deferral — it is inside the scenario's content hash, which all three R7 guards check. Everything
+this suite asserts is unchanged by that move, which is the point of it: `state_shape_ver`,
+RULES_VERSION and the day-zero state hash are all where U2 left them.
 """
 
 from __future__ import annotations
@@ -66,12 +69,17 @@ import pytest
 from simcore import capacity as cap
 from simcore import effects
 from simcore import items as work
-from simcore import people as roster
+from simcore import scenario as sc
 from simcore import step as sim
 from simcore import time as simtime
 from simcore.world import find_path, walkable
 
 SEED = 0xC0FFEE
+
+#: The shipped company, loaded once. Every roster and catalog reference below goes through it:
+#: U6 moved both into `scenarios/default.toml`, so a module constant is no longer what the
+#: kernel reads and would no longer be what this suite is asserting agreement with.
+SHIPPED = sc.load_default()
 
 #: One wall second of the harness, in ticks, at x1. See the module docstring.
 TICKS_PER_WALL_SECOND = simtime.TICKS_PER_WALL_SECOND_AT_BASE_RATE
@@ -105,10 +113,10 @@ def observed() -> dict[str, Any]:
     )
     seen["visibility_start"] = state.metrics["visibility"]
     seen["available_at_start"] = [
-        item.id for item in work.ITEMS if item.requires == work.Requires()
+        item.id for item in SHIPPED.items if item.requires == work.Requires()
     ]
     seen["locked_at_start"] = [
-        item.id for item in work.ITEMS if item.requires != work.Requires()
+        item.id for item in SHIPPED.items if item.requires != work.Requires()
     ]
 
     # --- 2. Assign through the reporting line ----------------------------
@@ -175,7 +183,7 @@ def observed() -> dict[str, Any]:
     second = state.items["wi_dup_entry"]
     seen["second_status_after_70s"] = second.status
     seen["second_progress_percent"] = (
-        second.done_units * 100 // work.spec("wi_dup_entry").effort_units
+        second.done_units * 100 // SHIPPED.item("wi_dup_entry").effort_units
     )
 
     if second.status == sim.STATUS_BLOCKED:
@@ -191,7 +199,7 @@ def observed() -> dict[str, Any]:
 
     # --- 9. Pathfinding respects walls -----------------------------------
     # The harness uses `S.people[4].seat`, which is the fifth roster entry: Priya.
-    far = state.seats[roster.PEOPLE[4].id]
+    far = state.seats[SHIPPED.people[4].id]
     path = find_path(state.floor, state.floor.spawn, far)
     seen["far_seat"] = far
     seen["path_length"] = len(path)
@@ -227,10 +235,10 @@ def test_everyone_starts_idle_except_the_authored_assignment(
     `HARNESS_CHECKS`; renaming the test rather than quietly widening `all_idle` is what makes
     the amendment findable from either side.
     """
-    seeded = [entry.person_id for entry in work.SEEDED_ASSIGNMENTS]
+    seeded = [entry.person_id for entry in SHIPPED.seeded]
     assert observed["busy_at_start"] == sorted(seeded)
     assert observed["seeded_items_at_start"] == sorted(
-        entry.item_id for entry in work.SEEDED_ASSIGNMENTS
+        entry.item_id for entry in SHIPPED.seeded
     )
 
 
@@ -295,7 +303,7 @@ def test_one_item_waiting_in_the_tray(observed: dict[str, Any]) -> None:
     resolves it: it is Ruth's, and the harness only ever touches Priya's and Dana's work.
     """
     assert observed["blocked_items"] == sorted(
-        ["wi_ap_map", *(entry.item_id for entry in work.SEEDED_ASSIGNMENTS)]
+        ["wi_ap_map", *(entry.item_id for entry in SHIPPED.seeded)]
     )
 
 
@@ -451,7 +459,7 @@ def test_a_new_run_reaches_an_unresolved_checkpoint_with_no_command() -> None:
 
     payload = raised[0].payload
     assert payload["tick"] == 1, "the first frame, not the first sim-minutes"
-    assert roster.spec(payload["person"]).rank == "director"
+    assert SHIPPED.person(payload["person"]).rank == "director"
     assert state.items[payload["item"]].status == sim.STATUS_BLOCKED
     assert state.items[payload["item"]].resolved == [False]
     assert state.people[payload["person"]].state == sim.STATE_BLOCKED
@@ -465,10 +473,10 @@ def test_the_opening_stop_is_structural_rather_than_arithmetic() -> None:
     an empty floor on screen until it does — so the failure would be invisible to every other
     assertion here.
     """
-    assert work.SEEDED_ASSIGNMENTS, "M6 needs at least one authored assignment"
+    assert SHIPPED.seeded, "M6 needs at least one authored assignment"
 
-    for seeded in work.SEEDED_ASSIGNMENTS:
-        spec = work.spec(seeded.item_id)
+    for seeded in SHIPPED.seeded:
+        spec = SHIPPED.item(seeded.item_id)
         assert spec.checkpoints, f"{seeded.item_id} has nothing to stop at"
         assert seeded.done_percent >= spec.checkpoints[0].at_percent
         assert work.checkpoint_reached(
@@ -488,8 +496,8 @@ def test_the_opening_costs_nothing_the_ceo_did_not_choose() -> None:
     """
     state, _ = sim.new_run(run_seed=SEED)
 
-    assert state.metrics == effects.initial_metrics()
-    for seeded in work.SEEDED_ASSIGNMENTS:
+    assert state.metrics == effects.initial_metrics(SHIPPED)
+    for seeded in SHIPPED.seeded:
         person = state.people[seeded.person_id]
         assert person.bypassed_director is False
         assert person.state == sim.STATE_WORKING
@@ -509,7 +517,7 @@ def test_the_opening_is_not_an_overloaded_office() -> None:
     """
     state, _ = sim.new_run(run_seed=SEED)
 
-    for seeded in work.SEEDED_ASSIGNMENTS:
+    for seeded in SHIPPED.seeded:
         line = state.line_of_assignee(seeded.person_id)
         assert state.capacity[line].load_permille < cap.LOAD_CEILING
 
@@ -739,7 +747,7 @@ def test_golden_ceo_vector_matches_the_kernel() -> None:
 def test_golden_palette_vector_covers_every_person() -> None:
     vector = _load("palette.json")
     covered = {case["id"] for case in vector["cases"]}
-    for person in roster.PEOPLE:
+    for person in SHIPPED.people:
         assert person.id in covered, f"no palette vector for {person.id}"
 
 

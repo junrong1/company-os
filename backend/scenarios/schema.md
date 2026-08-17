@@ -76,11 +76,29 @@ item, or that the roster order changed. It is not a warning: the run's numbers w
 company that no longer exists in that form, and replaying its log against the edited company
 would reproduce neither.
 
+Each of the three says which one of them noticed, because otherwise all three produce the same
+sentence and you cannot tell what you were doing when it fired:
+
+```
+Refused at the from-zero fold, replaying genesis
+Refused at a snapshot restore
+Refused at a fold resumed from a snapshot, which skips genesis
+```
+
+The first two hold a recorded id and hash and are given the roster and catalog the genesis event
+carries, so they can name the person or the item that moved. The third holds the whole company the
+state was built with, so it can also name a **reordering** — which two hashes cannot express, and
+which changes who wins a contested desk.
+
 **So editing a scenario invalidates every existing run written against it.** That is the deal,
 and it is deliberate: runs here are local and disposable, and a migration path for authored
 content would be a large machine for a small benefit. In practice it means finishing a run before
 you edit its company, or accepting that you are starting a new one. The refusal says as much and
 names the file to restore if you want the old run back.
+
+A run created *before* scenario files existed records no identity at all. It is refused the same
+way, by the same guard, with its own remedy — "start a new run" — and the kernel logs the refusal
+per run and starts anyway. One unreplayable run does not stop the clock for the others.
 
 ## The shape of the file
 
@@ -280,12 +298,25 @@ checkpoint.
 A seeded item cannot be one that is gated behind a prerequisite or a Visibility threshold: seeded
 work is work the company was already doing, so it has to be work the company could have started.
 
+A seed also cannot put anybody away from their desk, and there is no way to ask for one that would:
+a seed names an item and a person, and a person starts at the desk their `room` and `seat_slot`
+give them. Genesis carries no movement event — the fold rebuilds day zero by *calling* the same
+function rather than by replaying events, so a walk produced there would regenerate nowhere and
+strict replay would diverge on it. That is why the seed is two ids and a percent and not a position.
+
 ## Tools, MCP servers and skills are description
 
 Nothing in this system executes anything a scenario names. `tools`, `mcp_servers` and `skills`
 say what a person is *understood* to have: they shape what a director claims it could do when it
 briefs the CEO, and they are what the report counts when it says what is worth automating. There
 is no dispatch table behind them, and clicking one in the client does nothing by design.
+
+They travel to the client on the genesis event, alongside each person's `responsibility`, name,
+title, room and reporting line — so a conversation surface can show who it is talking to and what
+they are understood to work with, and an exported run stays readable without the kernel running.
+Exactly two modules in the backend read these fields: the loader that validates them and the
+projection that puts them on genesis. A test asserts there is no third, which is what makes
+"description" structural rather than a promise.
 
 Authored text is also never an instruction. When a director is model-backed, everything from this
 file enters the prompt as delimited data, and the guards on what comes back apply regardless of

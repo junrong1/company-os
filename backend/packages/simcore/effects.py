@@ -16,9 +16,12 @@ than clamped away.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from simcore import capacity
+
+if TYPE_CHECKING:  # pragma: no cover - annotations only
+    from simcore.scenario import Scenario
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,15 +103,19 @@ def metric_defs_to_state() -> list[dict[str, Any]]:
 DRAW_KEY = "draw"
 
 
-def initial_metrics() -> dict[str, int]:
+def initial_metrics(scenario: Scenario) -> dict[str, int]:
     """The company on day one.
 
-    `manualHours` comes from the authored department draws rather than being authored
+    `manualHours` comes from the scenario's department draws rather than being authored
     separately — which is what replaces the prototype's 420 h/mo against a maximum of 500.
+
+    The other four are rules, not content: a scenario that could author its own starting cash
+    would be authoring the run's difficulty, and R7's content hash would then be the only thing
+    standing between two runs that looked comparable and were not.
     """
     return {
         "cash": 4800,
-        "manualHours": capacity.INITIAL_MANUAL_HOURS,
+        "manualHours": scenario.initial_manual_hours,
         "leadTime": 12,
         "morale": 72,
         "visibility": 6,

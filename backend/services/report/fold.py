@@ -239,7 +239,7 @@ def build(run_id: str, events: list[Envelope], through_tick: int | None = None) 
             "at_tick": state.tick,
             "at_day": simtime.day_of(state.tick),
             "decisions_taken": len(report.decisions),
-            "decision_supply": lifecycle.decision_supply(),
+            "decision_supply": lifecycle.decision_supply(state.scenario),
             "deliverables": len(report.deliverables),
         }
 

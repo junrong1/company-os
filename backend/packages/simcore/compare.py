@@ -70,7 +70,6 @@ from typing import Any
 
 from contracts.envelope import EventKind
 from simcore import effects, lifecycle, snapshot
-from simcore import items as work
 from simcore import step as sim
 from simcore import time as simtime
 
@@ -578,4 +577,4 @@ def _gates_open(state: sim.State) -> set[str]:
     finished read as the option that made it impossible. Unlocking and foreclosing are
     movements of a gate; completion is not one.
     """
-    return {item.id for item in work.ITEMS if sim.is_unlocked(state, item.id)}
+    return {item.id for item in state.scenario.items if sim.is_unlocked(state, item.id)}

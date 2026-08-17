@@ -30,6 +30,14 @@ nothing. Regenerating them means a divergence is detected.
 snapshot load are three callers and each could forget it. Putting the check inside the fold
 means no consumer can omit it (R27).
 
+**The scenario guard follows the same argument, at three sites rather than one** (R7). Each is a
+distinct way of obtaining state: the from-zero fold reads the identity off the genesis event it
+replays; a snapshot restore reads it off the snapshot and never enters the fold
+(`snapshot.from_wire`); and a fold given `resume_from` *skips genesis*, so without its own check
+it would be the one path that carried a state built from one company into a process running
+another. Two of the three are in this module; each passes an `at` that names it, so three guards
+do not produce one indistinguishable refusal.
+
 **Whether the fold is at the live head is a parameter, never inferred.** Re-issuing an
 unanswered external request is permitted only at the live head — never during historical
 replay, fork reconstruction, or a report fold (R3). Inferring it from the caller would let
@@ -42,6 +50,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from contracts.envelope import Envelope, EventKind
+from simcore import scenario as scenarios
 from simcore import step as sim
 from simcore.rates import RULES_VERSION
 
@@ -246,6 +255,13 @@ def fold(
     if resume_from is not None:
         state, through_seq = resume_from
         state = _clone(state)
+        # R7's third guard site, and the one that would otherwise be skipped: this path never
+        # touches a genesis event, so nothing on it reads a recorded scenario identity. It is
+        # also the richest of the three, because both sides are whole `Scenario` objects — so
+        # the refusal can name a reordering, which two digests cannot express.
+        state.scenario = scenarios.verify_unchanged(
+            state.scenario, at="a fold resumed from a snapshot, which skips genesis"
+        )
     else:
         if not ordered:
             raise FoldRefused("empty log: there is no state to fold to")
@@ -524,9 +540,21 @@ def _apply_genesis(envelope: Envelope) -> sim.State:
     rather than carried through every snapshot: the generator is deterministic, so the two
     agree. The recorded copy is what makes that safe — and it is compared, so a generator
     that stopped being deterministic is caught here rather than as a mystery divergence.
+
+    The company is regenerated the same way and for the same reason — by name from the recorded
+    identity, not from the payload's roster and catalog — and it is checked the same way too
+    (R7). The recorded roster and catalog are handed to the guard so that a refusal can name the
+    person or the item that moved rather than only two digests.
     """
     payload = envelope.decoded_payload()
     cols, rows = payload["grid"]
+
+    company = scenarios.load_recorded(
+        payload.get("scenario"),
+        at="the from-zero fold, replaying genesis",
+        recorded_roster=payload.get("roster"),
+        recorded_catalog=payload.get("catalog"),
+    )
 
     # The horizon is read from the genesis event, not defaulted. It is chosen at genesis and
     # immutable, so a fold that used the running default would give a resumed run a different
@@ -537,6 +565,7 @@ def _apply_genesis(envelope: Envelope) -> sim.State:
         cols=cols,
         rows=rows,
         horizon_tick=int(payload["horizon_tick"]),
+        scenario=company,
     )
     state.metrics = dict(payload["metrics"])
     state.tick = 0

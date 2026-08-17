@@ -1073,23 +1073,25 @@ def _six_options_at_the_first_checkpoint(monkeypatch) -> None:
     under measurement is the cost of stepping six branches, and two branches that price the same
     option still cost two branches.
 
-    Patching `ITEMS_BY_ID` rather than `state.dynamic_items` is not a style choice. A dynamic
-    item's `checkpoints` do not survive `snapshot.to_wire`, which writes eight fields and no
-    checkpoint tuple — so a six-option spec injected there would come back from `restore` with no
-    checkpoints and every branch would fail on an index. The authored table is read by the parent
-    and by every restored copy alike.
+    Patching the loaded scenario's item index rather than `state.dynamic_items` is not a style
+    choice. A dynamic item's `checkpoints` do not survive `snapshot.to_wire`, which writes eight
+    fields and no checkpoint tuple — so a six-option spec injected there would come back from
+    `restore` with no checkpoints and every branch would fail on an index. The authored table is
+    read by the parent and by every restored copy alike: the loader is content-addressed, so
+    every `load` of the unedited `default.toml` in this process returns this same object.
     """
-    from simcore import items as work
+    from simcore import scenario as sc
 
-    base = work.spec("wi_ap_map")
+    company = sc.load_default()
+    base = company.item("wi_ap_map")
     first = base.checkpoints[0]
     widened = dataclasses.replace(first, options=first.options + first.options)
     monkeypatch.setitem(
-        work.ITEMS_BY_ID,
+        company.items_by_id,
         "wi_ap_map",
         dataclasses.replace(base, checkpoints=(widened,) + base.checkpoints[1:]),
     )
-    assert len(work.spec("wi_ap_map").checkpoints[0].options) == 6
+    assert len(company.item("wi_ap_map").checkpoints[0].options) == 6
 
 
 def _ticking_at_a_decision(runtime, monkeypatch=None):

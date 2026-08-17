@@ -98,10 +98,15 @@ SCENARIO_SUFFIX = ".toml"
 #: refused.
 #:
 #: A line is identified by the room its director sits in, rather than by a fresh identifier:
-#: `hiring.target_room_for` already seats a new member of a line in their director's room, so
+#: `room_of_line` below already seats a new member of a line in their director's room, so
 #: a separate line id would be a second name for a thing the floor plan already names — and
 #: the two could then disagree.
 REPORTING_LINES: tuple[str, ...] = ("sales", "admin", "support", "hr")
+
+#: The line a hiring item is routed through (R23). One of the four above, and fixed here for
+#: the same reason they are: hiring is a rule, not scenario content. What a scenario decides is
+#: *who* in that line does the recruiting, which is `Scenario.recruiter`.
+HIRING_LINE = "hr"
 
 #: Every room on the floor, by id. Eight, fixed by the generator (M11). A person or an item
 #: naming anything else is refused; a scenario cannot add a room, because `[[room]]` is not in
@@ -339,6 +344,37 @@ class Scenario:
     def room_of_line(self, director_id: str) -> str:
         """Which room a new member of this line sits in: the director's own."""
         return self.person(director_id).dept
+
+    def director_of(self, line_id: str) -> str:
+        """The director heading one of the four fixed lines, or "" if none does.
+
+        Reads the department declarations rather than the roster, because that is where a line
+        id appears — a person names the room they sit in and the line they report to, and for
+        Priya those disagree.
+        """
+        for department in self.departments:
+            if department.id == line_id:
+                return department.director
+        return ""
+
+    def recruiter(self) -> str:
+        """Who a hiring item is assigned to: the People line's first non-director.
+
+        Derived rather than authored, and derived rather than hardcoded. `step.request_hire`
+        named `stf_rec` and the `hr` room outright — default-scenario person ids sitting in the
+        kernel — so a scenario without a person of that id would raise while trying to hire.
+
+        The first non-director *in roster order*, because that is the recruiter on the shipped
+        roster and roster order is already the tie-break this format uses for a contested desk.
+        Falling back to the director, because a one-person People line still has to be able to
+        hire: refusing there would leave a four-person company unable to grow, and `MINIMAL` in
+        the suite is exactly that company.
+        """
+        director = self.director_of(HIRING_LINE)
+        for member in self.lines.get(director, ()):
+            if member != director:
+                return member
+        return director
 
     def voice_of(self, person_id: str, slot: str) -> str:
         """This person's scripted reply for one of the four questions."""

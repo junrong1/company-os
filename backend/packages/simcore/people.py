@@ -1,119 +1,39 @@
-"""The roster: desks follow departments, reporting lines do not.
+"""The roster's *mechanisms*: seating, the genesis projection, and the four questions.
 
-Ported from script section 2 of `company-os.html` (`:1170` roster, `assignSeats`,
-`VOICE`).
+The roster itself is no longer here. `PEOPLE`, `VOICE` and `DEFLECTIONS` were module
+constants until U6, which is what made "add a company" a code change (M9, M13); they are
+authored in `backend/scenarios/*.toml` now and reached through `simcore.scenario`. What is
+left in this module is the part that is a *rule* rather than content:
 
-The mismatch in the sample data is deliberate and load-bearing: Priya sits in
-Accounting but reports to the Administration director, exactly the kind of thing a
-real org chart has. It means "which room someone sits in" and "whose reporting line
-they are in" are two different questions, and the simulation needs both — seating
-comes from the room, while assignment, delegation and (from U7) capacity all follow
-the reporting line.
+**Seating**, because desks come from the generated floor plan and the plan is not authored.
+A scenario says which room somebody sits in and which slot they prefer; which tile that
+turns out to be depends on the grid the run was created with, so it is resolved per run.
 
-That gives **four** load-bearing departments rather than eight rooms: the four
-directors and their reports. Two of them, Customer Support and People, hold exactly
-one non-director each, which is why U7's capacity draw has to include the director —
-a single attrition event would otherwise leave a department with nobody to allocate
-across.
+**The genesis projection**, because what the client is told about a person is a wire
+contract rather than scenario data.
 
-The scripted dialogue is ported as-is rather than deferred. It is the content Phase 2
-replaces with the hearing API, and porting it now means Phase 2 changes the producer
-rather than adding the data.
+**The four questions**, because the kernel prices an answer and therefore has to be the side
+that decides which question was asked. A scenario authors the four replies; it does not get
+to add a fifth question, and `scenario.VOICE_SLOTS` is asserted to agree with `ASK_SLOTS`.
+
+The mismatch in the shipped data stays load-bearing and stays authored: Priya sits in
+Accounting and reports to the Administration director, so "which room someone sits in" and
+"whose reporting line they are in" are two different questions. Seating reads the room;
+assignment, delegation and capacity read the line.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from simcore.world import Floor, walkable
 
-
-@dataclass(frozen=True, slots=True)
-class PersonSpec:
-    """One person on the shipped roster.
-
-    `dept` is the *room* they sit in. `mgr` is the reporting line. They disagree for
-    Priya, on purpose.
-    """
-
-    id: str
-    name: str
-    initials: str
-    title: str
-    dept: str
-    mgr: str | None
-    rank: str  # "director" | "staff"
-    slot: int
+if TYPE_CHECKING:  # pragma: no cover - annotations only
+    from simcore.scenario import Scenario
 
 
-PEOPLE: tuple[PersonSpec, ...] = (
-    PersonSpec("dir_sales", "Marcus Webb", "MW", "VP, Sales", "sales", None, "director", 2),
-    PersonSpec(
-        "stf_order", "Dana Reyes", "DR", "Order Processing Specialist", "sales", "dir_sales", "staff", 0
-    ),
-    PersonSpec("stf_field", "Tom Baird", "TB", "Account Executive", "sales", "dir_sales", "staff", 1),
-    PersonSpec(
-        "dir_admin", "Grace Okafor", "GO", "Director, Administration", "admin", None, "director", 1
-    ),
-    PersonSpec("stf_ap", "Priya Raman", "PR", "Accounts Payable", "accounting", "dir_admin", "staff", 0),
-    PersonSpec("stf_buyer", "Victor Hale", "VH", "Procurement Buyer", "admin", "dir_admin", "staff", 0),
-    PersonSpec(
-        "dir_cs", "Nina Kaur", "NK", "Customer Support Manager", "support", None, "director", 1
-    ),
-    PersonSpec("stf_cs", "Owen Cole", "OC", "Support, First Line", "support", "dir_cs", "staff", 0),
-    PersonSpec("dir_hr", "Ruth Bello", "RB", "People Manager", "hr", None, "director", 1),
-    PersonSpec("stf_rec", "Sam Delgado", "SD", "Recruiter", "hr", "dir_hr", "staff", 0),
-)
-
-PEOPLE_BY_ID: dict[str, PersonSpec] = {person.id: person for person in PEOPLE}
-
-
-def spec(person_id: str) -> PersonSpec:
-    try:
-        return PEOPLE_BY_ID[person_id]
-    except KeyError:
-        raise KeyError(f"no person {person_id!r} on the roster") from None
-
-
-def directors() -> tuple[str, ...]:
-    return tuple(person.id for person in PEOPLE if person.rank == "director")
-
-
-def reporting_line_of(person_id: str) -> str:
-    """The director whose line this person is in. A director is their own line."""
-    person = spec(person_id)
-    return person.mgr if person.mgr else person.id
-
-
-def reporting_lines() -> dict[str, tuple[str, ...]]:
-    """Director id -> every member of that line, the director included.
-
-    The director is a member, not an overseer of members. U7's capacity draw is
-    allocated across this whole tuple, and two of the four lines would otherwise be
-    empty after one attrition event.
-    """
-    lines: dict[str, list[str]] = {director: [director] for director in directors()}
-    for person in PEOPLE:
-        if person.mgr:
-            lines[person.mgr].append(person.id)
-    return {director: tuple(members) for director, members in lines.items()}
-
-
-def direct_reports(director_id: str) -> tuple[str, ...]:
-    return tuple(person.id for person in PEOPLE if person.mgr == director_id)
-
-
-def same_reporting_line(a: str, b: str) -> bool:
-    """Whether a reassignment between these two stays inside one line.
-
-    Assignment across reporting lines is rejected and mutates nothing, so this is the
-    predicate that decides it.
-    """
-    return reporting_line_of(a) == reporting_line_of(b)
-
-
-def assign_seats(floor: Floor) -> dict[str, tuple[int, int]]:
+def assign_seats(scenario: Scenario, floor: Floor) -> dict[str, tuple[int, int]]:
     """Resolve everyone's desk from the generated plan.
 
     A port of `assignSeats()`, including both fallbacks. The invariant it exists to
@@ -121,13 +41,14 @@ def assign_seats(floor: Floor) -> dict[str, tuple[int, int]]:
     seats the overflow on any free floor tile inside that room, and only then on the
     spawn point.
 
-    Deterministic: roster order decides who gets contested slots, and roster order is
-    fixed.
+    Deterministic: roster order decides who gets contested slots, and roster order is part of
+    what a scenario *is* — it is inside the content hash, so a file that reorders two people
+    seats them differently and says so at the R7 guard.
     """
     taken: set[tuple[int, int]] = set()
     seats: dict[str, tuple[int, int]] = {}
 
-    for person in PEOPLE:
+    for person in scenario.people:
         room = next((r for r in floor.rooms if r.id == person.dept), None)
         slots = room.slots if room else []
 
@@ -158,14 +79,26 @@ def assign_seats(floor: Floor) -> dict[str, tuple[int, int]]:
     return seats
 
 
-def roster_to_state(seats: dict[str, tuple[int, int]]) -> dict[str, Any]:
+def roster_to_state(
+    scenario: Scenario, seats: dict[str, tuple[int, int]]
+) -> dict[str, dict[str, Any]]:
     """The immutable part of the roster, as the genesis payload carries it.
 
     Name, initials and title are here because the client has to be able to say who it is
     talking to. Standing next to someone is the whole gesture, and a conversation headed
     `stf_ap` would name a row in a table rather than a person — which is the opposite of what
-    the in-person route exists to be worth. They are authored constants that never move, so
-    shipping them once at genesis is cheaper than a lookup the client cannot perform.
+    the in-person route exists to be worth. They are scenario fields that cannot move within a
+    run, so shipping them once at genesis is cheaper than a lookup the client cannot perform.
+
+    **`responsibility`, `tools`, `mcp_servers` and `skills` ride here too** (M15), and for
+    everyone rather than for whoever a model happens to answer for. The client's conversation
+    surface is what shows them (U7), and shipping them at genesis is the same argument as the
+    names: they are immutable, inherited by forks, and an exported run has to stay
+    self-contained without the kernel's process to ask.
+
+    They are description and nothing else (M16). Nothing in this repository turns a tool name
+    into a call, and `test_scenario.py` asserts the absence of a mechanism rather than the
+    absence of a call site.
     """
     return {
         person.id: {
@@ -176,8 +109,12 @@ def roster_to_state(seats: dict[str, tuple[int, int]]) -> dict[str, Any]:
             "mgr": person.mgr or "",
             "rank": person.rank,
             "seat": list(seats[person.id]),
+            "responsibility": person.responsibility,
+            "tools": list(person.tools),
+            "mcp_servers": list(person.mcp_servers),
+            "skills": list(person.skills),
         }
-        for person in PEOPLE
+        for person in scenario.people
     }
 
 
@@ -203,6 +140,11 @@ class AskIntent:
 #: that classified the text would be handing the kernel a fact it prices without being able to
 #: check. It is also where the hearing API replaces the script, and matching belongs with the
 #: producer rather than with the surface that shows the answer.
+#:
+#: The four slots are the four a scenario authors, and `scenario.VOICE_SLOTS` declares them for
+#: the format. Kept as two lists with a test that they agree, rather than one importing the
+#: other: `scenario` imports nothing from here and must not, and a format that read its
+#: required keys out of a matching table would make adding a keyword a file-format change.
 #:
 #: Order matters. The first intent whose keywords appear wins, so a question mentioning both
 #: "why" and "slow" is read as a why.
@@ -230,110 +172,10 @@ def match_intent(question: str) -> AskIntent | None:
 
     Case-insensitive substring matching, as the prototype does. Crude on purpose: the point of
     free text is that it needs no rework when a hearing API replaces the script, not that the
-    matching is clever. Misses are expected, which is why every person has a line for one.
+    matching is clever. Misses are expected, which is why every person authors a line for one.
     """
     lowered = question.lower()
     for intent in ASK_INTENTS:
         if any(key in lowered for key in intent.keys):
             return intent
     return None
-
-
-#: What each person says when the question matched nothing (R16).
-#:
-#: One per person rather than one shared line, because a miss is common enough that a generic
-#: "not in the script" would be most of what a player hears from the mechanic. Said in their own
-#: voice, a miss still reveals character and still points at what they *can* answer.
-DEFLECTIONS: dict[str, str] = {
-    "stf_order": "I would not know about that. Ask me why the entry works the way it does, where the exceptions are, what I decide myself, or where the time goes.",
-    "stf_ap": "That is above my desk. What I can tell you is why the reconciliation runs as it does, the exceptions I make, where my authority ends, and what eats the month.",
-    "stf_buyer": "No idea, honestly. Ask me why we quote the way we do, when I go single-source, what is mine to call, or where an order parks.",
-    "stf_cs": "Not something I see from first line. Ask me why the answers take as long as they do, what I escalate, what is my judgement, or what fills the queue.",
-    "stf_rec": "I could not say. Ask me why the postings drift, which candidates skip the process, where I set the bar, or what the scheduling costs.",
-    "stf_field": "That is not my end of it. Ask me why I keep my own numbers, what I take verbally, what I promise on my own, or what stops me on the road.",
-    "dir_sales": "I would be guessing, and you would be able to tell. Ask me why the numbers land where they do, what reaches me, what is mine to approve, or what we all know is broken.",
-    "dir_admin": "I do not have that to hand. Ask me why the close runs long, what we let slide at quarter end, where the approval line sits, or what everything waits on.",
-    "dir_cs": "You would want someone closer to it than me. Ask me why first line costs what it does, what comes to me, how escalation actually works, or what fills Owen's day.",
-    "dir_hr": "I have nothing useful on that. Ask me why the requirements drift, which hires go around us, who really decides, or what the agreeing costs.",
-}
-
-
-def deflection_for(person_id: str) -> str:
-    """This person's line for a question they cannot answer. Raises for a stranger."""
-    spec(person_id)
-    return DEFLECTIONS[person_id]
-
-
-def answer_for(person_id: str, slot: str) -> str:
-    """This person's scripted reply for one of the four questions."""
-    spec(person_id)
-    return VOICE[person_id][slot]
-
-
-#: Scripted replies, four per person. This is where the hearing API plugs in at
-#: Phase 2; the shape stays, the producer changes.
-#:
-#: Keys are the four questions the prototype's panel offers: why / exception / axis /
-#: bottleneck.
-VOICE: dict[str, dict[str, str]] = {
-    "stf_order": {
-        "why": "Sales promises a date in their spreadsheet, then I retype it into the order system. Flip that order and sales cannot answer the customer.",
-        "exception": "For our three largest accounts I hold stock over the phone before I enter anything. That never shows up in the system.",
-        "axis": "I decide whether to pull a delivery date forward. Under three days I just do it and tell nobody.",
-        "bottleneck": "Typing the same numbers twice. About 25 hours a month.",
-    },
-    "stf_ap": {
-        "why": "Invoices arrive on paper and as PDF, so I reconcile both before I post anything. With only one of them, things slip through.",
-        "exception": "The last three days of the month I release payment before the paper arrives. Waiting would miss the supplier close.",
-        "axis": "Anything over $10K needs the manager approval. Nobody has revisited that line in five years.",
-        "bottleneck": "Matching. Seven minutes an invoice, four hundred invoices a month.",
-    },
-    "stf_buyer": {
-        "why": "Three competing quotes on everything, so we can defend the price if an auditor asks.",
-        "exception": "Repairs and emergency parts go single-source. The plant stops otherwise, so I write the paperwork afterwards.",
-        "axis": "The three-quote rule ignores value. I collect three quotes for a thousand-dollar desk.",
-        "bottleneck": "Waiting for quotes to come back. Every order parks 2.5 days there.",
-    },
-    "stf_cs": {
-        "why": "I write the same answers by hand every time. We have templates, but I rework them for each customer.",
-        "exception": "Anything that mentions cancelling goes straight to Nina, whatever else it says.",
-        "axis": "Whether a ticket goes to engineering is my call. About five a day I genuinely cannot judge.",
-        "bottleneck": "Questions we have already answered. Six of every ten tickets.",
-    },
-    "stf_rec": {
-        "why": "What the hiring manager wants and what the job post says do not match. Rewriting it pauses the listing, so we run it as is.",
-        "exception": "Referrals skip the requirements entirely. That route actually retains better.",
-        "axis": "I set the first-round bar. I have never aligned it with the people who run the interviews.",
-        "bottleneck": "Interview scheduling. Six emails per candidate.",
-    },
-    "stf_field": {
-        "why": "I carry my own spreadsheet so I can answer on delivery dates at the customer table. They cannot see our system.",
-        "exception": "Repeat orders I take verbally and collect the paperwork later.",
-        "axis": "The delivery promise is mine. I check stock with Dana, but urgent ones I call myself.",
-        "bottleneck": "I cannot process an order while I am travelling.",
-    },
-    "dir_sales": {
-        "why": "I see the numbers daily. Why they came out that way, I would have to ask the floor.",
-        "exception": "The exceptions live with the team. What reaches me is already too late to fix.",
-        "axis": "Credit and discounts are mine. Everything else sits with the account owner.",
-        "bottleneck": "The duplicate order entry. We know about it; nobody has a free hand to fix it.",
-    },
-    "dir_admin": {
-        "why": "The close takes five days for two reasons — waiting on paper invoices, and approvals sitting idle. Both causes start outside my department.",
-        "exception": "At quarter end we let the close run a day late to make the numbers line up.",
-        "axis": "Manager approval above $10K. That threshold can move. Nobody has decided to move it.",
-        "bottleneck": "Idle approvals. If the approver is travelling, everything parks for two days.",
-    },
-    "dir_cs": {
-        "why": "First-line response is entirely people. I cannot see a way to shrink it without losing quality.",
-        "exception": "Cancellations and anything legal come to me, regardless of content.",
-        "axis": "There is no written escalation rule. It is Owen judgement.",
-        "bottleneck": "Answering repeat questions. That is 60% of Owen time.",
-    },
-    "dir_hr": {
-        "why": "We ask the hiring manager what they want, then translate it into our language for the posting. That is where it drifts.",
-        "exception": "Executive hires run through a different route and leave no record.",
-        "axis": "The hiring manager decides at the end, but we filter before they ever see a candidate.",
-        "bottleneck": "Agreeing requirements. Two weeks of back and forth.",
-    },
-}

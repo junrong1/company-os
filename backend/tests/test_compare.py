@@ -21,14 +21,18 @@ from contracts import canonical
 from contracts.envelope import Envelope, EventKind, build
 from simcore import compare
 from simcore import hashing
-from simcore import items as work
 from simcore import lifecycle
 from simcore import log as folder
+from simcore import scenario as sc
 from simcore import rates
 from simcore import snapshot as snapshotting
 from simcore import step as sim
 from simcore import time as simtime
 from simcore.rates import RULES_VERSION, TUNING
+
+#: The company these branches run in. The catalog is authored in `scenarios/default.toml`
+#: now, so a checkpoint's options are read off the loaded scenario rather than a constant.
+SHIPPED = sc.load_default()
 
 RUN = "run-compare"
 SEED = 0xC0FFEE
@@ -138,7 +142,7 @@ def test_every_option_leaves_the_parent_byte_identical(run: Recorder) -> None:
     finishing state, and only the first summary would be right.
     """
     before = run.hash
-    options = work.spec("wi_ap_map").checkpoints[0].options
+    options = SHIPPED.item("wi_ap_map").checkpoints[0].options
 
     for option_index in range(len(options)):
         compare.run_branch(run.state, "wi_ap_map", 0, option_index, in_person=True)
@@ -499,7 +503,7 @@ def test_one_command_costs_the_same_however_long_the_run_is() -> None:
 
 
 def test_a_branch_carries_the_option_it_is_a_branch_of(run: Recorder) -> None:
-    option = work.spec("wi_ap_map").checkpoints[0].options[2]
+    option = SHIPPED.item("wi_ap_map").checkpoints[0].options[2]
     summary = compare.run_branch(run.state, "wi_ap_map", 0, 2, in_person=False)
 
     assert summary.option_label == option.label
@@ -537,7 +541,7 @@ def test_two_options_that_gate_differently_produce_different_unlock_sets(
     """
     sets = [
         set(compare.run_branch(run.state, "wi_ap_map", 0, index, in_person=True).unlocked)
-        for index in range(len(work.spec("wi_ap_map").checkpoints[0].options))
+        for index in range(len(SHIPPED.item("wi_ap_map").checkpoints[0].options))
     ]
 
     assert any(sets[i] != sets[j] for i in range(len(sets)) for j in range(i + 1, len(sets))), (
@@ -628,7 +632,7 @@ def test_a_branch_of_an_item_that_is_not_stopped_is_refused() -> None:
 
     # The item's own title, not its id: a refusal is the sentence the client shows, and the
     # existing rejections all name work the way the CEO sees it named.
-    assert work.spec("wi_ap_map").title in str(refusal.value)
+    assert SHIPPED.item("wi_ap_map").title in str(refusal.value)
 
 
 def test_a_branch_of_an_option_that_does_not_exist_is_refused(run: Recorder) -> None:
@@ -763,7 +767,7 @@ def test_a_comparison_produces_one_event_carrying_every_branch(run: Recorder) ->
     assert payload["cp_index"] == 0
     assert payload["person"] == "stf_ap"
     assert payload["tick"] == run.state.tick
-    assert len(payload["branches"]) == len(work.spec("wi_ap_map").checkpoints[0].options)
+    assert len(payload["branches"]) == len(SHIPPED.item("wi_ap_map").checkpoints[0].options)
     for index, branch in enumerate(payload["branches"]):
         assert branch["option_index"] == index
         assert branch["fork_tick"] == run.state.tick
@@ -864,7 +868,7 @@ def test_a_branch_runway_is_always_knowable(run: Recorder) -> None:
     """
     assert rates.TUNING["fixed_cost_per_day"] > 0
 
-    for index in range(len(work.spec("wi_ap_map").checkpoints[0].options)):
+    for index in range(len(SHIPPED.item("wi_ap_map").checkpoints[0].options)):
         summary = compare.run_branch(run.state, "wi_ap_map", 0, index, in_person=True)
         assert summary.runway.value is not None
         assert summary.daily_cost.value is not None and summary.daily_cost.value > 0
@@ -990,7 +994,7 @@ def test_a_tag_that_has_run_away_from_the_clock_is_refused(run: Recorder) -> Non
 def test_a_comparison_of_a_checkpoint_the_item_is_not_stopped_at_is_refused() -> None:
     """The closing-cycle item carries two, and it is stopped at exactly one of them."""
     run = blocked_at_the_closing_cycle()
-    assert len(work.spec("wi_close").checkpoints) == 2
+    assert len(SHIPPED.item("wi_close").checkpoints) == 2
 
     with pytest.raises(sim.CommandRejected):
         sim.compare_options(run.state, "wi_close", 1, "dir_admin", run.state.tick, in_person=True)

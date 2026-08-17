@@ -254,3 +254,61 @@ describe('avatar palettes match the kernel', () => {
     }
   })
 })
+
+describe('the genesis payload carries the company it was created against', () => {
+  const genesis = genesisFixture()
+
+  it('records which scenario, and which revision of it', () => {
+    // R7. The client does not check the hash — three guards in the kernel do — but it is on the
+    // wire, and a payload that stopped carrying it would mean an exported run had no provenance.
+    const scenario = genesis.payload.scenario as Record<string, unknown>
+    expect(typeof scenario.id).toBe('string')
+    expect(scenario.id).toBe('default')
+    expect(String(scenario.content_hash)).toMatch(/^[0-9a-f]{32}$/)
+    expect(scenario.hash_ver).toBe(1)
+  })
+
+  it('describes every person the way the conversation surface needs them', () => {
+    // M15: a company is a file, and a person in it carries a department, a title, a
+    // responsibility and the tools, MCP servers and skills they are understood to have. Asserted
+    // here rather than only in Python because "carries them to the client" is a claim about this
+    // side of the wire, and a payload that dropped them would render an empty panel in silence.
+    const roster = genesis.payload.roster as Record<string, Record<string, unknown>>
+    const ids = Object.keys(roster)
+    expect(ids.length).toBeGreaterThan(0)
+
+    for (const id of ids) {
+      const person = roster[id]
+      for (const field of ['name', 'title', 'dept', 'rank', 'responsibility'] as const) {
+        expect(typeof person[field], `${id}.${field}`).toBe('string')
+        expect(person[field], `${id}.${field}`).not.toBe('')
+      }
+      for (const list of ['tools', 'mcp_servers', 'skills'] as const) {
+        expect(Array.isArray(person[list]), `${id}.${list}`).toBe(true)
+        const named = person[list] as unknown[]
+        expect(named.length, `${id}.${list}`).toBeGreaterThan(0)
+        // Names, and only names. Nothing here is a handle onto anything: M16 is that a tool a
+        // scenario names is description, and a string is all the client is ever given.
+        for (const entry of named) expect(typeof entry).toBe('string')
+      }
+    }
+  })
+
+  it('gives the client nothing it could invoke', () => {
+    // The strings are the whole of it. If a tool ever arrived as an object with a URL or an
+    // endpoint on it, this is what would fail — and that shape is the first step towards a
+    // client that calls something a scenario named.
+    const roster = genesis.payload.roster as Record<string, Record<string, unknown>>
+    const everything = Object.values(roster).flatMap((person) => [
+      ...(person.tools as string[]),
+      ...(person.mcp_servers as string[]),
+      ...(person.skills as string[]),
+    ])
+
+    expect(everything.length).toBeGreaterThan(0)
+    for (const named of everything) {
+      expect(typeof named).toBe('string')
+      expect(named).not.toMatch(/^[a-z]+:\/\//)
+    }
+  })
+})

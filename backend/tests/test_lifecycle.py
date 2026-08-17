@@ -13,6 +13,7 @@ import pytest
 from contracts.envelope import Envelope, EventKind, build as build_envelope
 from report import fold as reporting
 from simcore import lifecycle
+from simcore import scenario as scenarios
 from simcore import step as sim
 from simcore import time as simtime
 from simcore.rates import RULES_VERSION
@@ -73,9 +74,10 @@ def test_the_horizon_is_recorded_at_genesis() -> None:
 
 def test_the_horizon_is_sized_against_the_decision_supply() -> None:
     """A horizon longer than the decision supply is burn with nothing left to decide."""
-    assert lifecycle.decision_supply() == 9
+    shipped = scenarios.load_default()
+    assert lifecycle.decision_supply(shipped) == 9
     days = lifecycle.DEFAULT_HORIZON_DAYS
-    assert days / lifecycle.decision_supply() >= 2, "less than two sim-days per decision"
+    assert days / lifecycle.decision_supply(shipped) >= 2, "less than two sim-days per decision"
 
 
 def test_a_run_reaches_its_horizon_and_terminates() -> None:
@@ -277,7 +279,7 @@ def test_cash_is_not_clamped_at_zero() -> None:
     """Insolvency is an outcome, so cash has to be allowed to cross."""
     from simcore import effects
 
-    metrics = effects.initial_metrics()
+    metrics = effects.initial_metrics(scenarios.load_default())
     effects.apply_effect(metrics, {"cash": -metrics["cash"] - 10})
     assert metrics["cash"] == -10
 

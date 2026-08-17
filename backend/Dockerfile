@@ -42,6 +42,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY packages/ packages/
 COPY services/ services/
 
+# The companies. Not an import root — `scenario.SCENARIO_DIR` resolves
+# `packages/simcore/scenario.py` up to the backend root, which is `/app` here, so a scenario
+# name resolves to `/app/scenarios/<name>.toml`. Without this line every run created inside
+# the container fails at genesis, with a `ScenarioNotFound` listing no scenarios at all, while
+# the host suite passes — which is the failure mode a compose smoke test exists to catch.
+COPY scenarios/ scenarios/
+
 # The launcher, copied on its own line because it is not in either import root. It
 # lives at the top of the backend tree precisely so that it is not a service, and
 # the image's one command is the same command the README documents for contributors

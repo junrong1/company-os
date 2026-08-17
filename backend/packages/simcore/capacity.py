@@ -29,11 +29,13 @@ hiring.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from simcore import people as roster
 from simcore import time as simtime
 from simcore.rates import Multiplier
+
+if TYPE_CHECKING:  # pragma: no cover - annotations only
+    from simcore.scenario import Scenario
 
 #: Business days in a month, for converting a monthly draw into a daily one. 20 divides
 #: 3600 exactly, so a day's draw in effort units is always a whole number.
@@ -46,27 +48,13 @@ EFFORT_UNITS_PER_SIM_HOUR = 3600
 #: 3600 / 20 = 180.
 DRAW_UNITS_PER_MONTHLY_HOUR = EFFORT_UNITS_PER_SIM_HOUR // BUSINESS_DAYS_PER_MONTH
 
-#: Each department's recurring baseline workload, in hours per month — the same unit
-#: `manualHours` displays, so their sum *is* the metric (R49).
+#: The display maximum, replacing the prototype's 500.
 #:
-#: Authored from department capacity, and sized so that each department can absorb the
-#: reductions its own authored decisions offer: Administration's decisions can remove up to
-#: 86 h/mo between them, Sales 45, Customer Support 30. A draw smaller than its department's
-#: available reductions would let `manualHours` be driven to the floor and stop responding,
-#: which would make the automation gain unreadable exactly when it lands.
-#:
-#: This replaces the prototype's authored 420 h/mo against a maximum of 500 (R49).
-DEPARTMENT_DRAWS: dict[str, int] = {
-    "dir_admin": 120,
-    "dir_sales": 100,
-    "dir_cs": 60,
-    "dir_hr": 60,
-}
-
-#: The re-authored starting value for `manualHours`: the sum of the draws above.
-INITIAL_MANUAL_HOURS = sum(DEPARTMENT_DRAWS.values())
-
-#: The re-authored display maximum, replacing 500.
+#: Presentation rather than content, which is why it stays a constant while the draws it scales
+#: against are authored per scenario. Every draw a scenario may declare is bounded by
+#: `scenario.MAX_DRAW_HOURS_PER_MONTH`, so a bar reading against this can overflow but never
+#: mislead about direction — and a scenario-authored display maximum would be a second number
+#: an author could set inconsistently with the draws it describes.
 MANUAL_HOURS_DISPLAY_MAX = 400
 
 #: Hours a person has in a business day, before draw and queue effort.
@@ -110,15 +98,20 @@ def daily_draw_units(monthly_hours: int) -> int:
     return monthly_hours * DRAW_UNITS_PER_MONTHLY_HOUR
 
 
-def new_capacity() -> dict[str, DepartmentCapacity]:
-    """Every department at its authored draw, with today's allocation not yet made."""
+def new_capacity(scenario: Scenario) -> dict[str, DepartmentCapacity]:
+    """Every department at its authored draw, with today's allocation not yet made.
+
+    Insertion order is the scenario's department declaration order, not sorted. The attrition
+    loop walks `state.capacity`, so two departments shedding somebody on one day emit their
+    events in this order — which makes the file's own ordering part of what a run reproduces.
+    """
     return {
         director: DepartmentCapacity(
             director_id=director,
             monthly_hours=monthly,
             remaining_units=daily_draw_units(monthly),
         )
-        for director, monthly in DEPARTMENT_DRAWS.items()
+        for director, monthly in scenario.draws.items()
     }
 
 
@@ -128,11 +121,6 @@ def manual_hours(capacity: dict[str, DepartmentCapacity]) -> int:
     Derived rather than accumulated, so it cannot drift from the draws it describes.
     """
     return sum(department.monthly_hours for department in capacity.values())
-
-
-def members_of(director_id: str) -> tuple[str, ...]:
-    """Everyone the draw is allocated across, the director included."""
-    return roster.reporting_lines()[director_id]
 
 
 def per_member_units(department: DepartmentCapacity, headcount: int) -> int:

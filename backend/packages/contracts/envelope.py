@@ -104,7 +104,14 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     # withholding `catalog_to_state`'s docstring used to state (R35). Additive, but a consumer
     # that needs an option's consequence has to be able to tell whether the event it is holding
     # carries it — the same argument that bumped this for the catalog and the roster names.
-    EventKind.GENESIS: 4,  # U4/U8
+    # 5: The MVP's U6 made a company a file, and genesis records which one: `scenario` carries the
+    # id, the canonical content hash and the hash version (R7), and each roster entry gained the
+    # `responsibility`, `tools`, `mcp_servers` and `skills` a scenario now authors for everybody
+    # (M15). One bump for both, because the payload changes once — the data move and the schema
+    # extension land together so the golden fixtures regenerate once rather than twice. A run
+    # written at version 4 records no scenario identity, and `scenario.load_recorded` refuses it
+    # by name with the remedy rather than folding it against whatever is on disk.
+    EventKind.GENESIS: 5,  # U4/U8, MVP U6
     EventKind.DAY_CHECKPOINT: 1,  # U3/U15
     EventKind.RATE_CHANGED: 1,  # U9
     EventKind.RUN_TERMINATED: 1,  # U8

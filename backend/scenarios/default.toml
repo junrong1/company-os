@@ -16,6 +16,12 @@ summary = "A mid-size components company: ten people, four reporting lines, and 
 # `draw_hours_per_month` is the line's recurring baseline workload, in the same
 # hours-per-month unit the Manual work metric displays — their sum *is* the
 # starting value of that metric.
+#
+# Each draw is sized above what its own authored decisions can remove: Administration's
+# take up to 86 h/mo between them, Sales 45, Customer Support 30. A draw smaller than
+# that would let Manual work be driven to its floor and stop responding — at exactly
+# the moment the automation gain landed, which is when it most needs to be readable.
+# Their sum, 340, replaces the prototype's authored 420 against a maximum of 500.
 
 [[department]]
 id = "admin"

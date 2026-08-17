@@ -41,10 +41,20 @@ for root in ("packages", "services"):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-from simcore import people as roster  # noqa: E402 - after the path bootstrap above
+from simcore import scenario as sc  # noqa: E402 - after the path bootstrap above
 from simcore import step as sim  # noqa: E402
 from simcore import time as simtime  # noqa: E402
 from simcore.world import find_path  # noqa: E402
+
+#: The company the vectors describe.
+#:
+#: Resolved through the loader rather than read from a module constant, which is the whole of
+#: U6's reason for touching this script: the roster and the work graph moved into
+#: `backend/scenarios/default.toml`, and a generator still building its vectors from constants
+#: would either fail to import or — worse, if a constant had been left behind — quietly
+#: regenerate the roster the move removed. `load_default()` is exactly what `new_run` uses when
+#: nothing names a scenario, so the vectors describe the company a run actually gets.
+SHIPPED = sc.load_default()
 
 #: The prototype's avatar palettes, from `company-os.html:1530`.
 AV_LIGHT = (
@@ -131,9 +141,9 @@ def walk_track() -> dict[str, Any]:
     # Every hand-off `assign_via_manager` can perform — a director walking to one of their own
     # reports — and the longest of them. That is M62's headline walk, at its richest.
     walks = [
-        (state.people[roster.reporting_line_of(person.id)], person.id)
-        for person in roster.PEOPLE
-        if person.rank != "director"
+        (state.people[SHIPPED.reporting_line_of(person.id)], person.id)
+        for person in SHIPPED.people
+        if not person.is_director
     ]
     director, staff_id = max(
         walks,
@@ -320,7 +330,7 @@ def palette_vector() -> dict[str, Any]:
         "a-very-long-identifier-that-overflows-the-32-bit-accumulator-many-times-over",
         "stf_ap" * 12,
     ]
-    ids = [person.id for person in roster.PEOPLE] + extras
+    ids = [person.id for person in SHIPPED.people] + extras
 
     return {
         "light": list(AV_LIGHT),

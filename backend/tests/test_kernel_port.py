@@ -20,12 +20,18 @@ from simcore import effects
 from simcore import hashing
 from simcore import items as work
 from simcore import people as roster
+from simcore import scenario as sc
 from simcore import rates
 from simcore import step as sim
 from simcore import time as simtime
 from simcore.world import find_path, plan_floor, walkable
 
 SEED = 0xC0FFEE
+
+#: The shipped company. The roster and the work graph are authored in
+#: `scenarios/default.toml` now, so these tests read them off the loaded scenario — which is
+#: also the object the run under test carries, so there is no second copy to drift from.
+SHIPPED = sc.load_default()
 
 
 @pytest.fixture
@@ -71,7 +77,7 @@ def test_no_two_people_share_a_chair(run: sim.State) -> None:
 
 def test_the_roster_has_four_load_bearing_reporting_lines() -> None:
     """Eight rooms, four departments. Capacity follows the line, not the room."""
-    lines = roster.reporting_lines()
+    lines = SHIPPED.lines
     assert set(lines) == {"dir_sales", "dir_admin", "dir_cs", "dir_hr"}
     # The director is a member of their own line, not an overseer of it.
     for director, members in lines.items():
@@ -84,24 +90,24 @@ def test_two_lines_hold_exactly_one_non_director() -> None:
     Customer Support and People each have a single specialist, so one attrition event
     would leave a department with nobody to allocate a draw across.
     """
-    lines = roster.reporting_lines()
+    lines = SHIPPED.lines
     assert len(lines["dir_cs"]) == 2
     assert len(lines["dir_hr"]) == 2
 
 
 def test_the_room_and_the_reporting_line_disagree_for_priya() -> None:
     """The deliberate mismatch in the sample data, and it has to survive the port."""
-    priya = roster.spec("stf_ap")
+    priya = SHIPPED.person("stf_ap")
     assert priya.dept == "accounting"
-    assert roster.reporting_line_of("stf_ap") == "dir_admin"
-    assert roster.spec("dir_admin").dept == "admin"
+    assert SHIPPED.reporting_line_of("stf_ap") == "dir_admin"
+    assert SHIPPED.person("dir_admin").dept == "admin"
 
 
 def test_a_smaller_grid_still_seats_everyone() -> None:
     """Desk spacing tightens and rows are added until everyone fits."""
     floor = plan_floor(26, 16)
-    seats = roster.assign_seats(floor)
-    assert len(set(seats.values())) == len(roster.PEOPLE)
+    seats = roster.assign_seats(SHIPPED, floor)
+    assert len(set(seats.values())) == len(SHIPPED.people)
 
 
 # =========================================================================
@@ -156,7 +162,7 @@ def test_a_checkpoint_is_raised_at_its_threshold(run: sim.State) -> None:
     assert len(raised) == 1
 
     payload = raised[0].payload
-    spec = work.spec("wi_ap_map")
+    spec = SHIPPED.item("wi_ap_map")
     assert payload["at_percent"] == spec.checkpoints[0].at_percent
     # Cross-multiplied threshold: done * 100 >= at * total.
     assert payload["done_units"] * 100 >= spec.checkpoints[0].at_percent * spec.effort_units
@@ -172,19 +178,19 @@ def test_a_raised_checkpoint_carries_the_line_said_only_in_person(run: sim.State
     events = run_until(run, lambda s: s.items["wi_ap_map"].status == sim.STATUS_BLOCKED)
 
     raised = _raised_for(events, "wi_ap_map")
-    assert raised[0].payload["tacit"] == work.spec("wi_ap_map").checkpoints[0].tacit
+    assert raised[0].payload["tacit"] == SHIPPED.item("wi_ap_map").checkpoints[0].tacit
     assert raised[0].payload["tacit"]
 
 
 def test_the_genesis_catalog_ships_no_tacit_lines() -> None:
     """R8: nothing that is only earned in person may arrive before it is earned."""
-    for entry in work.catalog_to_state():
+    for entry in work.catalog_to_state(SHIPPED):
         for checkpoint in entry["checkpoints"]:
             assert "tacit" not in checkpoint
 
 
 def test_every_authored_checkpoint_has_a_line_worth_walking_for() -> None:
-    for spec in work.ITEMS:
+    for spec in SHIPPED.items:
         for index, checkpoint in enumerate(spec.checkpoints):
             assert checkpoint.tacit, f"{spec.id} checkpoint {index} has no tacit line"
 
@@ -285,7 +291,7 @@ def test_a_deliverable_carries_item_assignee_and_shaping_decisions(run: sim.Stat
     output = run.outputs[0]
 
     assert output.item_id == "wi_ap_map"
-    assert output.title == work.spec("wi_ap_map").output_title
+    assert output.title == SHIPPED.item("wi_ap_map").output_title
     assert any("Priya Raman" in line for line in output.provenance)
     assert any("CEO decision: PDF is the record" in line for line in output.provenance)
     assert output.tacit, "an in-person decision leaves its tacit line on the deliverable"
@@ -718,7 +724,7 @@ def test_genesis_walks_nobody(run: sim.State) -> None:
     _, emitted = sim.new_run(run_seed=SEED)
     assert [event.kind for event in emitted] == [EventKind.GENESIS]
 
-    for seeded in work.SEEDED_ASSIGNMENTS:
+    for seeded in SHIPPED.seeded:
         person = run.people[seeded.person_id]
         assert person.pos == person.seat, f"{seeded.person_id} is seeded away from their desk"
 
@@ -925,7 +931,7 @@ def test_the_snapshot_covers_every_declared_subsystem(run: sim.State) -> None:
 
     assert set(snapshot) == set(hashing.SUBSYSTEMS)
     assert set(snapshot["capacity"]) == {"dir_admin", "dir_sales", "dir_cs", "dir_hr"}
-    assert len(snapshot["morale"]) == len(roster.PEOPLE)
+    assert len(snapshot["morale"]) == len(SHIPPED.people)
     assert snapshot["hiring"] == {}, "no hire has been requested"
     assert hashing.STATE_SHAPE_VERSION == 1, "the subsystem list did not change, so nor does this"
 
@@ -970,7 +976,7 @@ def test_genesis_carries_the_whole_work_graph() -> None:
     _, genesis = sim.new_run(run_seed=SEED)
     catalog = genesis[0].payload["catalog"]
 
-    assert [entry["id"] for entry in catalog] == [item.id for item in work.ITEMS]
+    assert [entry["id"] for entry in catalog] == [item.id for item in SHIPPED.items]
 
     edges = {
         (required, entry["id"])
@@ -980,7 +986,7 @@ def test_genesis_carries_the_whole_work_graph() -> None:
     assert ("wi_ap_map", "wi_ap_auto") in edges, "the authored edge has to be on the wire"
 
     by_id = {entry["id"]: entry for entry in catalog}
-    for item in work.ITEMS:
+    for item in SHIPPED.items:
         # Every id an edge names has to resolve, or the layout has a dangling layer.
         for required in by_id[item.id]["requires"]["items"]:
             assert required in by_id
@@ -1000,7 +1006,7 @@ def test_the_catalog_withholds_the_tacit_line() -> None:
 
     authored = {
         checkpoint.tacit
-        for item in work.ITEMS
+        for item in SHIPPED.items
         for checkpoint in item.checkpoints
         if checkpoint.tacit
     }
@@ -1030,7 +1036,7 @@ def test_each_catalog_option_carries_its_authored_consequence() -> None:
     _, genesis = sim.new_run(run_seed=SEED)
     by_id = {entry["id"]: entry for entry in genesis[0].payload["catalog"]}
 
-    for item in work.ITEMS:
+    for item in SHIPPED.items:
         for cp_index, checkpoint in enumerate(item.checkpoints):
             shipped = by_id[item.id]["checkpoints"][cp_index]["options"]
             assert len(shipped) == len(checkpoint.options)
@@ -1098,7 +1104,7 @@ def test_catalog_copy_arrives_rendered() -> None:
     # proving something if a templated brief is authored later.
     templated = [
         (item.id, cp_index)
-        for item in work.ITEMS
+        for item in SHIPPED.items
         for cp_index, checkpoint in enumerate(item.checkpoints)
         if "{hours" in checkpoint.prompt
     ]
@@ -1111,13 +1117,13 @@ def test_catalog_copy_arrives_rendered() -> None:
 
     by_id = {entry["id"]: entry for entry in catalog}
     for item_id, cp_index in templated:
-        item = work.spec(item_id)
+        item = SHIPPED.item(item_id)
         rendered = by_id[item_id]["checkpoints"][cp_index]["prompt"]
         assert rendered == work.rendered_prompt(item, cp_index)
         assert rendered != item.checkpoints[cp_index].prompt
 
     for entry in catalog:
-        assert entry["brief"] == work.rendered_brief(work.spec(entry["id"]))
+        assert entry["brief"] == work.rendered_brief(SHIPPED.item(entry["id"]))
 
 
 def test_catalog_names_the_department_whose_load_the_work_sits_in() -> None:
@@ -1126,9 +1132,9 @@ def test_catalog_names_the_department_whose_load_the_work_sits_in() -> None:
     catalog = genesis[0].payload["catalog"]
 
     for entry in catalog:
-        item = work.spec(entry["id"])
-        assert entry["director"] == work.director_for(item)
-        assert entry["director"] == roster.reporting_line_of(item.want)
+        item = SHIPPED.item(entry["id"])
+        assert entry["director"] == work.director_for(SHIPPED, item)
+        assert entry["director"] == SHIPPED.reporting_line_of(item.want)
 
 
 def test_genesis_carries_the_metric_table_with_its_favourable_directions() -> None:
@@ -1298,7 +1304,7 @@ def test_a_delivered_item_reports_its_final_effort(run: sim.State) -> None:
     produced = [event for event in events if event.kind.name == "DELIVERABLE_PRODUCED"]
     assert len(produced) == 1
 
-    spec = work.spec("wi_ap_map")
+    spec = SHIPPED.item("wi_ap_map")
     assert produced[0].payload["done_units"] >= spec.effort_units
     assert produced[0].payload["item_status"] == sim.STATUS_DONE
 
@@ -1325,7 +1331,7 @@ def test_the_first_tacit_answer_raises_visibility(run: sim.State) -> None:
     assert payload["matched"] is True
     assert payload["question"] == "why"
     assert payload["first_time"] is True
-    assert payload["answer"] == roster.VOICE["stf_ap"]["why"]
+    assert payload["answer"] == SHIPPED.voice_of("stf_ap", "why")
     assert run.metrics["visibility"] == before + rates.TUNING["visibility_per_tacit_answer"]
 
 
@@ -1337,7 +1343,7 @@ def test_asking_the_same_question_again_pays_nothing(run: sim.State) -> None:
     payload = _ask(run, "stf_ap", "why though?")
 
     assert payload["first_time"] is False
-    assert payload["answer"] == roster.VOICE["stf_ap"]["why"]
+    assert payload["answer"] == SHIPPED.voice_of("stf_ap", "why")
     assert payload["deltas"] == {}
     assert run.metrics["visibility"] == after_first
 
@@ -1349,7 +1355,7 @@ def test_the_bottleneck_question_never_moves_visibility(run: sim.State) -> None:
 
     assert payload["question"] == "bottleneck"
     assert payload["tacit"] is False
-    assert payload["answer"] == roster.VOICE["stf_ap"]["bottleneck"]
+    assert payload["answer"] == SHIPPED.voice_of("stf_ap", "bottleneck")
     assert run.metrics["visibility"] == before
 
 
@@ -1371,23 +1377,23 @@ def test_a_question_matching_nothing_deflects_and_records_nothing(run: sim.State
     payload = _ask(run, "stf_ap", "what do you think of the weather")
 
     assert payload["matched"] is False
-    assert payload["answer"] == roster.DEFLECTIONS["stf_ap"]
+    assert payload["answer"] == SHIPPED.deflection_of("stf_ap")
     assert run.metrics == before
     assert run.people["stf_ap"].answered == []
 
 
 def test_each_person_deflects_in_their_own_voice(run: sim.State) -> None:
-    lines = {person.id: roster.deflection_for(person.id) for person in roster.PEOPLE}
+    lines = {person.id: SHIPPED.deflection_of(person.id) for person in SHIPPED.people}
 
-    assert len(set(lines.values())) == len(roster.PEOPLE)
+    assert len(set(lines.values())) == len(SHIPPED.people)
     for person_id, line in lines.items():
         assert line, f"{person_id} has no deflection line"
 
 
 def test_every_person_has_all_four_scripted_answers() -> None:
-    for person in roster.PEOPLE:
+    for person in SHIPPED.people:
         for slot in roster.ASK_SLOTS:
-            assert roster.answer_for(person.id, slot), f"{person.id} has no {slot} answer"
+            assert SHIPPED.voice_of(person.id, slot), f"{person.id} has no {slot} answer"
 
 
 def test_the_four_intents_match_their_keywords_case_insensitively() -> None:
@@ -1442,13 +1448,13 @@ def test_two_states_that_heard_the_same_questions_hash_the_same(run: sim.State) 
 
 def test_a_visibility_gain_from_asking_announces_what_it_unlocked(run: sim.State) -> None:
     """Asking opens work, and the floor has to be told."""
-    gate = work.spec("wi_close").requires.visibility
+    gate = SHIPPED.item("wi_close").requires.visibility
     assert gate is not None
     assert not sim.is_unlocked(run, "wi_close")
 
     # Enough first tacit answers to clear the gate.
     slots = ["why?", "any exceptions?", "who decides?"]
-    for person in roster.PEOPLE:
+    for person in SHIPPED.people:
         for question in slots:
             sim.ask_person(run, person.id, question)
         if sim.is_unlocked(run, "wi_close"):
@@ -1463,7 +1469,7 @@ def test_a_visibility_gain_from_asking_announces_what_it_unlocked(run: sim.State
 
 
 def test_an_unlock_is_announced_once(run: sim.State) -> None:
-    for person in roster.PEOPLE:
+    for person in SHIPPED.people:
         for question in ["why?", "any exceptions?", "who decides?"]:
             sim.ask_person(run, person.id, question)
 

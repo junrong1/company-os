@@ -15,14 +15,18 @@ import pytest
 
 from simcore import capacity as cap
 from simcore import hiring
-from simcore import items as work
 from simcore import morale as mor
-from simcore import people as roster
+from simcore import scenario as sc
 from simcore import step as sim
 from simcore import time as simtime
 from simcore.rates import TUNING
 
 SEED = 0xC0FFEE
+
+#: The company these mechanics are measured against. Read through the loader rather than off a
+#: module constant: the draws and the roster are authored in `scenarios/default.toml` now, so a
+#: test naming a constant would be asserting against data the kernel no longer reads.
+SHIPPED = sc.load_default()
 
 
 @pytest.fixture
@@ -65,17 +69,17 @@ def test_a_department_consumes_capacity_with_no_project_assigned(run: sim.State)
 
 def test_manual_hours_reflects_the_draw_with_no_decision_taken(run: sim.State) -> None:
     """R49: the metric is the sum of the draws, derived rather than authored."""
-    assert run.metrics["manualHours"] == sum(cap.DEPARTMENT_DRAWS.values())
-    assert run.metrics["manualHours"] == cap.INITIAL_MANUAL_HOURS
+    assert run.metrics["manualHours"] == sum(SHIPPED.draws.values())
+    assert run.metrics["manualHours"] == SHIPPED.initial_manual_hours
 
     advance(run, simtime.TICKS_PER_SIM_DAY)
 
     # A day passing does not change the recurring draw; only a decision does.
-    assert run.metrics["manualHours"] == cap.INITIAL_MANUAL_HOURS
+    assert run.metrics["manualHours"] == SHIPPED.initial_manual_hours
 
 
 def test_the_re_authored_starting_value_replaces_the_prototypes_420(run: sim.State) -> None:
-    assert cap.INITIAL_MANUAL_HOURS == 340
+    assert SHIPPED.initial_manual_hours == 340
     assert cap.MANUAL_HOURS_DISPLAY_MAX == 400
 
 
@@ -182,9 +186,9 @@ def test_over_ceiling_load_drops_morale_for_that_department_only(run: sim.State)
     before = {pid: person.value for pid, person in run.morale.items()}
     run_until(run, lambda s: simtime.is_day_boundary(s.tick) and s.tick > 0)
 
-    for person_id in cap.members_of("dir_cs"):
+    for person_id in SHIPPED.lines["dir_cs"]:
         assert run.morale[person_id].value < before[person_id], person_id
-    for person_id in cap.members_of("dir_sales"):
+    for person_id in SHIPPED.lines["dir_sales"]:
         assert run.morale[person_id].value == before[person_id], person_id
 
 
@@ -194,7 +198,7 @@ def test_over_ceiling_load_drops_morale_for_that_department_only(run: sim.State)
 
 
 def test_morale_is_per_person_and_the_metric_is_the_aggregate(run: sim.State) -> None:
-    assert len(run.morale) == len(roster.PEOPLE)
+    assert len(run.morale) == len(SHIPPED.people)
     assert run.metrics["morale"] == mor.company_morale(run.morale)
 
     mor.apply_person_delta(run.morale, "stf_cs", -40)
@@ -273,7 +277,7 @@ def test_the_burn_multiplier_has_a_floor(run: sim.State) -> None:
 
 def test_sustained_low_morale_triggers_attrition(run: sim.State) -> None:
     """R38: load can rise without a CEO action, which is what makes a run unscripted."""
-    for person_id in cap.members_of("dir_cs"):
+    for person_id in SHIPPED.lines["dir_cs"]:
         run.morale[person_id].value = 5
         run.morale[person_id].days_below = mor.ATTRITION_AFTER_DAYS
 
@@ -287,11 +291,13 @@ def test_sustained_low_morale_triggers_attrition(run: sim.State) -> None:
 
 def test_a_director_never_leaves(run: sim.State) -> None:
     """A department with no director has no reporting line to assign through."""
-    for person_id in cap.members_of("dir_cs"):
+    for person_id in SHIPPED.lines["dir_cs"]:
         run.morale[person_id].days_below = mor.ATTRITION_AFTER_DAYS
         run.morale[person_id].value = 1
 
-    candidate = mor.attrition_candidate(run.morale, "dir_cs", set(cap.members_of("dir_cs")))
+    candidate = mor.attrition_candidate(
+        SHIPPED, run.morale, "dir_cs", set(SHIPPED.lines["dir_cs"])
+    )
     assert candidate != "dir_cs"
 
 
@@ -299,7 +305,7 @@ def test_attrition_returns_the_departed_persons_work_to_the_backlog(run: sim.Sta
     sim.assign_direct(run, "wi_faq", "stf_cs")
     run_until(run, lambda s: s.people["stf_cs"].state == sim.STATE_WORKING)
 
-    for person_id in cap.members_of("dir_cs"):
+    for person_id in SHIPPED.lines["dir_cs"]:
         run.morale[person_id].value = 3
         run.morale[person_id].days_below = mor.ATTRITION_AFTER_DAYS
 
@@ -315,7 +321,7 @@ def test_a_department_reduced_to_its_director_still_allocates_draw(run: sim.Stat
     would leave this department with nowhere to put its draw after one attrition event — the
     load would silently vanish instead of pressing on the person who is left.
     """
-    for person_id in cap.members_of("dir_cs"):
+    for person_id in SHIPPED.lines["dir_cs"]:
         run.morale[person_id].value = 3
         run.morale[person_id].days_below = mor.ATTRITION_AFTER_DAYS
 

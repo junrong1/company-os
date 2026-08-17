@@ -29,6 +29,22 @@ source from roughly 36 position rows per second to one event per keypress.
 style preference: seed determinism needs a stable order as much as a stable RNG. The
 order is day boundary, then work, then movement, then CEO — matching the prototype,
 whose `tick(dt)` runs the rollover and work before the loop moves anyone.
+
+**The company is on `State`, not in a global.** The roster and the work graph were module
+constants until U6, read here at fold and step time. One process ticks many runs at once, so a
+scenario in a global would be a single company shared across runs of different ones — and the
+symptom would be a run seating people from somebody else's roster, or pricing a decision
+against a department it does not have. `state.scenario` is an immutable fold-time input,
+excluded from the state hash because the genesis event already records its content hash and
+hashing the same structure twice would move the state-shape version for a value that cannot
+change within a run. `snapshot()` below is the only input to `hashing.state_hash`, and it omits
+the scenario — enforced rather than remembered, because `state_hash` refuses an undeclared
+subsystem.
+
+**Three lookups go through `State` rather than through the scenario directly**, and that is the
+point of them: `rank_of`, `name_of` and `manager_of` answer for an arrived hire, who is in
+`state.people` and on no authored roster. Reading the roster straight raised `KeyError` past
+the point where `CommandRejected` is caught.
 """
 
 from __future__ import annotations
@@ -45,6 +61,7 @@ from simcore import lifecycle
 from simcore import morale as mor
 from simcore import pending as pend
 from simcore import people as roster
+from simcore import scenario as sc
 from simcore import time as simtime
 from simcore.rates import DIRECTOR_RATE, RULES_VERSION, TUNING, apply_rates
 from simcore.world import DEFAULT_COLS, DEFAULT_ROWS, Floor, find_path, plan_floor, walkable
@@ -199,9 +216,9 @@ class PersonRuntime:
     #: in different orders hash the same.
     answered: list[str] = field(default_factory=list)
 
-    @property
-    def rank(self) -> str:
-        return roster.spec(self.id).rank
+    # No `rank` property. It read the module-level roster and raised `KeyError` for an arrived
+    # hire — someone in `state.people` whom no scenario authored — and a `PersonRuntime` has no
+    # way to reach the company the run was created against. It is `State.rank_of` now.
 
     def to_state(self) -> dict[str, Any]:
         return {
@@ -327,6 +344,9 @@ class State:
     """Everything a run is. Integers throughout; no float, no set."""
 
     run_seed: int
+    #: The company this run was created against (M9). An immutable fold-time input, deliberately
+    #: outside the state hash — see the module docstring, and `snapshot()` at the foot of it.
+    scenario: sc.Scenario
     tick: int
     floor: Floor
     seats: dict[str, tuple[int, int]]
@@ -343,7 +363,12 @@ class State:
     morale: dict[str, mor.PersonMorale] = field(default_factory=dict)
     #: Requested and arrived hires, keyed by request id.
     hires: dict[str, hiring.Hire] = field(default_factory=dict)
-    #: Work items created at runtime — hiring items. Authored items live in `items.ITEMS`.
+    #: Work items created at runtime — hiring items. Authored items live on `scenario.items`.
+    #:
+    #: Kept as a second table rather than merged into the scenario, and U6 confirmed it has to
+    #: stay one: `snapshot.to_wire` writes eight fields per dynamic item and no `checkpoints`
+    #: tuple, so a branch forked from a state holding an authored item here would come back with
+    #: an empty tuple and fail on an index. The authored catalog stays on the static path.
     dynamic_items: dict[str, work.ItemSpec] = field(default_factory=dict)
     #: People who have left. Kept rather than deleted so the log stays interpretable.
     departed: list[str] = field(default_factory=list)
@@ -371,16 +396,52 @@ class State:
         """An item's spec, authored or created at runtime."""
         if item_id in self.dynamic_items:
             return self.dynamic_items[item_id]
-        return work.spec(item_id)
+        return self.scenario.item(item_id)
 
     def line_of(self, person_id: str) -> str:
-        return roster.reporting_line_of(person_id)
+        return self.scenario.reporting_line_of(person_id)
+
+    def rank_of(self, person_id: str) -> str:
+        """A person's rank, `"staff"` for an arrived hire.
+
+        A hire is in `state.people` and on no authored roster, so the roster lookup this
+        replaces raised `KeyError`. `"staff"` rather than a refusal because that is what a hire
+        *is* — hiring adds capacity to a line, never a second head of one, and `attrition` and
+        the bypass penalty both need an answer rather than an exception.
+        """
+        person = self.scenario.people_by_id.get(person_id)
+        return person.rank if person is not None else "staff"
+
+    def name_of(self, person_id: str) -> str:
+        """A person's name for a message or a provenance line; their id if nobody authored one.
+
+        The id rather than a placeholder: a deliverable's provenance is an audit line, and
+        "Somebody — 12 hours of work" would be less use than the id the log already carries.
+        """
+        person = self.scenario.people_by_id.get(person_id)
+        return person.name if person is not None else person_id
+
+    def manager_of(self, person_id: str) -> str:
+        """Whose line this person reports into, `""` for a director.
+
+        For an authored person this is exactly their authored `manager`, so no shipped value
+        moves. For an arrived hire — whom no scenario authored — it is the director of the line
+        they were hired into, which is the answer that makes assigning work around them count as
+        a bypass in the same way it does for anybody else at their level.
+        """
+        person = self.scenario.people_by_id.get(person_id)
+        if person is not None:
+            return person.mgr
+        for hire in self.hires.values():
+            if hire.person_id == person_id:
+                return hire.director_id
+        return ""
 
     def present_members(self, director_id: str) -> tuple[str, ...]:
         """Everyone still in this line, the director included and departures excluded."""
         members = [
             person_id
-            for person_id in cap.members_of(director_id)
+            for person_id in self.scenario.lines.get(director_id, ())
             if person_id not in self.departed
         ]
         members.extend(
@@ -402,10 +463,11 @@ class State:
         return total
 
     def line_of_assignee(self, person_id: str) -> str:
+        """The line an assignee's work loads, hires included."""
         for hire in self.hires.values():
             if hire.person_id == person_id:
                 return hire.director_id
-        return roster.reporting_line_of(person_id)
+        return self.scenario.reporting_line_of(person_id)
 
     def person(self, person_id: str) -> PersonRuntime:
         try:
@@ -435,32 +497,41 @@ def new_run(
     cols: int = DEFAULT_COLS,
     rows: int = DEFAULT_ROWS,
     horizon_tick: int | None = None,
+    scenario: sc.Scenario | None = None,
 ) -> tuple[State, list[Emitted]]:
     """Create a run, and the genesis event recording what it was created with.
 
     Geometry is computed here, once, and recorded. Nothing downstream re-derives it
     from a viewport.
+
+    `scenario` defaults to the shipped company rather than being required, which is what let the
+    wiring land without touching forty-two call sites — and it is the right default anyway:
+    "which company" is a choice the gateway offers (U7), not something every caller of the
+    kernel library has an opinion about. The fold passes the one the run recorded, and
+    `log._apply_genesis` is the site that refuses a scenario whose file has since changed.
     """
+    company = sc.load_default() if scenario is None else scenario
     floor = plan_floor(cols, rows)
-    seats = roster.assign_seats(floor)
+    seats = roster.assign_seats(company, floor)
 
     state = State(
         run_seed=run_seed,
+        scenario=company,
         tick=0,
         floor=floor,
         seats=seats,
-        metrics=effects.initial_metrics(),
+        metrics=effects.initial_metrics(company),
         people={
             person.id: PersonRuntime(id=person.id, pos=seats[person.id], seat=seats[person.id])
-            for person in roster.PEOPLE
+            for person in company.people
         },
         items={
             item.id: ItemRuntime(id=item.id, resolved=[False] * len(item.checkpoints))
-            for item in work.ITEMS
+            for item in company.items
         },
         ceo=CeoRuntime(x_milli=floor.spawn[0] * MILLI, y_milli=floor.spawn[1] * MILLI),
-        capacity=cap.new_capacity(),
-        morale=mor.new_morale(),
+        capacity=cap.new_capacity(company),
+        morale=mor.new_morale(company),
         horizon_tick=(
             lifecycle.default_horizon_tick() if horizon_tick is None else horizon_tick
         ),
@@ -480,17 +551,22 @@ def new_run(
             "quantum_sim_seconds": simtime.QUANTUM_SIM_SECONDS,
             "grid": [cols, rows],
             "horizon_tick": state.horizon_tick,
-            "decision_supply": lifecycle.decision_supply(),
+            "decision_supply": lifecycle.decision_supply(company),
             "rules_ver": RULES_VERSION,
-            "metrics": effects.initial_metrics(),
-            "draws": dict(cap.DEPARTMENT_DRAWS),
+            # Which company this run is of, and which exact revision of it (R7). Three sites
+            # check it and refuse a run whose file has since been edited; see
+            # `scenario.load_recorded`. It rides genesis rather than a store column so that an
+            # exported log carries its own provenance and a fork inherits it for free.
+            "scenario": company.identity(),
+            "metrics": effects.initial_metrics(company),
+            "draws": dict(company.draws),
             "floor": floor.to_state(),
-            "roster": roster.roster_to_state(seats),
-            "items": [item.id for item in work.ITEMS],
+            "roster": roster.roster_to_state(company, seats),
+            "items": [item.id for item in company.items],
             # The authored work graph. Ids alone were enough while nothing read the
             # dependency edges; U14's DAG assigns layers by longest-path depth over the
             # whole graph, so it needs the edges before anything unlocks.
-            "catalog": work.catalog_to_state(),
+            "catalog": work.catalog_to_state(company),
             # The metric table, `good` included. The HUD renders each metric against its
             # own favourable direction, and deriving that client-side would make cutting
             # manual hours read as a regression.
@@ -514,12 +590,17 @@ def _seed_authored_work(state: State) -> None:
     an item this function had already made active, and the command would be rejected mid-fold.
     The genesis event is the record; the seed is part of what genesis means.
 
-    **It is not on the genesis payload either.** It could be, and U6 is where it should go:
-    R7 puts the scenario id and its content hash on genesis, and the seed is scenario data, so
-    recording it before that mechanism exists would mean a payload key and a schema-version
-    bump for a fact no consumer can yet check against anything. The log is not silent about it
-    meanwhile — the first `CHECKPOINT_RAISED` names the person, the item and the effort already
-    burned, with no command anywhere before it to explain them.
+    **It is still not on the genesis payload, and U6 decided that deliberately.** U2 deferred
+    the question here on the reasoning that R7's mechanism would make the seed checkable. R7
+    makes it checkable *by hash*: the seed is inside the scenario's content hash, so a file whose
+    seed moved is refused at all three guards by name and revision. A payload copy would be a
+    key nothing reads — the fold rebuilds the seed by calling this function with the recorded
+    scenario rather than by reading a payload, the client learns the seeded item from the first
+    `CHECKPOINT_RAISED` (which names the person, the item and the effort already burned, with no
+    command anywhere before it to explain them), and the drift report would need a fourth
+    comparison projection to say anything about it that the hash does not already refuse. A
+    scenario field the payload does not carry narrows the *report* rather than the guard, and
+    `_mismatch` says so in as many words.
 
     **It goes through `_start_work` rather than setting the fields itself**, so a seeded person
     reaches their desk by the same path a delegated one does. They are already sitting at it at
@@ -531,20 +612,22 @@ def _seed_authored_work(state: State) -> None:
     *calling* `new_run` rather than by replaying events. So a movement event produced here would
     either be swallowed — the client never sees the walk and the person teleports on their first
     step — or appended, which puts an output event at tick zero that no `step()` regenerates and
-    makes strict replay diverge on it. Neither happens today. The refusal is for the unit that
-    seeds somebody away from their desk (U6): what that needs is for genesis to carry the walk,
-    which is a change to the fold rather than a change here.
+    makes strict replay diverge on it. Neither happens today, and U6 kept it that way rather than
+    teaching genesis to carry a walk: a scenario cannot express a seed that walks, because
+    `[[seeded_assignment]]` names an item and a person and the person's desk is where they start.
+    A format that let an author seed somebody mid-floor would have to be refused at *load*, where
+    the message can name the line, rather than here at genesis.
 
     A log written before this seed existed folds to a different day-zero state under an
     unchanged rules version, because RULES_VERSION digests the tuning table and the multiplier
     order — not the authored roster or work graph. That is survivable only because U9's
     DDL_VERSION bump makes the store a documented wipe; there are no older logs to fold.
     """
-    for seeded in work.SEEDED_ASSIGNMENTS:
+    for seeded in state.scenario.seeded:
         item = state.items[seeded.item_id]
         person = state.people[seeded.person_id]
         item.assignee = person.id
-        item.done_units = seeded.done_units(work.spec(seeded.item_id))
+        item.done_units = seeded.done_units(state.scenario.item(seeded.item_id))
         if _start_work(state, person, item):
             raise ValueError(
                 f"the seeded assignment of {seeded.item_id} puts {seeded.person_id} at "
@@ -933,7 +1016,7 @@ def _check_termination(state: State) -> list[Emitted]:
                 "decisions_taken": sum(
                     len(item.decisions) for item in state.items.values()
                 ),
-                "decision_supply": lifecycle.decision_supply(),
+                "decision_supply": lifecycle.decision_supply(state.scenario),
                 "deliverables": len(state.outputs),
             },
         )
@@ -1039,7 +1122,7 @@ def _roll_over_day(state: State) -> list[Emitted]:
     # --- attrition. Load can now rise with no CEO action, which is the point (R38).
     for director in list(state.capacity):
         leaving = mor.attrition_candidate(
-            state.morale, director, set(state.present_members(director))
+            state.scenario, state.morale, director, set(state.present_members(director))
         )
         if leaving is None:
             continue
@@ -1173,7 +1256,7 @@ def _burn_this_tick(state: State, person: PersonRuntime, item: ItemRuntime) -> i
         available = max(0, available - share)
 
     multipliers = {}
-    if person.rank == "director":
+    if state.rank_of(person.id) == "director":
         multipliers["director_rate"] = DIRECTOR_RATE
     if department is not None:
         multipliers["over_ceiling_degradation"] = cap.over_ceiling_multiplier(
@@ -1230,7 +1313,7 @@ def _complete(state: State, person: PersonRuntime, item: ItemRuntime) -> list[Em
 
     stops = len(spec.checkpoints)
     provenance = [
-        f"{roster.spec(person.id).name} — {spec.effort_hours} hours of work, "
+        f"{state.name_of(person.id)} — {spec.effort_hours} hours of work, "
         f"{stops} decision stop{'' if stops == 1 else 's'}",
         *(
             f"CEO decision: {d.choice} ({'in person' if d.in_person else 'from the tray'})"
@@ -1293,7 +1376,7 @@ def _newly_available(state: State) -> list[str]:
     """Backlog items whose gates are now clear, in item order."""
     return [
         item.id
-        for item in work.ITEMS
+        for item in state.scenario.items
         if state.items[item.id].status == STATUS_BACKLOG
         and item.requires != work.Requires()
         and is_unlocked(state, item.id)
@@ -1623,7 +1706,7 @@ def ask_person(state: State, person_id: str, question: str) -> list[Emitted]:
     # nothing in the log is replay identity broken silently, which is the one failure this
     # kernel is built to prevent.
     try:
-        deflection = roster.deflection_for(person_id)
+        deflection = state.scenario.deflection_of(person_id)
     except KeyError:
         raise CommandRejected(
             f"{person_id} joined after the run started and has nothing scripted to say yet"
@@ -1652,7 +1735,7 @@ def ask_person(state: State, person_id: str, question: str) -> list[Emitted]:
         ]
 
     # Resolved before the mutations below, for the reason stated above.
-    answer = roster.answer_for(person_id, intent.slot)
+    answer = state.scenario.voice_of(person_id, intent.slot)
 
     # First time for *this person and this question*. Someone else having answered "why" costs
     # nothing here — the knowledge is theirs, not the company's.
@@ -1704,7 +1787,7 @@ def assign_via_manager(state: State, item_id: str) -> list[Emitted]:
     if not is_unlocked(state, item_id):
         raise CommandRejected(lock_reason(state, item_id) or "not available yet")
 
-    director_id = roster.reporting_line_of(spec.want)
+    director_id = state.line_of(spec.want)
     if director_id == spec.want:
         # The wanted person *is* the director; there is nobody to route through.
         return assign_direct(state, item_id, spec.want)
@@ -1755,7 +1838,7 @@ def assign_direct(state: State, item_id: str, person_id: str) -> list[Emitted]:
     item.status = STATUS_ASSIGNED
     item.assignee = person.id
 
-    manager = roster.spec(person_id).mgr
+    manager = state.manager_of(person_id)
     effective: dict[str, int] = {}
     if manager:
         person.bypassed_director = True
@@ -1798,10 +1881,13 @@ def reassign(state: State, item_id: str, person_id: str) -> list[Emitted]:
         raise CommandRejected(f"{item_id} is {item.status}; there is nothing in flight")
 
     current = item.assignee
-    if not roster.same_reporting_line(current, person_id):
+    # Compared through `line_of_assignee` rather than through the authored roster, so an arrived
+    # hire has a line here too. Identical for every authored person; the roster lookup it
+    # replaces raised `KeyError` for a hire, past where `CommandRejected` is caught.
+    if state.line_of_assignee(current) != state.line_of_assignee(person_id):
         raise CommandRejected(
-            f"{roster.spec(person_id).name} is in a different reporting line from "
-            f"{roster.spec(current).name}; reassignment across lines is not permitted"
+            f"{state.name_of(person_id)} is in a different reporting line from "
+            f"{state.name_of(current)}; reassignment across lines is not permitted"
         )
 
     retained = item.done_units
@@ -1879,6 +1965,13 @@ def request_hire(state: State, director_id: str) -> list[Emitted]:
 
     Not a menu action that adds a person. It consumes sim-time, which is what makes overload
     something to anticipate rather than something to fix on the tick it is noticed.
+
+    **Who recruits comes from the scenario.** This function named `stf_rec` and the `hr` room
+    outright until U6 — two default-scenario values sitting in the kernel, so a second company
+    would have tried to assign hiring work to somebody it does not have and raised mid-command.
+    `Scenario.recruiter` derives it: the People line's first non-director in roster order, or its
+    director if the line is one person. The item's room follows the recruiter's own desk, which
+    reproduces `hr` for the shipped company without naming it.
     """
     if director_id not in state.capacity:
         raise CommandRejected(f"{director_id} is not a department")
@@ -1891,13 +1984,14 @@ def request_hire(state: State, director_id: str) -> list[Emitted]:
     if request_id in state.hires:
         raise CommandRejected(f"{person_id} is already being hired")
 
-    target_room = hiring.target_room_for(director_id)
+    target_room = state.scenario.room_of_line(director_id)
+    recruiter = state.scenario.recruiter()
     spec = work.ItemSpec(
         id=item_id,
-        title=f"Hire into {roster.spec(director_id).dept}",
-        brief=f"Recruit and onboard one person for {roster.spec(director_id).name}'s line.",
-        dept="hr",
-        want="stf_rec",
+        title=f"Hire into {target_room}",
+        brief=f"Recruit and onboard one person for {state.name_of(director_id)}'s line.",
+        dept=state.scenario.person(recruiter).dept,
+        want=recruiter,
         effort_hours=hiring.HIRE_EFFORT_HOURS,
         friction="Scheduling interviews.",
         checkpoints=(),
@@ -1926,7 +2020,7 @@ def request_hire(state: State, director_id: str) -> list[Emitted]:
             },
         )
     ]
-    events.extend(assign_direct(state, item_id, "stf_rec"))
+    events.extend(assign_direct(state, item_id, recruiter))
     return events
 
 
@@ -1944,7 +2038,7 @@ def _complete_hire(state: State, item_id: str) -> list[Emitted]:
     )
 
     seat, refusal = hiring.plan_desk(
-        state.floor, hiring.target_room_for(hire.director_id), taken
+        state.floor, state.scenario.room_of_line(hire.director_id), taken
     )
 
     if seat is None:
@@ -2050,7 +2144,7 @@ def resolve_checkpoint(
 
     draw_effective = 0
     if draw_delta:
-        director = work.director_for(spec)
+        director = work.director_for(state.scenario, spec)
         draw_effective = cap.apply_draw_change(state.capacity, director, draw_delta)
 
     # In person the CEO hears what the tray never shows. From the tray they get the
@@ -2071,7 +2165,7 @@ def resolve_checkpoint(
     _refresh_load(state)
 
     person = state.people[item.assignee]
-    manager = roster.spec(person.id).mgr
+    manager = state.manager_of(person.id)
     uninformed = (manager,) if person.bypassed_director and manager else ()
 
     item.decisions.append(
@@ -2105,7 +2199,7 @@ def resolve_checkpoint(
                 "uninformed": list(uninformed),
                 "deltas": effective,
                 "draw_delta": draw_effective,
-                "draw_department": work.director_for(spec) if draw_delta else "",
+                "draw_department": work.director_for(state.scenario, spec) if draw_delta else "",
                 "metrics": dict(state.metrics),
                 "item_status": item.status,
             },
@@ -2263,6 +2357,14 @@ def snapshot(state: State) -> dict[str, Any]:
     Every declared subsystem is present. The ones U7 and U8 fill are empty rather than
     absent, so their arrival is a recorded state-shape change rather than a silent hash
     break.
+
+    **`state.scenario` is deliberately not here**, and the omission is enforced rather than
+    remembered: `hashing.state_hash` refuses an undeclared subsystem, so adding the company to
+    this dictionary would require a `SHAPE_HISTORY` entry and a `STATE_SHAPE_VERSION` bump — a
+    deliberate act with a recorded reason, not an accident. It should not be added. The scenario
+    is an immutable fold-time input whose content hash the genesis event already records and all
+    three R7 guards already check; hashing the same structure per day boundary would cost every
+    golden fixture in the tree to carry a value that cannot move within a run.
     """
     return {
         "world": state.floor.to_state(),
