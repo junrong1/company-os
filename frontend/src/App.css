@@ -108,6 +108,68 @@ code {
   border-radius: 2px;
 }
 
+/* Which company to start. Above the button rather than beside it: the choice is made before
+ * the run, and a control to the right of "Start a run" reads as a setting for a run already
+ * under way. */
+
+.companies {
+  border: 1px solid #c3d5de;
+  border-radius: 2px;
+  padding: 0.75rem 1rem 1rem;
+  margin: 0 0 1.25rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.companies legend {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #5c677a;
+  padding: 0 0.35rem;
+}
+
+.company {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.6rem;
+  align-items: start;
+  padding: 0.5rem;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.company:has(input:checked) {
+  border-color: #c3d5de;
+  background: #eef7f2;
+}
+
+.company[data-loadable='false'] {
+  cursor: not-allowed;
+  color: #5c677a;
+}
+
+.company__body {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.company__title {
+  font-weight: 600;
+}
+
+.company__summary,
+.company__size,
+.company__refusal {
+  font-size: 0.85rem;
+  color: #5c677a;
+}
+
+.company__refusal {
+  color: #c8402a;
+}
+
 em {
   color: #5c677a;
   font-style: normal;
