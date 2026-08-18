@@ -170,10 +170,21 @@ def test_every_branch_of_a_comparison_forks_from_one_instant(run: Recorder) -> N
     """
     stop = threading.Event()
 
+    #: The ticker moves the parent; ending the run is not its job. Unbounded it steps up to 120
+    #: ticks per 10ms against this run's 10,800-tick horizon, so it reaches the end in under a
+    #: second — and the next comparison is then *refused* (`the run ended (horizon)`) rather than
+    #: measured, which is a `CommandRejected` out of the loop rather than an assertion failure.
+    #: Whether that happens is a race between six comparisons and one ticker, so it passed here
+    #: and failed on CI's first run, where a shared runner made the comparisons the slower half.
+    #: A sim-day of headroom keeps the parent moving for the whole test without ever ending it.
+    ceiling = run.state.horizon_tick - simtime.TICKS_PER_SIM_DAY
+
     def ticker() -> None:
         while not stop.is_set():
             for _ in range(120):  # the kernel's own MAX_BATCH_TICKS
                 if run.state.items["wi_ap_map"].status != sim.STATUS_BLOCKED:
+                    return
+                if run.state.tick >= ceiling:
                     return
                 sim.step(run.state)
             time.sleep(0.01)
@@ -196,6 +207,51 @@ def test_every_branch_of_a_comparison_forks_from_one_instant(run: Recorder) -> N
     )
     # And the parent really was moving, so the test is not passing on a stationary run.
     assert run.state.tick > 0
+
+
+def test_the_parent_moving_between_branches_moves_no_fork_tick(
+    run: Recorder, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same property as above, with the interleaving forced instead of raced.
+
+    The threaded test says the deployed topology is safe. It cannot say so on every machine: two
+    threads collide or they do not, and the version of it that relied on them colliding is the
+    one this file's next section already cites as the reason its own tests force the window open
+    by hand. Bounding that ticker at the horizon — which is what stops it ending the run — also
+    means a fast machine can finish six comparisons before a single tick lands inside one, and
+    the test would then pass as the single-threaded version it was written to replace.
+
+    So this forces it. `run_comparison` captures once and builds every branch from that capture,
+    so stepping the parent between branches must not move a single fork tick. Under the bug this
+    replaced — a capture per branch — every one of those steps would show up as a spread, which
+    is what makes this assertion fail when the behaviour is removed.
+    """
+    original = compare._branch_from
+    parent_ticks: list[int] = []
+
+    def steps_the_parent_first(*args: Any, **kwargs: Any) -> Any:
+        sim.step(run.state)
+        parent_ticks.append(run.state.tick)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(compare, "_branch_from", steps_the_parent_first)
+
+    captured_at = run.state.tick
+    summaries = compare.run_comparison(run.state, "wi_ap_map", 0, in_person=True)
+
+    assert len(summaries) > 1, "one option cannot demonstrate a shared instant"
+    assert len(parent_ticks) == len(summaries), (
+        f"the parent was stepped {len(parent_ticks)} times for {len(summaries)} branches; "
+        "this test proves nothing unless it moves between every pair"
+    )
+    assert len(set(parent_ticks)) == len(parent_ticks), (
+        f"the parent did not advance between branches: {parent_ticks}"
+    )
+    assert {summary.fork_tick for summary in summaries} == {captured_at}, (
+        f"the parent moved through {parent_ticks} and the branches forked from "
+        f"{sorted({summary.fork_tick for summary in summaries})}; every one of them must come "
+        f"from {captured_at}, the instant captured before the first branch was built"
+    )
 
 
 def test_the_same_branch_computed_twice_is_identical(run: Recorder) -> None:
