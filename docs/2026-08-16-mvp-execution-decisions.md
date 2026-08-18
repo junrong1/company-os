@@ -983,7 +983,7 @@ typecheck — is what the absence costs, and U11 ran `npx tsc --noEmit` by hand 
 CI exists: `.github/workflows/ci.yml`, four jobs, no secret of any kind. The keyless suite on both
 store dialects, the bench against the mock adapter, the client's four steps with the type check
 separated out, and `docker compose up` from a clean checkout reaching a client that creates a run.
-Backend 1,127 → **1,131** tests; the client stayed at 491.
+Backend 1,127 → **1,132** tests; the client stayed at 491.
 
 ### It found the failure it was built to find, in its first minute
 
@@ -1058,9 +1058,50 @@ says the cache table must be registered as mutable so that test does not silentl
 running it against Postgres as well as SQLite, getting that wrong is a red build rather than a quiet
 one.
 
-### The action versions are the one thing not verified here
+### The first run found a flaky test, which is the second defect CI caught before it was green
 
-`actions/checkout@v4`, `astral-sh/setup-uv@v5` and `actions/setup-node@v4` are pinned to majors and
-cannot be resolved from this machine. The uv version pin **was** verified (0.9.17 fetched and run);
-the three action tags will be confirmed by the first run, and a wrong tag fails immediately with a
-message naming it.
+Three of four jobs passed first time, including the compose smoke. The keyless job failed on
+`test_compare.py::test_every_branch_of_a_comparison_forks_from_one_instant`:
+
+```
+E  simcore.step.CommandRejected: the run ended (horizon); there is nothing downstream to compare
+```
+
+Not U13's code, and not a new bug — a race that a shared runner lost where this laptop wins. The
+test starts a ticker thread to move the parent, and that ticker steps **120 ticks per 10ms against a
+10,800-tick horizon**, so it can end the run in under a second. Six comparisons then have to finish
+before it does. Locally they do; on CI they do not, and the seventh call is *refused* rather than
+measured — a `CommandRejected` out of the loop, not an assertion failure.
+
+Its author half-saw this: `assert spreads, "the ticker ended the run before a single comparison ran"`
+covers the run ending *before* the loop and nothing covers it ending *during*.
+
+Fixed by bounding the ticker a sim-day short of the horizon, so it moves the parent without ever
+ending the run. **But that bound makes the test weaker in the other direction** — a fast machine can
+now finish six comparisons before a tick lands inside one, and the test would pass as the
+single-threaded version it was written to replace. So the property gets a deterministic companion,
+`test_the_parent_moving_between_branches_moves_no_fork_tick`, which forces a parent step between
+branches from inside `_branch_from` rather than waiting for two threads to collide. This is the same
+move U5 already made two sections down in the same file, for the same reason, citing this same test
+as the thing that taught it — it just was not applied to the test doing the teaching.
+
+Both catch the bug they describe: with the capture moved back inside the per-branch loop, the
+threaded test fails and the deterministic one fails with `{613, 614, 615} == {613}`.
+
+**The general lesson, for U16 and U19.** Every threaded test in this repository is a race between
+what it asserts and what its helper thread does, and the helper is usually unbounded because bounding
+it was not the point. U16 forks under a moving parent and U19 asserts determinism over a lineage; both
+will want a thread. Write the deterministic version first and the threaded one as the topology check,
+not the other way round.
+
+### The action versions were four majors out of date
+
+The first run resolved all three tags but warned on every job: `actions/checkout@v4`,
+`astral-sh/setup-uv@v5` and `actions/setup-node@v4` target Node 20, which is deprecated and being
+forced onto Node 24. The current majors are **v7**, **v7** and **v10.0.1**, all on node24, and every
+input this workflow passes still exists at those refs — checked against the tagged `action.yml` rather
+than assumed.
+
+`setup-uv` is pinned **exactly** rather than to a major, and that is not a style choice: it stopped
+publishing floating majors after v7, so `@v10` does not resolve at all and only `@v10.0.1` does.
+Worth knowing before the next dependency bump reaches for `@v11`.

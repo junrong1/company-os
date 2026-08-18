@@ -174,7 +174,7 @@ carries the deferred defect register.
 | U10. The statement contract | `[x]` | `86176c8` — the delivery leg that had no caller, servicer or client; the request derived inside `step()`; four bugs its own review pass caught |
 | U11. Four directors who brief, object, and never rank | `[x]` | The two predicates in `simcore/statement.py`, `Offered` with an adapter per process, personas and prompts off the genesis roster and catalog, one fallback exit naming its condition, a fourth marking, and the pending block. 73 new backend tests plus 12 client ones |
 | U12. Caching on the situation | `[ ]` | Unblocked by U11 — the assembled prompt exists, and there is one provider call site to wrap |
-| U13. Continuous integration for the keyless path | `[x]` | `.github/workflows/ci.yml` — four jobs, no secret of any kind: the keyless suite on both store dialects, the bench against the mock adapter, the client's four steps with the type check separated out, and `docker compose up` from a clean checkout reaching a client that creates a run. Found a live `tsc -b` failure in the tree on its first run |
+| U13. Continuous integration for the keyless path | `[x]` | `.github/workflows/ci.yml` — four jobs, no secret of any kind: the keyless suite on both store dialects, the bench against the mock adapter, the client's four steps with the type check separated out, and `docker compose up` from a clean checkout reaching a client that creates a run. Found two live defects before it went green: a `tsc -b` failure the suites could not see, and a flaky comparison test only a shared runner loses |
 
 **Phases D, E, F.** Not started. U14 and U16 are unblocked; U15, U17–U23 and U25 sit behind them.
 U14's `Panels.tsx` half no longer collides with anything — U7 put the person's schema on the
@@ -208,6 +208,12 @@ Every shipped unit but one turned up a live defect on its path. The pattern is w
   second one, a parameter property under `erasableSyntaxOnly` in `e796ebf`'s test double, sitting in
   a tree whose suites were all green. Two units in a row shipped over a guard that was somebody
   remembering to run a command by hand; it is a CI step now.
+- A comparison test was flaky and nobody could have known: its ticker thread steps 120 ticks per 10ms
+  against a 10,800-tick horizon, so it ends the run in under a second and the next comparison is
+  refused rather than measured. It is a race between six comparisons and one ticker, this laptop wins
+  it and a shared runner loses it — so U13's **first CI run** is what surfaced it. Bounding the ticker
+  fixes it and weakens it, so the property now also has a deterministic test that forces the
+  interleaving instead of racing for it.
 - U7 is the exception that proves the pattern: it found no live defect, because U6 had left it a
   tripwire — a test asserting the scenarios directory offered exactly one company, with a docstring
   saying a second one was U7's. It failed on the first run, which is what it was for.
@@ -305,7 +311,7 @@ The MVP plan is **13 of 25 units in**, with Phases A and B complete and Phase C 
 its CI. Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about 42 are
 met now — M13 is the one U7 closed, M15 and M16 stopped being half-met, U11 closed the five the bench
 is made of, and U13 closed M30 and M67's proof half. The suites went from 699 backend tests to
-**1,131**, and the client from 404 to **491**.
+**1,132**, and the client from 404 to **491**.
 
 What remains is still concentrated where the plan said it would be, but the shape has changed. The
 bench was the plan's single biggest risk and the unit most likely to be "estimated as an edit"; its
@@ -314,10 +320,11 @@ event payload, schema version or golden fixture moved to get there. What does no
 behind it: memory, Authorization, persistent forks, the Universe, the report.
 
 **CI was the thing genuinely overdue, and it is now in.** Four jobs, no secret of any kind, and it
-earned itself in its first minute: a second `tsc -b` failure was sitting in a tree whose suites were
-all green, the same class as the one `2c38686` fixed. What it does *not* prove is written down rather
-than left to the badge — the second boot that reuses the volume, the second writer that names the
-lease holder, the DDL wipe path, and anything against a real provider.
+earned itself twice before it was ever green: a second `tsc -b` failure sitting in a tree whose suites
+were all green, and a flaky comparison test whose race this laptop wins and a shared runner loses.
+Both had been in the tree for units. What CI does *not* prove is written down rather than left to the
+badge — the second boot that reuses the volume, the second writer that names the lease holder, the DDL
+wipe path, and anything against a real provider.
 
 Next is a fork in the road rather than a queue. **U12** (the cache) is small and sits behind nothing.
 **U14** unlocks one unit; **U16** unlocks five — U17, U18, U19, U20 and U25 — so it is the wider
