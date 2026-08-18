@@ -141,8 +141,9 @@ pushed the office off the screen.
 
 ## Phase 5 — the MVP (`docs/plans/2026-08-16-001-feat-company-os-mvp-plan.md`)
 
-Twenty-five units in six phases. **Thirteen are done: Phases A and B are complete, and Phase C has
-the bench and its CI.** Execution paused here by decision, with the tree clean and both suites green
+Twenty-five units in six phases. **Fourteen are done: Phases A, B and C are complete** — the
+repository runs, scenarios are files, and the bench briefs, refuses, proves itself in CI and pays
+for a situation once. Execution paused here by decision, with the tree clean and both suites green
 — not blocked. The plan's open questions and everything execution resolved or found are in
 [`docs/2026-08-16-mvp-execution-decisions.md`](2026-08-16-mvp-execution-decisions.md), which also
 carries the deferred defect register.
@@ -165,7 +166,7 @@ carries the deferred defect register.
 | U6. The scenario format, the loader, and the company that moves into it | `[x]` | Two passes: `1a01b44` the format, loader, `default.toml`, `schema.md` and 98 tests; `8bbb91f` the wiring, the genesis identity, the three guard sites, and the constants deleted from six modules |
 | U7. Choosing a scenario, and seeing what it says | `[x]` | The name threaded through the gateway body, the `KernelClient` protocol, the launcher and `create_run`; `GET /scenarios`; `ashcroft.toml`, a second company of nine; the picker on the start screen; a person's responsibility and tools on the conversation surface under a third marking. The genesis payload did not move, so no golden fixture did either |
 
-**Phase C — the bench.** Only the cache is left.
+**Phase C — the bench.** Complete.
 
 | Unit | Status | Evidence |
 |---|---|---|
@@ -173,7 +174,7 @@ carries the deferred defect register.
 | U9. The ceiling and its counter | `[x]` | `084b529` — 200 calls / 600k tokens per run, DDL 3, the one measured HUD figure |
 | U10. The statement contract | `[x]` | `86176c8` — the delivery leg that had no caller, servicer or client; the request derived inside `step()`; four bugs its own review pass caught |
 | U11. Four directors who brief, object, and never rank | `[x]` | The two predicates in `simcore/statement.py`, `Offered` with an adapter per process, personas and prompts off the genesis roster and catalog, one fallback exit naming its condition, a fourth marking, and the pending block. 73 new backend tests plus 12 client ones |
-| U12. Caching on the situation | `[ ]` | Unblocked by U11 — the assembled prompt exists, and there is one provider call site to wrap |
+| U12. Caching on the situation | `[x]` | `modelgw/cache.py` holds the content address — the assembled prompt, the authorization scope and a purpose namespace — and `StoreResponseCache` in the agents service holds the table, scoped to a lineage and filtered on the rules version. The lookup runs in front of the ceiling because a hit is not a call; the *write* waits for `keep()`, because only the caller knows the guards passed. 37 new tests, and the DDL version did not move |
 | U13. Continuous integration for the keyless path | `[x]` | `.github/workflows/ci.yml` — four jobs, no secret of any kind: the keyless suite on both store dialects, the bench against the mock adapter, the client's four steps with the type check separated out, and `docker compose up` from a clean checkout reaching a client that creates a run. Found two live defects before it went green: a `tsc -b` failure the suites could not see, and a flaky comparison test only a shared runner loses |
 
 **Phases D, E, F.** Not started. U14 and U16 are unblocked; U15, U17–U23 and U25 sit behind them.
@@ -214,6 +215,12 @@ Every shipped unit but one turned up a live defect on its path. The pattern is w
   it and a shared runner loses it — so U13's **first CI run** is what surfaced it. Bounding the ticker
   fixes it and weakens it, so the property now also has a deterministic test that forces the
   interleaving instead of racing for it.
+- The plan's DDL bump for the cache table was not needed, and U12 is where that was noticed rather
+  than paid: `create_all` is check-first and runs at every startup, so a *new table* arrives on the
+  next boot of an existing store with nothing to migrate. DDL 3 was a wipe because the same bump
+  added a column to `runs`; a table on its own is the carry-forward the plan wanted and could not
+  have then. `test_store.py` drops the table from a provisioned store and reopens it, so the claim
+  is a test rather than this paragraph.
 - U7 is the exception that proves the pattern: it found no live defect, because U6 had left it a
   tripwire — a test asserting the scenarios directory offered exactly one company, with a docstring
   saying a second one was U7's. It failed on the first run, which is what it was for.
@@ -222,6 +229,16 @@ Every shipped unit but one turned up a live defect on its path. The pattern is w
   `draw_delta: 0` where the state's `effect` simply has no key. A director could have written "0" and
   had it resolve to authored content. Found by U11 writing the cross-adapter equality test before any
   behaviour depended on it, and it is now parametrised over every shipped company.
+- U12 is the second unit to find its defect in its own first shape rather than in the tree. Writing
+  the entry where the answer arrives — inside the gateway, on any `Completion` — is the obvious
+  placement and it silently breaks a decision this plan had already made: a reply that *ranks the
+  options* is a perfectly good HTTP response, so a guard rejection would have been cached and served
+  back forever, with "switch to a better model" as the remedy that changes nothing, because the
+  address is the situation and not the model. Execution decision §3 says "guard rejections write
+  nothing" and the first implementation passed every test while violating it. The write is now
+  staged by `complete` and committed by `keep()`, which the leg calls only after the guards have
+  passed — and the reason the seam moved is worth keeping: the gateway's lifetime was shorter than
+  the decision that depends on it.
 - Two of U11's own early tests passed for the wrong reason. A "a tick resolves to its sim-day" test
   used tick 540 — day 2 — and both `1` and `2` are authored option deltas on that checkpoint, so it
   passed on the option figures while claiming to prove the day lookup. This is the second unit to hit
@@ -273,7 +290,14 @@ Requirements this plan has moved are marked with the unit that moved them.
 - [x] M31 a statement replays exactly — **U10**, strict replay passes because the request is derived inside `step()` rather than read from the log. Still true with the bench live: **U11**'s guards are lexical over a closed vocabulary precisely because their refusal is an output event the fold regenerates
 - [x] M32 the retrieved context is logged and identical on replay — **U10**, after it caught its own window being latency-dependent
 - [x] M35 a comparison branch is never written to the store — and **U5** now proves the clock cannot be starved by one
-- [ ] M33, M34 — U12, U19
+- [~] M33 — **U12**. Responses are cached on the situation, which R29 already replaced M33's
+  "tick, person, request" with: a digest of the assembled prompt, the authorization scope the
+  context was drawn under, and a purpose namespace. The *shared by every fork* half is built and
+  tested and still inert — `fork_run` sets a child's `lineage_root_id` to its own id, so a fork hits
+  nothing of its parent's until **U16** copies the root, and the test pins both sides of that line
+- [ ] M34 — U19. Not U12's: pre-divergence statements are byte-identical because the fork copies the
+  parent's event rows and replay reads the log, so the cache is a cost optimisation and authoritative
+  for nothing. A test folds a run with and without the table populated and gets one hash
 
 **Memory and Authorization (M36–M43)** — [ ] none. U14 is unblocked; U15 behind it.
 
@@ -307,11 +331,11 @@ Across four completed plans, 28 units: 23 `[x]`, 5 `[~]` with a named gap, none 
 simulation half of the product is built and covered by four suites plus golden vectors across two
 languages, and the daylight visual system is complete on top of it.
 
-The MVP plan is **13 of 25 units in**, with Phases A and B complete and Phase C holding the bench and
-its CI. Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about 42 are
-met now — M13 is the one U7 closed, M15 and M16 stopped being half-met, U11 closed the five the bench
-is made of, and U13 closed M30 and M67's proof half. The suites went from 699 backend tests to
-**1,132**, and the client from 404 to **491**.
+The MVP plan is **14 of 25 units in**, with Phases A, B and C complete. Of the PRD's 67 requirements,
+roughly 8 were met when that plan was written and about 42 are met now — M13 is the one U7 closed,
+M15 and M16 stopped being half-met, U11 closed the five the bench is made of, U13 closed M30 and
+M67's proof half, and U12 built all of M33 but the one line U16 owns. The suites went from 699
+backend tests to **1,169**, and the client from 404 to **491**.
 
 What remains is still concentrated where the plan said it would be, but the shape has changed. The
 bench was the plan's single biggest risk and the unit most likely to be "estimated as an edit"; its
@@ -326,6 +350,7 @@ Both had been in the tree for units. What CI does *not* prove is written down ra
 badge — the second boot that reuses the volume, the second writer that names the lease holder, the DDL
 wipe path, and anything against a real provider.
 
-Next is a fork in the road rather than a queue. **U12** (the cache) is small and sits behind nothing.
-**U14** unlocks one unit; **U16** unlocks five — U17, U18, U19, U20 and U25 — so it is the wider
-opening, and it is three defects above a store fork that is already nearly free.
+Next is **U16**, and it is no longer a fork in the road. It unlocks five units — U17, U18, U19, U20
+and U25 — it is three defects above a store fork that is already nearly free, and it now has a sixth
+reason: U12 left a lineage-scoped cache whose fork half is written, tested and inert until a child
+carries its parent's `lineage_root_id`. **U14** is the other thing unblocked, and it unlocks one.
