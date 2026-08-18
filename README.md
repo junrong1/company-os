@@ -1,5 +1,7 @@
 # Company OS — a company simulator
 
+[![CI](https://github.com/junrong1/company-os/actions/workflows/ci.yml/badge.svg)](https://github.com/junrong1/company-os/actions/workflows/ci.yml)
+
 A pixel-art simulator of a company. You are the CEO: you assign work, employees
 move along the real reporting lines to do it, and they stop at the point where
 only you can decide. Walking over to ask them beats clearing it from the tray,
@@ -492,7 +494,12 @@ slow enough that contributors skip it, which is why the three scenarios that
 genuinely need a daemon — the cold boot that reaches a client, the second boot that
 reuses the volume, and the second writer that names the lease holder — are recorded
 in the docstrings of the config tests that stand in for them, and belong to a CI
-smoke job rather than to `pytest`.
+smoke job rather than to `pytest`. That job now exists; see *Continuous integration*.
+
+**`npm test` is not a type check.** vitest transpiles without checking, so the client's
+suite goes green over code `tsc -b` rejects — and the tree has shipped exactly that twice.
+Run `npm run typecheck` alongside `npm test`, or rely on CI, which runs both as separate
+steps for this reason.
 
 `test/harness.js` still runs the prototype's real JavaScript against a small DOM
 stub. Its 29 assertions were ported to pytest at U5, before any new mechanic was
@@ -504,6 +511,43 @@ takes its context as a parameter and the suites hand it a recorder. That is not 
 workaround: the properties the art direction states are "a blocked node drew violet
 on a broken border, and stayed distinguishable with hue removed", and those are
 statements about draw calls. Comparing screenshots could not express them.
+
+---
+
+## Continuous integration
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push to `main`, every
+pull request, and on demand. Four jobs, and each one is reproducible locally:
+
+| Job | What it proves | Locally |
+|---|---|---|
+| Backend suite, nothing configured | the whole suite on the keyless path, **on both store dialects** | `docker compose -f docker-compose.yml -f docker-compose.test.yml up -d postgres` then `cd backend && uv run pytest` |
+| The bench, against the mock adapter | both gateway wires and the four directors over them | `cd backend && uv run pytest tests/test_modelgw.py tests/test_bench.py` |
+| Client | lint, **types**, tests, build — as four steps | `cd frontend && npm run lint && npm run typecheck && npm test && npm run build` |
+| `docker compose up`, from a clean checkout | the images build, the client is served, a run is created through nginx, and the bench reports absent | `docker compose up` then open <http://127.0.0.1:8790> |
+
+Two things are worth knowing about it.
+
+**No provider key is configured, in any form.** Not as a repository secret, not as an
+environment variable, not as a literal in the workflow. This is not tidiness. A company is
+a file and files arrive by pull request, so a key present "to test the real path" would
+make a fork's pull request an exfiltration primitive — the payload being an authored
+scenario whose text asks a director to say the key out loud. The eight providers stay a
+configuration table under *Pointing it at a model* rather than a build matrix, because a
+matrix over eight of them would test their availability rather than this code.
+`backend/tests/test_bench.py` reads the workflow and asserts it names no provider key, and
+the keyless job exports a marker that makes the suite assert the same thing about the
+process it is running in — because a variable can reach a job from an organisation default
+that the workflow file does not mention.
+
+**A skip is not a pass.** The store suite skips its Postgres half when the store is
+unreachable, so the keyless job publishes the store and then checks that the test standing
+for dialect coverage *passed* rather than skipped. Without that check the job would report
+green having covered SQLite alone.
+
+If you have a provider key exported in your shell, nothing here fails — the marker the
+keyless assertion needs is set by the workflow and by nothing else, so locally that one
+test skips and says why.
 
 ---
 
