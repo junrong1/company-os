@@ -20,8 +20,11 @@
 # found the second on its first run. A suite that cannot see the failure is not the guard; a
 # separate step that names it is.
 #
-# Actions are pinned to majors, and the two toolchains to the exact versions the images use, so one
-# resolution describes CI and the container alike.
+# The two toolchains are pinned to the exact versions the images use, so one resolution describes CI
+# and the container alike. GitHub's own actions are pinned to their floating major; `setup-uv` is
+# pinned exactly because it stopped publishing one after v7 — `@v10` does not resolve, only
+# `@v10.0.1` does. All three run on node24: the majors that ran on node20 are deprecated, and the
+# first run of this workflow said so on every job.
 
 name: CI
 
@@ -60,10 +63,10 @@ jobs:
       # since a contributor with a key exported is not wrong and must not fail.
       COMPANY_OS_KEYLESS_CI: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv, at the version the backend image uses
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -112,10 +115,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv, at the version the backend image uses
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
@@ -138,9 +141,9 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
@@ -171,7 +174,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: The README's first command
         # `docker compose up`, detached and waiting, which is the same command in the one form a job
