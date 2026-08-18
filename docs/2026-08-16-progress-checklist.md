@@ -141,9 +141,9 @@ pushed the office off the screen.
 
 ## Phase 5 — the MVP (`docs/plans/2026-08-16-001-feat-company-os-mvp-plan.md`)
 
-Twenty-five units in six phases. **Twelve are done: Phases A and B are complete, and Phase C has the
-bench itself.** Execution paused here by decision, with the tree clean and both suites green — not
-blocked. The plan's open questions and everything execution resolved or found are in
+Twenty-five units in six phases. **Thirteen are done: Phases A and B are complete, and Phase C has
+the bench and its CI.** Execution paused here by decision, with the tree clean and both suites green
+— not blocked. The plan's open questions and everything execution resolved or found are in
 [`docs/2026-08-16-mvp-execution-decisions.md`](2026-08-16-mvp-execution-decisions.md), which also
 carries the deferred defect register.
 
@@ -165,7 +165,7 @@ carries the deferred defect register.
 | U6. The scenario format, the loader, and the company that moves into it | `[x]` | Two passes: `1a01b44` the format, loader, `default.toml`, `schema.md` and 98 tests; `8bbb91f` the wiring, the genesis identity, the three guard sites, and the constants deleted from six modules |
 | U7. Choosing a scenario, and seeing what it says | `[x]` | The name threaded through the gateway body, the `KernelClient` protocol, the launcher and `create_run`; `GET /scenarios`; `ashcroft.toml`, a second company of nine; the picker on the start screen; a person's responsibility and tools on the conversation surface under a third marking. The genesis payload did not move, so no golden fixture did either |
 
-**Phase C — the bench.** The bench itself is built; only CI and the cache are left.
+**Phase C — the bench.** Only the cache is left.
 
 | Unit | Status | Evidence |
 |---|---|---|
@@ -174,7 +174,7 @@ carries the deferred defect register.
 | U10. The statement contract | `[x]` | `86176c8` — the delivery leg that had no caller, servicer or client; the request derived inside `step()`; four bugs its own review pass caught |
 | U11. Four directors who brief, object, and never rank | `[x]` | The two predicates in `simcore/statement.py`, `Offered` with an adapter per process, personas and prompts off the genesis roster and catalog, one fallback exit naming its condition, a fourth marking, and the pending block. 73 new backend tests plus 12 client ones |
 | U12. Caching on the situation | `[ ]` | Unblocked by U11 — the assembled prompt exists, and there is one provider call site to wrap |
-| U13. Continuous integration for the keyless path | `[ ]` | **Unblocked, and overdue.** U11 was its last dependency, and there is still no `.github/workflows` |
+| U13. Continuous integration for the keyless path | `[x]` | `.github/workflows/ci.yml` — four jobs, no secret of any kind: the keyless suite on both store dialects, the bench against the mock adapter, the client's four steps with the type check separated out, and `docker compose up` from a clean checkout reaching a client that creates a run. Found two live defects before it went green: a `tsc -b` failure the suites could not see, and a flaky comparison test only a shared runner loses |
 
 **Phases D, E, F.** Not started. U14 and U16 are unblocked; U15, U17–U23 and U25 sit behind them.
 U14's `Panels.tsx` half no longer collides with anything — U7 put the person's schema on the
@@ -204,7 +204,16 @@ Every shipped unit but one turned up a live defect on its path. The pattern is w
 - Five lookups raised `KeyError` for an arrived hire; `request_hire` hardcoded two default-scenario
   person ids.
 - The tree was failing `tsc` while `npm test` stayed green, because vitest does not typecheck and
-  there is no CI (`2c38686`).
+  there is no CI (`2c38686`) — **and it happened again**. U13's first `npm run typecheck` found a
+  second one, a parameter property under `erasableSyntaxOnly` in `e796ebf`'s test double, sitting in
+  a tree whose suites were all green. Two units in a row shipped over a guard that was somebody
+  remembering to run a command by hand; it is a CI step now.
+- A comparison test was flaky and nobody could have known: its ticker thread steps 120 ticks per 10ms
+  against a 10,800-tick horizon, so it ends the run in under a second and the next comparison is
+  refused rather than measured. It is a race between six comparisons and one ticker, this laptop wins
+  it and a shared runner loses it — so U13's **first CI run** is what surfaced it. Bounding the ticker
+  fixes it and weakens it, so the property now also has a deterministic test that forces the
+  interleaving instead of racing for it.
 - U7 is the exception that proves the pattern: it found no live defect, because U6 had left it a
   tripwire — a test asserting the scenarios directory offered exactly one company, with a docstring
   saying a second one was U7's. It failed on the first run, which is what it was for.
@@ -255,7 +264,10 @@ Requirements this plan has moved are marked with the unit that moved them.
 **The model gateway (M23–M30)**
 - [x] M23, M24, M25, M26, M29 — **U8**
 - [x] M27, M28 — **U9**
-- [ ] M30 the keyless path proven in CI — U13; **there is still no `.github/workflows`**
+- [x] M30 the keyless path proven in CI — **U13**. Two of the four jobs run the whole suite with no
+  provider configured, and the claim is asserted twice over: `test_bench.py` reads the workflow and
+  refuses any provider key in it, and the keyless job exports a marker so the suite asserts the same
+  of the process it is running in — which is the only place an organisation-level default would show
 
 **Determinism (M31–M35)**
 - [x] M31 a statement replays exactly — **U10**, strict replay passes because the request is derived inside `step()` rather than read from the log. Still true with the bench live: **U11**'s guards are lexical over a closed vocabulary precisely because their refusal is an output event the fold regenerates
@@ -282,7 +294,10 @@ Requirements this plan has moved are marked with the unit that moved them.
 
 **Launch (M66–M67)**
 - [x] M67's first-command half — **U1**; the README leads with `docker compose up` and `company-os.html` is demoted to prototype
-- [ ] M67's CI proof and M66's hero — U13, U23
+- [x] M67's CI proof — **U13**. The smoke job runs the README's first command from a clean checkout,
+  builds all three images, and asserts the client is served, a run is created through nginx, and the
+  bench reports absent with nothing spent
+- [ ] M66's hero — U23
 
 ---
 
@@ -292,11 +307,11 @@ Across four completed plans, 28 units: 23 `[x]`, 5 `[~]` with a named gap, none 
 simulation half of the product is built and covered by four suites plus golden vectors across two
 languages, and the daylight visual system is complete on top of it.
 
-The MVP plan is **12 of 25 units in**, with Phases A and B complete and Phase C holding the bench
-itself. Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about 40 are
-met now — M13 is the one U7 closed, M15 and M16 stopped being half-met, and U11 closed the five the
-bench is made of. The suites went from 699 backend tests to **1,127**, and the client from 404 to
-**491**.
+The MVP plan is **13 of 25 units in**, with Phases A and B complete and Phase C holding the bench and
+its CI. Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about 42 are
+met now — M13 is the one U7 closed, M15 and M16 stopped being half-met, U11 closed the five the bench
+is made of, and U13 closed M30 and M67's proof half. The suites went from 699 backend tests to
+**1,132**, and the client from 404 to **491**.
 
 What remains is still concentrated where the plan said it would be, but the shape has changed. The
 bench was the plan's single biggest risk and the unit most likely to be "estimated as an edit"; its
@@ -304,6 +319,13 @@ contract, its transport and now the four directors who actually brief and object
 event payload, schema version or golden fixture moved to get there. What does not exist is everything
 behind it: memory, Authorization, persistent forks, the Universe, the report.
 
-The one thing genuinely overdue against the plan's own reasoning is **CI**, and it has run out of
-excuses — U13 was blocked on U11 and is not blocked on anything now. The path most users take is still
-proven only by hand, and the `tsc` failure `2c38686` fixed is what that costs.
+**CI was the thing genuinely overdue, and it is now in.** Four jobs, no secret of any kind, and it
+earned itself twice before it was ever green: a second `tsc -b` failure sitting in a tree whose suites
+were all green, and a flaky comparison test whose race this laptop wins and a shared runner loses.
+Both had been in the tree for units. What CI does *not* prove is written down rather than left to the
+badge — the second boot that reuses the volume, the second writer that names the lease holder, the DDL
+wipe path, and anything against a real provider.
+
+Next is a fork in the road rather than a queue. **U12** (the cache) is small and sits behind nothing.
+**U14** unlocks one unit; **U16** unlocks five — U17, U18, U19, U20 and U25 — so it is the wider
+opening, and it is three defects above a store fork that is already nearly free.

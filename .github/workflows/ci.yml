@@ -1,0 +1,237 @@
+# Continuous integration for the keyless path (U13).
+#
+# **The path most users take is the path this proves.** Every scenario the product ships is
+# playable with no provider configured, so the keyless path is not a degraded mode to be smoke
+# tested — it is the default, and it is what the first three jobs run under. The fourth runs the
+# README's first command from a clean checkout, because "docker compose up brings up a playable
+# client" is a claim about images and a network, and no unit test can make it.
+#
+# **No provider key is configured here, in any form.** Not as a repository secret, not as an
+# environment variable, not as a literal in this file. The reason is the scenario format: a company
+# is a file, and files arrive by pull request — so a key present "to test the real path" would make
+# a fork's pull request an exfiltration primitive, and the exfiltrating payload would be an authored
+# scenario whose text asks a director to say the key out loud. The eight documented providers stay a
+# configuration table in the README rather than a build matrix, because a matrix over eight of them
+# tests their availability rather than this code. `backend/tests/test_bench.py` reads this file and
+# asserts it names no provider key, so the property is enforced rather than intended.
+#
+# **Why the client's type check is its own step.** vitest does not typecheck. The tree has shipped
+# `tsc -b` failures twice while `npm test` stayed green — `2c38686` fixed the first, and this unit
+# found the second on its first run. A suite that cannot see the failure is not the guard; a
+# separate step that names it is.
+#
+# The two toolchains are pinned to the exact versions the images use, so one resolution describes CI
+# and the container alike. GitHub's own actions are pinned to their floating major; `setup-uv` is
+# pinned exactly because it stopped publishing one after v7 — `@v10` does not resolve, only
+# `@v10.0.1` does. All three run on node24: the majors that ran on node20 are deprecated, and the
+# first run of this workflow said so on every job.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Read-only, deliberately. This workflow publishes nothing, comments on nothing and needs no
+# writable token; a least-privilege default is also what keeps a pull request from a fork
+# uninteresting to attack.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # `backend/Dockerfile` installs uv 0.9.17. An unpinned tool in CI is the same class of problem as
+  # an unpinned dependency in the lockfile.
+  UV_VERSION: '0.9.17'
+  # `frontend/Dockerfile` builds on node:26-bookworm-slim.
+  NODE_VERSION: '26'
+
+jobs:
+  backend-keyless:
+    name: Backend suite, nothing configured
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Read by `tests/test_bench.py` and by nothing else. It turns "this job has no model
+      # environment" from a sentence in a comment into an assertion the suite makes about the
+      # process it is running in — which is the only place that claim can be checked honestly,
+      # since a contributor with a key exported is not wrong and must not fail.
+      COMPANY_OS_KEYLESS_CI: '1'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv, at the version the backend image uses
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Publish the store, so both dialects really run
+        # The README's documented path, override file and all. `docker-compose.yml` deliberately
+        # does not publish Postgres (R34), and a suite wanting host access is not a reason to open
+        # a running system's store — hence the second file rather than a port in the first. The
+        # init scripts it mounts are what provision `companyos_test` and the read-only role.
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --wait postgres
+
+      - name: The full suite
+        working-directory: backend
+        # `--locked` rather than a bare `uv run`, and it is doing two jobs. R8 says a unit leaves
+        # the lockfile alone, and an older uv on a contributor's PATH silently rewrites 454 lines of
+        # it on any `uv run` — so CI must not be another thing that edits it. It also fails the
+        # build when `pyproject.toml` has moved and nobody re-locked, which is the drift the pins
+        # exist to prevent.
+        run: uv run --locked pytest -q
+
+      - name: Both dialects actually ran
+        working-directory: backend
+        # The store suite skips its Postgres half when the store is unreachable, and a skip is not a
+        # pass — U6's verification names both dialects. The suite already carries a test that stands
+        # for exactly this; here it must pass rather than skip, and pytest has no flag that says so.
+        run: |
+          set -o pipefail
+          summary=$(uv run --locked pytest tests/test_store.py::test_postgres_is_reachable_for_this_suite -q)
+          echo "$summary"
+          case "$summary" in
+            *"1 passed"*) ;;
+            *) echo "::error::the Postgres half of the store suite did not run; only SQLite was covered"; exit 1 ;;
+          esac
+
+      - name: What the store said, if any of that failed
+        if: failure()
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml logs postgres
+
+      - name: Stop the store
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml down -v
+
+  bench-mock:
+    name: The bench, against the mock adapter
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv, at the version the backend image uses
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+          cache-dependency-glob: backend/uv.lock
+
+      - name: Both gateway code paths, and the four directors over them
+        working-directory: backend
+        # The mock provider is `httpx.MockTransport`: a real request is built and a canned response
+        # parsed, with no socket opened and no key anywhere. `test_modelgw` sweeps every row of the
+        # provider table, which is what covers both wires — the seven OpenAI-compatible ones and
+        # Anthropic's — rather than a matrix that would need eight live endpoints to say the same
+        # thing. `test_bench` runs the guards over the shipped companies' authored content.
+        run: uv run --locked pytest tests/test_modelgw.py tests/test_bench.py -q
+
+  client:
+    name: Client — lint, types, tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install from the lockfile
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Types
+        # The step this unit exists for. `npm test` passes on code `tsc -b` rejects, because vitest
+        # transpiles without checking; running the two together is the only arrangement in which a
+        # type error is a red build rather than a surprise at image-build time.
+        run: npm run typecheck
+
+      - name: Tests
+        run: npm test
+
+      - name: Build
+        # `tsc -b && vite build` — the type check runs again here because it is part of the image
+        # build, and this is the step that proves the image would build.
+        run: npm run build
+
+  compose-smoke:
+    name: docker compose up, from a clean checkout
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: The README's first command
+        # `docker compose up`, detached and waiting, which is the same command in the one form a job
+        # can assert on. It builds all three images from this checkout: nothing is pulled from a
+        # registry that this repository built, so what runs here is what a stranger's clone runs.
+        # No model variable is exported, so the container's forwarded defaults resolve empty — which
+        # is the shipped state and the thing M4 claims is playable.
+        run: docker compose up -d --build --wait --wait-timeout 300
+
+      - name: The client is served
+        run: |
+          curl --fail --silent --show-error http://127.0.0.1:8790/ | grep -q '<div id="root">'
+
+      - name: A run is created through the client's own path
+        # Through 8790 and nginx rather than 8800, because the client's path is the one under test:
+        # the /api prefix stripped, the backend reached over the compose network, the store
+        # provisioned on first boot. `run_id` is its own idempotency key, so this is not a POST that
+        # can half-succeed.
+        run: |
+          set -o pipefail
+          curl --fail --silent --show-error \
+            -X POST http://127.0.0.1:8790/api/runs \
+            -H 'content-type: application/json' \
+            -d '{"run_id":"ci-smoke"}' \
+          | python3 -c '
+          import json, sys
+          run = json.load(sys.stdin)
+          print(json.dumps(run, indent=2))
+          assert run["run_id"] == "ci-smoke", run
+          assert run["created"] is True, "the run already existed, so this proved nothing"
+          assert run["active"] is True, run
+          '
+
+      - name: The bench is absent, and the run is playable anyway
+        # M4 through the real container: no key was configured, so the counter reports an absent
+        # bench and nothing spent — not a 404, not a 503, which is what "keyless is a supported
+        # mode" has to look like from the outside.
+        #
+        # `/agents` is the prefix the launcher mounts that surface under; the gateway keeps the
+        # root because the client's proxy maps `/api/` onto `/`. A bare `/api/runs/…/spend` answers
+        # 404, which is what this step asserted before it was run against a live backend.
+        run: |
+          set -o pipefail
+          curl --fail --silent --show-error http://127.0.0.1:8790/api/agents/runs/ci-smoke/spend \
+          | python3 -c '
+          import json, sys
+          spend = json.load(sys.stdin)
+          print(json.dumps(spend, indent=2))
+          assert spend["bench_present"] is False, "a provider resolved in a job that configures none"
+          assert spend["calls"] == 0, spend
+          assert spend["tokens"] == 0, spend
+          '
+
+      - name: What the containers said, if any of that failed
+        if: failure()
+        run: docker compose logs --no-color --tail 200
+
+      - name: Tear it down
+        if: always()
+        run: docker compose down -v

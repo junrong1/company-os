@@ -20,6 +20,7 @@ built, a canned response is parsed, and no socket is opened.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,7 @@ import pytest
 import modelgw
 from modelgw import FailureKind
 from modelgw.ceiling import BoundedGateway, Ceiling, MemorySpendLedger, Spend
+from modelgw.config import ENV_API_KEY, PROVIDERS
 from simcore import items as work
 from simcore import scenario as sc
 from simcore import statement as stmt
@@ -929,3 +931,133 @@ def test_a_refused_fallback_keeps_its_condition_rather_than_being_relabelled(
     monkeypatch.setattr(agents_main, "compose_statement", lambda _s: refusable("timeout"))
 
     assert agents_main.produce_statement(_request_from(recorder, pending)) is None
+
+
+# =========================================================================
+# Continuous integration, and the key it must never be given (U13)
+# =========================================================================
+
+WORKFLOW = BACKEND.parent / ".github" / "workflows" / "ci.yml"
+
+#: The marker the keyless job exports, read here and nowhere else in the product. A contributor
+#: with a key exported is not doing anything wrong and must not fail, so the assertion below can
+#: only be made about a process that says it is the keyless job.
+ENV_KEYLESS_CI = "COMPANY_OS_KEYLESS_CI"
+
+#: Every variable a provider key can arrive in, swept out of the provider table rather than typed
+#: out. A ninth provider is a row there, and it extends this list without anyone remembering to.
+KEY_VARIABLES = (
+    ENV_API_KEY,
+    *sorted({name for spec in PROVIDERS.values() for name in spec.key_env}),
+)
+
+#: The prefix every setting this repository reads about a model shares. Asserting on the prefix
+#: rather than on the five names catches the two ceiling variables and anything added later.
+MODEL_ENV_PREFIX = "COMPANY_OS_MODEL"
+
+
+def _workflow_text() -> str:
+    assert WORKFLOW.exists(), (
+        f"{WORKFLOW} is missing. M30 and M67's proof half are claims about CI; with no workflow "
+        "the keyless path is proven by hand, which is what U13 exists to stop."
+    )
+    return WORKFLOW.read_text()
+
+
+def test_continuous_integration_names_no_provider_secret() -> None:
+    """Read the workflow and check it carries no key, in any of the forms a key arrives in.
+
+    Lexical over the whole file rather than parsed out of the jobs, and deliberately so: a parsed
+    assertion would look at `env:` blocks and miss a key pasted into a comment or a `run:` line,
+    and those are exactly where one gets pasted "just to see if the real path works".
+
+    The reason no secret is configured is written in the workflow's own header, and it is not
+    tidiness. A company is a file and files arrive by pull request, so a provider key present in
+    this workflow would make a fork's pull request an exfiltration primitive — the payload being an
+    authored scenario whose text asks a director to say the key out loud.
+    """
+    text = _workflow_text()
+
+    assert "secrets." not in text, (
+        "the workflow references a repository secret. It needs none: it publishes nothing, "
+        "comments on nothing, and must never hold a provider key."
+    )
+
+    named = [variable for variable in KEY_VARIABLES if variable in text]
+    assert not named, (
+        f"the workflow names these provider key variables: {named}. A key belongs in the shell that "
+        "runs `docker compose up`, never in a file this repository commits."
+    )
+
+    assert MODEL_ENV_PREFIX not in text, (
+        f"the workflow sets or names a {MODEL_ENV_PREFIX}* variable. Every job here runs the "
+        "keyless path, and the keyless path is the absence of these, not a chosen value for them."
+    )
+
+
+def test_the_keyless_job_marks_itself_so_its_claim_can_be_checked() -> None:
+    """Without the marker, the assertion below skips forever and reports green while doing so.
+
+    This is the same failure the store suite's dialect test guards against: a skip is not a pass,
+    and a guard that silently stops running is worse than one that was never written.
+    """
+    assert ENV_KEYLESS_CI in _workflow_text(), (
+        f"no job exports {ENV_KEYLESS_CI}, so "
+        "`test_the_keyless_job_really_has_no_model_environment` skips in CI as well as locally, "
+        "and M30 is asserted nowhere."
+    )
+
+
+def test_the_client_type_check_is_a_step_of_its_own() -> None:
+    """vitest does not typecheck, so `npm test` passing says nothing about `tsc -b`.
+
+    The tree has shipped a `tsc` failure under a green `npm test` twice — `2c38686` fixed the
+    first, and this unit found the second in `frontend/tests/app.test.ts`, a parameter property
+    under `erasableSyntaxOnly`. Both were invisible to every suite that existed at the time. This
+    asserts the step that makes them visible is still there.
+    """
+    text = _workflow_text()
+    assert "npm run typecheck" in text, (
+        "the client's type check is not a CI step. `npm test` will stay green over code `tsc -b` "
+        "rejects, and the failure will arrive at image-build time instead."
+    )
+    assert "npm test" in text, "the client's suite is not a CI step"
+
+
+@pytest.mark.skipif(
+    not os.environ.get(ENV_KEYLESS_CI),
+    reason=(
+        f"{ENV_KEYLESS_CI} is unset, so this is not the keyless job. A contributor with a provider "
+        "key exported is playing the product as intended and must not fail here."
+    ),
+)
+def test_the_keyless_job_really_has_no_model_environment() -> None:
+    """Covers M30. The job that proves the keyless path has to actually be on it.
+
+    Asserted about the live process rather than about the workflow file, because that is where the
+    claim is true or false: a variable can reach a job from a repository-level `env`, an
+    organisation default or a composite action, none of which are visible in the file the tests
+    above read.
+
+    The last assertion is the product's own answer rather than a restatement of the first two:
+    `resolve()` is what every surface asks whether there is a bench, so an `Absence` here is the
+    thing M4 and M26 claim, stated by the code that decides it.
+    """
+    configured = sorted(name for name in os.environ if name.startswith(MODEL_ENV_PREFIX))
+    assert not configured, (
+        f"the keyless job has model settings in its environment: {configured}. "
+        "It is then proving the configured path, and nothing is proving the keyless one."
+    )
+
+    keys = sorted(name for name in KEY_VARIABLES if os.environ.get(name))
+    assert not keys, (
+        f"the keyless job has a provider key in its environment: {keys}. No workflow in this "
+        "repository configures one, so it arrived from a repository or organisation setting — "
+        "which is the setting a fork's pull request could read."
+    )
+
+    resolved = modelgw.config.resolve()
+    assert isinstance(resolved, modelgw.config.Absence), (
+        f"a provider resolved in the keyless job: {resolved}. `resolve()` returning a config here "
+        "means the suite below it exercised a bench, and M30 proved nothing."
+    )

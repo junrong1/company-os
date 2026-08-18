@@ -74,7 +74,14 @@ class SilentSocket {
   onclose: unknown = null
   onerror: unknown = null
   onmessage: unknown = null
-  constructor(readonly url: string) {}
+  // Declared and assigned rather than a `readonly url` parameter property: parameter
+  // properties are not erasable syntax, and `erasableSyntaxOnly` is on. vitest does not
+  // typecheck, so this compiled fine under `npm test` and failed only under `tsc -b` —
+  // the same gap `2c38686` closed once already, and the reason U13 runs both in CI.
+  readonly url: string
+  constructor(url: string) {
+    this.url = url
+  }
   send() {}
   close() {}
   addEventListener() {}

@@ -958,6 +958,9 @@ or the first command. It has no excuse left: U11 was its last dependency. The `t
 `2c38686` — a type error that sat in the tree while `npm test` stayed green, because vitest does not
 typecheck — is what the absence costs, and U11 ran `npx tsc --noEmit` by hand for exactly that reason.
 
+> Closed. See *What U13 found*, below — and the cost this paragraph predicted had already been paid a
+> second time: there was another `tsc` failure sitting in the tree when U13 first ran the type check.
+
 ### Orchestration notes worth carrying forward
 
 - **Five agents died mid-response on oversized tool calls**, one of them twice at the same point.
@@ -972,3 +975,133 @@ typecheck — is what the absence costs, and U11 ran `npx tsc --noEmit` by hand 
   the defects they found and deliberately did not fix, and for the plan claims that turned out to be
   wrong — U2 disproved R16's expectation, U5 found the metric U5's own stated verification rests on is
   near-insensitive, and U10 found four bugs by reviewing its own work.
+
+---
+
+## What U13 found, that U12, U14 and U20 need
+
+CI exists: `.github/workflows/ci.yml`, four jobs, no secret of any kind. The keyless suite on both
+store dialects, the bench against the mock adapter, the client's four steps with the type check
+separated out, and `docker compose up` from a clean checkout reaching a client that creates a run.
+Backend 1,127 → **1,132** tests; the client stayed at 491.
+
+### It found the failure it was built to find, in its first minute
+
+`npm test` was green at 491 and `tsc -b` was failing:
+
+```
+tests/app.test.ts(77,15): error TS1294: This syntax is not allowed when 'erasableSyntaxOnly' is enabled.
+```
+
+A `constructor(readonly url: string)` parameter property in `e796ebf`'s `SilentSocket` — parameter
+properties are not erasable syntax, and vitest transpiles without checking. This is the **second**
+instance of the class: `2c38686` fixed the first, and U11 ran `npx tsc --noEmit` by hand precisely
+because it knew the gap was there. The fix is three lines; the point is that two units in a row shipped
+into a tree where the only guard was somebody remembering. It is a CI step now.
+
+### The smoke job's first draft asserted a 404, and only running it said so
+
+`GET /api/runs/{id}/spend` does not exist. The gateway keeps the root because the client's proxy maps
+`/api/` onto `/`, and every other surface is mounted under a prefix — the spend counter is at
+`/agents/runs/{id}/spend`, so through nginx it is `/api/agents/runs/{id}/spend`. The assertion was
+written from the route decorator in `services/agents/main.py` and was wrong because that file does not
+know its own mount point.
+
+**For U20 and U14:** the same trap is waiting. The report is at `/report/...` and anything U14 mounts
+gets a prefix too; `SURFACES` in `single_process.py` is the only place the full path exists. Assert a
+new surface's path against a running launcher, not against its decorator.
+
+### `--locked` is now the thing that keeps the lockfile honest
+
+This document already records that an older `uv` on PATH rewrites 454 lines of `backend/uv.lock` on
+any `uv run`, and that R8 forbids it. It fired again during this unit and was reverted the same way.
+CI installs uv **0.9.17** — the version `backend/Dockerfile` uses — and runs `uv run --locked`, which
+neither resolves nor writes, and which additionally fails the build if `pyproject.toml` has moved and
+nobody re-locked. Verified against 0.9.17 fetched to a scratch directory, since the `uv` on this
+machine is still 0.4.22. **The local trap is unchanged**: check `git status backend/uv.lock` before
+committing, or run through `backend/.venv/bin/python -m pytest`.
+
+### A skip is not a pass, and the store suite is where that bites
+
+`test_store.py` skips its Postgres half when the store is unreachable, and 43 tests skipping is not
+visible in a green summary line. The keyless job publishes the store and then asserts that
+`test_postgres_is_reachable_for_this_suite` **passed** rather than skipped — pytest has no flag that
+says so, hence the `case` on its summary. Checked in both directions: it passes with the store up
+(84 store tests, both dialects) and fails with it down.
+
+**On this machine the store suite's Postgres half cannot run at the documented port.** `avater-db`
+from another project holds `127.0.0.1:55432`, so `docker compose -f docker-compose.yml -f
+docker-compose.test.yml up -d postgres` fails to bind and the suite skips exactly as it did before.
+`COMPANY_OS_TEST_POSTGRES_URL` is the way out — the suite reads it — and it is why U6's verification
+has probably been reported from a SQLite-only run more than once.
+
+### What CI still does not prove
+
+Named so nobody reads the badge as covering them:
+
+- **The second boot that reuses the volume**, and **the second writer that names the lease holder**.
+  Both are still only in the docstrings of the compose config tests. The smoke job always starts from
+  no volume, which is the first-boot case alone.
+- **The DDL wipe path.** A stale volume at DDL 2 against a kernel at DDL 3 was hit while verifying
+  this unit — the backend refuses to start and names the remedy, exactly as documented — but a job
+  that asserts that refusal would have to build a store at an old schema version on purpose.
+- **Anything against a real provider.** By design, and the workflow's header says why: a company is a
+  file, files arrive by pull request, and a key in this workflow would make a fork's pull request an
+  exfiltration primitive. `test_bench.py` asserts the file names no provider key, and the keyless job
+  exports `COMPANY_OS_KEYLESS_CI` so the suite can assert the same of the *process* — a variable can
+  reach a job from an organisation default that the file never mentions.
+
+### For U12
+
+The append-only coverage test runs in the keyless job on both dialects now. U12's plan text already
+says the cache table must be registered as mutable so that test does not silently skip it — with CI
+running it against Postgres as well as SQLite, getting that wrong is a red build rather than a quiet
+one.
+
+### The first run found a flaky test, which is the second defect CI caught before it was green
+
+Three of four jobs passed first time, including the compose smoke. The keyless job failed on
+`test_compare.py::test_every_branch_of_a_comparison_forks_from_one_instant`:
+
+```
+E  simcore.step.CommandRejected: the run ended (horizon); there is nothing downstream to compare
+```
+
+Not U13's code, and not a new bug — a race that a shared runner lost where this laptop wins. The
+test starts a ticker thread to move the parent, and that ticker steps **120 ticks per 10ms against a
+10,800-tick horizon**, so it can end the run in under a second. Six comparisons then have to finish
+before it does. Locally they do; on CI they do not, and the seventh call is *refused* rather than
+measured — a `CommandRejected` out of the loop, not an assertion failure.
+
+Its author half-saw this: `assert spreads, "the ticker ended the run before a single comparison ran"`
+covers the run ending *before* the loop and nothing covers it ending *during*.
+
+Fixed by bounding the ticker a sim-day short of the horizon, so it moves the parent without ever
+ending the run. **But that bound makes the test weaker in the other direction** — a fast machine can
+now finish six comparisons before a tick lands inside one, and the test would pass as the
+single-threaded version it was written to replace. So the property gets a deterministic companion,
+`test_the_parent_moving_between_branches_moves_no_fork_tick`, which forces a parent step between
+branches from inside `_branch_from` rather than waiting for two threads to collide. This is the same
+move U5 already made two sections down in the same file, for the same reason, citing this same test
+as the thing that taught it — it just was not applied to the test doing the teaching.
+
+Both catch the bug they describe: with the capture moved back inside the per-branch loop, the
+threaded test fails and the deterministic one fails with `{613, 614, 615} == {613}`.
+
+**The general lesson, for U16 and U19.** Every threaded test in this repository is a race between
+what it asserts and what its helper thread does, and the helper is usually unbounded because bounding
+it was not the point. U16 forks under a moving parent and U19 asserts determinism over a lineage; both
+will want a thread. Write the deterministic version first and the threaded one as the topology check,
+not the other way round.
+
+### The action versions were four majors out of date
+
+The first run resolved all three tags but warned on every job: `actions/checkout@v4`,
+`astral-sh/setup-uv@v5` and `actions/setup-node@v4` target Node 20, which is deprecated and being
+forced onto Node 24. The current majors are **v7**, **v7** and **v10.0.1**, all on node24, and every
+input this workflow passes still exists at those refs — checked against the tagged `action.yml` rather
+than assumed.
+
+`setup-uv` is pinned **exactly** rather than to a major, and that is not a style choice: it stopped
+publishing floating majors after v7, so `@v10` does not resolve at all and only `@v10.0.1` does.
+Worth knowing before the next dependency bump reaches for `@v11`.
