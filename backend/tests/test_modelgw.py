@@ -45,7 +45,8 @@ import pytest
 
 import modelgw
 from modelgw import Completion, Failure, FailureKind, Prompt, Turn, Usage
-from modelgw import anthropic_native, openai_compatible
+from modelgw import anthropic_native, cache as cache_module, openai_compatible
+from modelgw.cache import CacheKey, MemoryResponseCache, Purpose
 from modelgw.ceiling import (
     DEFAULT_MAX_CALLS,
     DEFAULT_MAX_TOKENS,
@@ -1522,3 +1523,660 @@ def test_the_agents_service_reaches_the_store_without_importing_the_kernels(
 
     assert "kernel" not in roots, "R4: services meet at a contract, not by importing each other"
     assert "logschema" in roots, "the shared table definitions are how it reads the store"
+
+
+# =========================================================================
+# U12: caching on the situation (M33; R3)
+# =========================================================================
+#
+# Two claims carry this section. The first is that the address is the *situation* — the
+# assembled prompt, the scope it was drawn under, the purpose it was for — so that a
+# hit is the same question asked twice and never merely a similar one. The second is
+# that the cache is authoritative for nothing: emptying it changes no state, because a
+# statement lives in the log and a fold cannot reach a cache at all.
+#
+# The store-backed half is here rather than in `test_store.py` for the reason U9's
+# counter is: what is under test is the cache's contract. The schema's half of it — the
+# table is mutable, and registered as such — is asserted over there.
+
+#: A director's line, in the shape `Authorized.to_payload()` produces.
+A_SCOPE = {"people": ["dir_hr", "stf_rec"], "items": ["wi_hiring"]}
+
+#: The same line after U15 grants a cross-line read. A wider scope assembles a wider
+#: context, so the two must never share an entry.
+A_GRANTED_SCOPE = {
+    "people": ["dir_hr", "dir_sales", "stf_rec"],
+    "items": ["wi_hiring", "wi_pipeline"],
+}
+
+
+def keyed(
+    prompt: Prompt = PROMPT,
+    *,
+    scope: dict[str, list[str]] | None = None,
+    purpose: Purpose = Purpose.DIRECTOR_STATEMENT,
+    run_id: str = "run-1",
+) -> CacheKey:
+    return CacheKey.derive(
+        prompt, scope=A_SCOPE if scope is None else scope, purpose=purpose, run_id=run_id
+    )
+
+
+def a_completion(text: str = "BRIEFING: The recruiter is the constraint.") -> Completion:
+    return Completion(text=text, usage=Usage(41, 7), provider="ollama", model="a-model-2026")
+
+
+# --- the content address --------------------------------------------------
+
+
+def test_the_same_situation_is_one_address_and_a_changed_prompt_is_another() -> None:
+    """M33 in one assertion pair, before any store is involved.
+
+    The prompt is assembled from the persona, the checkpoint and the retrieved evidence, so
+    "the same prompt" is "the same situation" — which is what makes a digest the right key
+    and a tick the wrong one (R29). Two runs standing at the same checkpoint with the same
+    evidence *are* in the same situation, whatever tick each of them reached it at.
+    """
+    same = Prompt(system=PROMPT.system, turns=PROMPT.turns)
+    assert keyed().digest == keyed(same).digest
+
+    moved_on = Prompt(
+        system=PROMPT.system,
+        turns=(Turn(role="user", text="Brief me on the migration. One post has closed."),),
+    )
+    assert keyed(moved_on).digest != keyed().digest
+
+
+def test_a_statement_drawn_under_a_grant_is_not_served_where_none_was_granted() -> None:
+    """R3's scope half, and the reason it is in the key rather than assumed by the prompt.
+
+    Two scopes frequently assemble identical prompts — most obviously when both retrieved
+    nothing at all — and a briefing produced under an Authorization the CEO granted in one
+    timeline must not appear in a timeline where they never granted it. The prompt is the
+    situation; the scope is what the situation was allowed to be drawn from.
+    """
+    assert keyed(scope=A_GRANTED_SCOPE).digest != keyed(scope=A_SCOPE).digest
+
+
+def test_the_scope_is_a_set_of_facts_rather_than_the_order_they_arrived_in() -> None:
+    """A key that depended on iteration order would miss at random, which is the worst
+    failure a cache has: it looks like it works and costs money on every other call."""
+    shuffled = {"items": list(A_SCOPE["items"]), "people": list(reversed(A_SCOPE["people"]))}
+    assert keyed(scope=shuffled).digest == keyed().digest
+
+
+def test_a_ceo_summary_and_a_director_statement_do_not_collide() -> None:
+    """The purpose namespace. Both can be raised at one tick about one person, and a
+    summary served where a briefing was asked for is impossible to notice from the text —
+    so the namespace is in the key before U14 writes the second producer, not after
+    somebody sees the wrong block on screen."""
+    assert keyed(purpose=Purpose.CEO_SUMMARY).digest != keyed().digest
+
+
+@pytest.mark.parametrize(
+    ("label", "prompt"),
+    [
+        ("system", Prompt(system="You are the sales director.", turns=PROMPT.turns)),
+        (
+            "turn text",
+            Prompt(system=PROMPT.system, turns=(Turn(role="user", text="Brief me on hiring."),)),
+        ),
+        (
+            "turn count",
+            Prompt(
+                system=PROMPT.system,
+                turns=(*PROMPT.turns, Turn(role="assistant", text="Understood.")),
+            ),
+        ),
+        ("max output", Prompt(system=PROMPT.system, turns=PROMPT.turns, max_output_tokens=800)),
+        ("temperature", Prompt(system=PROMPT.system, turns=PROMPT.turns, temperature=0.7)),
+    ],
+)
+def test_every_field_of_the_prompt_moves_the_address(label: str, prompt: Prompt) -> None:
+    """`max_output_tokens` and `temperature` are not prose, and they still change the answer.
+    A key that ignored them would serve a reply produced under settings since changed."""
+    assert keyed(prompt).digest != keyed().digest, f"{label} is not in the address"
+
+
+def test_the_derivations_own_version_is_in_the_address(monkeypatch) -> None:
+    """`KEY_VERSION` is what makes a change to *what goes into the key* safe to ship.
+
+    Without it, adding a field the derivation forgot would leave every existing entry
+    answering lookups made under the new rule — a stale hit, which costs a briefing drawn
+    from a situation that was never the same. Bumping it costs one provider call per entry.
+    """
+    before = keyed().digest
+    monkeypatch.setattr(cache_module, "KEY_VERSION", cache_module.KEY_VERSION + 1)
+    assert keyed().digest != before
+
+
+def test_the_address_does_not_depend_on_this_processs_hash_seed() -> None:
+    """The cache is read by a process that did not write it, so a digest that varied with
+    `PYTHONHASHSEED` would be a cache that never hit after a restart — and would look like
+    a cache that merely was not warm yet.
+
+    Two subprocesses with different seeds, because the failure this catches cannot be
+    reproduced inside one interpreter.
+    """
+    probe = """
+from modelgw.cache import CacheKey, Purpose
+from modelgw.config import Prompt, Turn
+
+prompt = Prompt(system="You are the engineering director.",
+                turns=(Turn(role="user", text="Brief me."),))
+print(CacheKey.derive(prompt, scope={"people": ["b", "a"], "items": ["i"]},
+                      purpose=Purpose.DIRECTOR_STATEMENT, run_id="run-1").digest)
+"""
+    digests = set()
+    for seed in ("0", "12345"):
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            cwd=BACKEND,
+            env={"PYTHONPATH": "packages:services", "PATH": "", "PYTHONHASHSEED": seed},
+        )
+        assert result.returncode == 0, result.stderr
+        digests.add(result.stdout.strip())
+
+    assert len(digests) == 1, f"the digest moved with the hash seed: {digests}"
+
+
+# --- what an entry is, and is not -----------------------------------------
+
+
+def test_a_served_entry_reports_no_tokens_and_names_no_provider() -> None:
+    """What a hit *cost* is zero, and the entry has to say so.
+
+    Reporting the original call's usage would invite a caller to count it a second time,
+    which is the one way a cache could move a ceiling it is supposed to protect. The model
+    is kept because the statement in the log names it and must stay true; the provider is
+    not, because naming one would name a call that did not happen.
+    """
+    cache = MemoryResponseCache()
+    cache.put(keyed(), a_completion())
+
+    served = cache.get(keyed())
+    assert served is not None
+    assert served.text == a_completion().text
+    assert served.model == "a-model-2026", "who wrote the prose, so the log stays true"
+    assert served.usage == Usage(), "no provider was contacted"
+    assert served.provider == ""
+
+
+def test_a_fallback_cannot_be_written_to_the_cache() -> None:
+    """The execution decision, as a signature rather than a comment.
+
+    A cached fallback is a wrong answer with a long life, and the operator's remedy for one
+    — raise the ceiling, configure a key — would silently not work.
+    """
+    cache = MemoryResponseCache()
+    fallback = Failure(kind=FailureKind.CEILING_REACHED, detail="no budget left")
+
+    with pytest.raises(TypeError, match="never a cache entry"):
+        cache.put(keyed(), fallback)  # type: ignore[arg-type]
+
+    assert cache.get(keyed()) is None
+
+
+def test_an_entry_is_scoped_to_a_lineage_and_another_lineage_misses() -> None:
+    """R3's scoping half. A fork reads its parent's entries; an unrelated run does not."""
+    cache = MemoryResponseCache({"child": "run-1", "run-1": "run-1", "stranger": "stranger"})
+    cache.put(keyed(run_id="run-1"), a_completion())
+
+    assert cache.get(keyed(run_id="child")) is not None, "one lineage, one situation"
+    assert cache.get(keyed(run_id="stranger")) is None, "another timeline pays for its own"
+
+
+# --- the lookup in front of the ceiling -----------------------------------
+
+
+def cached(
+    env: dict[str, str],
+    provider: MockProvider,
+    ceiling: Ceiling = TINY,
+    cache: MemoryResponseCache | None = None,
+    ledger: MemorySpendLedger | None = None,
+) -> BoundedGateway:
+    return BoundedGateway(
+        modelgw.from_environment(env, transport=provider.transport),
+        ceiling,
+        ledger if ledger is not None else MemorySpendLedger(),
+        cache if cache is not None else MemoryResponseCache(),
+    )
+
+
+async def test_the_second_time_a_situation_is_reached_the_provider_is_not_contacted() -> None:
+    """M33 through the one call site. The answer is the same, and it cost nothing."""
+    mock = answering(ok_payload(WIRE_OPENAI))
+    gateway = cached(env_for("ollama"), mock, Ceiling(max_calls=10, max_tokens=10_000))
+
+    first = await gateway.complete("run-1", PROMPT, keyed())
+    gateway.keep()
+    second = await gateway.complete("run-1", PROMPT, keyed())
+
+    assert isinstance(first, Completion) and isinstance(second, Completion)
+    assert second.text == first.text
+    assert len(mock.requests) == 1, "the provider was asked once"
+
+    reading = gateway.reading("run-1")
+    assert reading.spend.calls == 1, "a hit is not a call"
+    assert reading.spend.cache_hits == 1, "and the counter can say what it was"
+    assert reading.spend.tokens == first.usage.total_tokens, "no tokens counted twice"
+
+
+async def test_a_different_situation_in_the_same_run_misses() -> None:
+    mock = answering(ok_payload(WIRE_OPENAI))
+    gateway = cached(env_for("ollama"), mock, Ceiling(max_calls=10, max_tokens=10_000))
+
+    await gateway.complete("run-1", PROMPT, keyed())
+    gateway.keep()
+    other = Prompt(system=PROMPT.system, turns=(Turn(role="user", text="Brief me on hiring."),))
+    await gateway.complete("run-1", other, keyed(other))
+    gateway.keep()
+
+    assert len(mock.requests) == 2
+    assert gateway.reading("run-1").spend.cache_hits == 0
+
+
+async def test_a_hit_is_served_at_an_exhausted_ceiling_because_it_spends_nothing() -> None:
+    """The ordering, and the reason it is the one chosen.
+
+    The ceiling bounds what a run *spends*; a hit contacts nothing. Refusing to serve one
+    would withhold a briefing already paid for. It does not weaken the off switch either:
+    entries are scoped to a lineage, so a lineage that never called anything has none —
+    which is every lineage started at a ceiling of zero, asserted below.
+    """
+    mock = answering(ok_payload(WIRE_OPENAI))
+    cache = MemoryResponseCache()
+    gateway = cached(env_for("ollama"), mock, Ceiling(max_calls=1, max_tokens=10_000), cache)
+
+    assert isinstance(await gateway.complete("run-1", PROMPT, keyed()), Completion)
+    gateway.keep()
+    assert gateway.reading("run-1").calls_exhausted
+
+    served = await gateway.complete("run-1", PROMPT, keyed())
+    assert isinstance(served, Completion), "an entry already paid for is still served"
+    assert len(mock.requests) == 1
+
+    # And a run that never called anything has nothing to be served, which is what setting
+    # the ceiling to zero is for.
+    silent = cached(env_for("ollama"), mock, Ceiling(max_calls=0, max_tokens=10_000))
+    refused = await silent.complete("run-2", PROMPT, keyed(run_id="run-2"))
+    assert isinstance(refused, Failure) and refused.kind is FailureKind.CEILING_REACHED
+
+
+async def test_a_call_that_failed_leaves_the_cache_empty_so_raising_a_ceiling_recovers() -> None:
+    """Covers the execution decision at the level a run meets it.
+
+    Every way a call can fail — a 500 here, and a refusal by the ceiling — writes nothing.
+    So the operator's remedy works: with the provider fixed, the next attempt is a real call
+    rather than a stored fallback replayed forever.
+    """
+    cache = MemoryResponseCache()
+    broken = answering({"error": "boom"}, status=500)
+    gateway = cached(env_for("ollama"), broken, Ceiling(max_calls=1, max_tokens=10_000), cache)
+
+    failed = await gateway.complete("run-1", PROMPT, keyed())
+    gateway.keep()
+    assert isinstance(failed, Failure)
+    assert cache.get(keyed()) is None, "a fallback is never an entry, even if the caller keeps"
+
+    refused = await gateway.complete("run-1", PROMPT, keyed())
+    gateway.keep()
+    assert isinstance(refused, Failure) and refused.kind is FailureKind.CEILING_REACHED
+    assert cache.get(keyed()) is None, "and neither is a ceiling refusal"
+
+    fixed = answering(ok_payload(WIRE_OPENAI))
+    recovered = cached(env_for("ollama"), fixed, Ceiling(max_calls=5, max_tokens=10_000), cache)
+    assert isinstance(await recovered.complete("run-1", PROMPT, keyed()), Completion)
+
+
+async def test_an_answer_the_caller_did_not_accept_is_never_written() -> None:
+    """The deferred write, and the failure it exists to prevent.
+
+    A reply that ranks the options is a perfectly good HTTP response, so the gateway cannot tell
+    it from a usable one — only the guards can, and they run after this. Writing on arrival would
+    serve that refusal back on every future visit to the situation, with "switch to a better
+    model" as the remedy that changes nothing: the address is the situation, not the model.
+    """
+    mock = answering(ok_payload(WIRE_OPENAI))
+    cache = MemoryResponseCache()
+    gateway = cached(env_for("ollama"), mock, Ceiling(max_calls=10, max_tokens=10_000), cache)
+
+    assert isinstance(await gateway.complete("run-1", PROMPT, keyed()), Completion)
+    assert cache.by_lineage == {}, "answered, staged, and not yet anyone's to keep"
+
+    await gateway.complete("run-1", PROMPT, keyed())
+    assert len(mock.requests) == 2, "so the next visit asks again rather than serving a refusal"
+
+    gateway.keep()
+    assert cache.get(keyed()) is not None, "and an accepted answer is kept when it is accepted"
+
+
+async def test_keeping_twice_or_keeping_a_hit_writes_nothing_extra() -> None:
+    """`keep()` is safe to call unconditionally, which is what makes the call site one line."""
+    mock = answering(ok_payload(WIRE_OPENAI))
+    cache = MemoryResponseCache()
+    gateway = cached(env_for("ollama"), mock, Ceiling(max_calls=10, max_tokens=10_000), cache)
+
+    await gateway.complete("run-1", PROMPT, keyed())
+    gateway.keep()
+    gateway.keep()
+    assert len(cache.by_lineage) == 1
+
+    served = await gateway.complete("run-1", PROMPT, keyed())
+    assert isinstance(served, Completion)
+    gateway.keep()
+    assert len(cache.by_lineage) == 1, "a hit was already in there"
+
+
+async def test_a_keyless_run_writes_nothing_and_is_served_nothing() -> None:
+    """M20 again, through the cache: with no provider there is nothing to keep."""
+    cache = MemoryResponseCache()
+    gateway = BoundedGateway(
+        modelgw.from_environment({}), Ceiling(), MemorySpendLedger(), cache
+    )
+
+    assert isinstance(await gateway.complete("run-1", PROMPT, keyed()), Failure)
+    gateway.keep()
+    assert cache.by_lineage == {}
+
+
+async def test_a_caller_with_no_situation_to_address_neither_reads_nor_writes() -> None:
+    """`key` is optional so that every other caller of this class stays exactly as it was.
+
+    The address is the assembled prompt, the scope and the purpose, and only the bench knows
+    those. A caller that passes nothing gets the ceiling alone.
+    """
+    cache = MemoryResponseCache()
+    mock = answering(ok_payload(WIRE_OPENAI))
+    gateway = cached(env_for("ollama"), mock, Ceiling(max_calls=10, max_tokens=10_000), cache)
+
+    await gateway.complete("run-1", PROMPT)
+    gateway.keep()
+    await gateway.complete("run-1", PROMPT)
+    gateway.keep()
+
+    assert len(mock.requests) == 2
+    assert cache.by_lineage == {}
+
+
+# --- the cache in the store: it survives a restart, and it is per lineage --
+
+
+@pytest.fixture
+def cache_store(spend_store):
+    """The provisioned store from the counter's fixture, with a cache on the same file."""
+    from agents.main import StoreResponseCache
+
+    store, handle, url, _ledger = spend_store
+    cache = StoreResponseCache(url)
+    try:
+        yield store, handle, url, cache
+    finally:
+        cache.dispose()
+
+
+def test_the_cache_survives_a_restart(cache_store) -> None:
+    """The half a dictionary cannot do, and the reason the table exists at all.
+
+    A cache that emptied on restart would make the one expensive thing in the store the one
+    thing that did not survive one — and re-earning it costs real money on the operator's own
+    key.
+    """
+    from agents.main import StoreResponseCache
+
+    _store, _handle, url, cache = cache_store
+    cache.put(keyed(run_id=PARENT), a_completion())
+
+    cache.dispose()
+    after = StoreResponseCache(url)
+    try:
+        served = after.get(keyed(run_id=PARENT))
+        assert served is not None and served.text == a_completion().text
+    finally:
+        after.dispose()
+
+
+def test_a_rules_version_change_evicts_rather_than_serving(cache_store) -> None:
+    """Advice assembled under different tuning is not the same advice.
+
+    Two defences, and the order between them is the point: the *lookup* filters on the rules
+    version, so nothing stale is served in the window between a change and the next restart,
+    and the startup sweep then reclaims the rows. A sweep alone would have made housekeeping
+    the thing correctness rested on.
+    """
+    from agents.main import StoreResponseCache
+
+    _store, _handle, url, cache = cache_store
+    cache.put(keyed(run_id=PARENT), a_completion())
+    assert cache.get(keyed(run_id=PARENT)) is not None
+
+    retuned = StoreResponseCache(url, rules_version="rules-after-a-tuning-change")
+    try:
+        assert retuned.get(keyed(run_id=PARENT)) is None, "refused before any sweep runs"
+        assert retuned.evict_other_rules_versions() == 1
+        assert cache.get(keyed(run_id=PARENT)) is None, "and the row is gone"
+    finally:
+        retuned.dispose()
+
+
+def test_a_fork_reaches_its_parents_entry_once_the_lineage_root_is_copied(cache_store) -> None:
+    """M33's fork half, and the one line of it that is not this unit's to write.
+
+    `fork_run` sets a child's `lineage_root_id` to its own id, so today a fork misses its
+    parent's entries — U16 owns copying the parent's root, and the assertion before the update
+    below is what that unit will change. Pinning both halves here means the behaviour is
+    specified before the unit that produces it lands, the way U9 pinned the spend aggregate.
+    """
+    from sqlalchemy import update
+
+    from logschema import runs as runs_table
+
+    store, handle, _url, cache = cache_store
+    cache.put(keyed(run_id=PARENT), a_completion())
+
+    store.fork_run(parent_run_id=PARENT, at_seq=1, child_run_id=CHILD, lease_handle=handle)
+    assert cache.get(keyed(run_id=CHILD)) is None, "its own root until U16 copies the parent's"
+
+    with store.engine.begin() as connection:
+        connection.execute(
+            update(runs_table).where(runs_table.c.run_id == CHILD).values(lineage_root_id=PARENT)
+        )
+
+    served = cache.get(keyed(run_id=CHILD))
+    assert served is not None and served.text == a_completion().text
+    assert cache.get(keyed(run_id=CHILD, scope=A_GRANTED_SCOPE)) is None, (
+        "and only for the situation it was written under"
+    )
+
+
+def test_two_siblings_at_one_tick_with_different_options_do_not_share_an_entry(
+    cache_store,
+) -> None:
+    """One lineage, two branches, two situations.
+
+    They share a root, so nothing about the scoping keeps them apart — what does is that the
+    option each took is in the evidence, so the assembled prompt differs, so the address does.
+    """
+    from sqlalchemy import update
+
+    from logschema import runs as runs_table
+
+    store, handle, _url, cache = cache_store
+    sibling = "run-sibling"
+    store.fork_run(parent_run_id=PARENT, at_seq=1, child_run_id=CHILD, lease_handle=handle)
+    store.fork_run(parent_run_id=PARENT, at_seq=1, child_run_id=sibling, lease_handle=handle)
+    with store.engine.begin() as connection:
+        connection.execute(
+            update(runs_table)
+            .where(runs_table.c.run_id.in_([CHILD, sibling]))
+            .values(lineage_root_id=PARENT)
+        )
+
+    took_the_first = Prompt(
+        system=PROMPT.system, turns=(Turn(role="user", text="The post was rewritten."),)
+    )
+    took_the_second = Prompt(
+        system=PROMPT.system, turns=(Turn(role="user", text="The post was left as it was."),)
+    )
+    cache.put(keyed(took_the_first, run_id=CHILD), a_completion("BRIEFING: A."))
+
+    assert cache.get(keyed(took_the_first, run_id=sibling)) is not None, "same situation"
+    assert cache.get(keyed(took_the_second, run_id=sibling)) is None, "different one"
+
+
+def test_an_entry_carries_the_answer_and_never_the_question(cache_store) -> None:
+    """R6, and the reason only a digest is stored.
+
+    A table holding assembled prompts would be a second copy of the run's world sitting
+    outside the append-only log, and the prompts carry the whole retrieved context.
+    """
+    from sqlalchemy import select
+
+    from logschema import model_cache
+
+    store, _handle, _url, cache = cache_store
+    secret_situation = Prompt(
+        system=PROMPT.system,
+        turns=(Turn(role="user", text="[EVIDENCE] seq 9 | day 5 | WORK_ASSIGNED [/EVIDENCE]"),),
+    )
+    cache.put(keyed(secret_situation, run_id=PARENT), a_completion())
+
+    with store.engine.connect() as connection:
+        row = connection.execute(select(model_cache)).mappings().one()
+
+    written = json.dumps({key: str(value) for key, value in row.items()})
+    assert "WORK_ASSIGNED" not in written, "the question is not kept, only its digest"
+    assert RAW_KEY not in written and "ollama" not in written
+    assert row["purpose"] == str(Purpose.DIRECTOR_STATEMENT), "readable without recomputing"
+    assert row["model_identity"] == "a-model-2026"
+
+
+def test_a_write_for_a_run_the_store_does_not_know_is_dropped_rather_than_attempted(
+    cache_store, caplog
+) -> None:
+    """An entry keyed to a lineage that does not exist could never be matched, and never
+    removed with the lineage it claims to belong to.
+
+    Dropped where it is decided rather than attempted and caught, which is the assertion that
+    distinguishes the two: without the check the insert would violate the foreign key, be
+    swallowed by the same `except` that covers a store being down, and log a warning saying the
+    cache could not be written — an operator would go looking for a broken database.
+    """
+    _store, _handle, _url, cache = cache_store
+
+    with caplog.at_level(logging.WARNING):
+        cache.put(keyed(run_id="run-that-never-existed"), a_completion())
+
+    assert cache.get(keyed(run_id="run-that-never-existed")) is None
+    assert "could not write the response cache" not in caplog.text, (
+        "a run this store does not know is not a database failure"
+    )
+
+
+def test_a_cache_write_that_fails_leaves_the_run_correct_and_the_log_unchanged(
+    cache_store, caplog
+) -> None:
+    """A failed write costs a provider call. It does not cost a briefing, a counter or a row.
+
+    Pointed at a database it cannot open, which is what an operator's store being down looks
+    like from this thread — and this thread's whole job is to be optional.
+    """
+    from sqlalchemy import func, select
+
+    from agents.main import StoreResponseCache
+    from logschema import event_log
+
+    store, _handle, _url, _cache = cache_store
+    with store.engine.connect() as connection:
+        before = connection.execute(select(func.count()).select_from(event_log)).scalar_one()
+
+    unreachable = StoreResponseCache("sqlite:////no-such-directory-for-u12/cache.sqlite3")
+    try:
+        with caplog.at_level(logging.WARNING):
+            unreachable.put(keyed(run_id=PARENT), a_completion())
+            assert unreachable.get(keyed(run_id=PARENT)) is None, "an unreadable cache is a miss"
+    finally:
+        unreachable.dispose()
+
+    assert "could not write the response cache" in caplog.text
+    with store.engine.connect() as connection:
+        after = connection.execute(select(func.count()).select_from(event_log)).scalar_one()
+    assert after == before, "the log is not where a cache failure lands"
+
+
+# --- the verification: the property lives in the log ----------------------
+
+
+def test_a_fold_cannot_reach_a_cache_at_all() -> None:
+    """Why emptying the table cannot change a state, stated structurally.
+
+    The plan's verification is that emptying the cache between a fork and a re-fold changes
+    nothing about the resulting states. The reason it cannot is that the fold is `simcore`,
+    the cache is `modelgw`, and `simcore` does not import the model gateway — a rule
+    `test_import_boundaries.py` holds for the whole package and this restates for the one
+    module whose absence is the property.
+    """
+    offenders = []
+    for path in sorted((BACKEND / "packages" / "simcore").glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Import):
+                roots = {alias.name.split(".")[0] for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+                roots = {node.module.split(".")[0]}
+            else:
+                continue
+            if "modelgw" in roots:
+                offenders.append(path.name)
+
+    assert not offenders, (
+        "the fold reached the model gateway, so a cached response could enter a replayed "
+        f"state: {sorted(set(offenders))}"
+    )
+
+
+def test_emptying_the_cache_changes_nothing_about_what_the_log_folds_to() -> None:
+    """The plan's verification, run rather than argued.
+
+    A run whose log carries a statement, a cache holding the answer to that same situation,
+    and the same fold before and after the cache is emptied. The hashes match because a
+    statement is an event: the fork copies the rows and the fold reads them, so what the
+    cache saves is a provider call and never a fact.
+    """
+    from simcore import hashing
+    from simcore import log as folder
+    from simcore import step as sim
+    from test_pending_input import Recorder
+
+    recorder = Recorder()
+    request = recorder.open_a_checkpoint_in_person()
+    recorder.record(
+        sim.receive_answer(
+            recorder.state, request.request_id, recorder.statement_answer(request)
+        )
+    )
+    # Past the landing tick, so the statement has been applied rather than merely queued: an
+    # answer waiting in `pending` would fold identically for a duller reason.
+    recorder.advance_until(lambda state: request.request_id not in state.pending)
+
+    cache = MemoryResponseCache()
+    cache.put(keyed(run_id="run-folded"), a_completion())
+
+    def refolded() -> str:
+        folded = folder.fold(
+            recorder.log, at_live_head=False, strict=True, through_tick=recorder.state.tick
+        )
+        return hashing.state_hash(sim.snapshot(folded.state)).overall
+
+    before = refolded()
+    assert before == recorder.hash, "sanity: the fold reproduces the live run"
+
+    cache.by_lineage.clear()
+
+    assert refolded() == before, "the cache is authoritative for nothing"
+    assert any(
+        "briefing" in envelope.decoded_payload().get("answer", {})
+        for envelope in recorder.log
+    ), "and the statement itself is still in the log, where it always was"

@@ -81,6 +81,11 @@ month you keep it — and a forward migration for every schema change would be a
 standing cost paid to preserve something nobody is preserving. So an existing
 volume is dropped across a schema change, and `-v` is the flag that does it.
 
+A *new table* is not a schema change in that sense and does not move the version: the
+backend creates missing tables at every startup, so a store written before one existed
+grows it on the next boot with nothing to migrate. The version moves when an existing
+table's shape does, which is the case a wipe is the remedy for.
+
 ### Create a run
 
 Creation is its own route rather than a command kind, deliberately: a command must
@@ -281,6 +286,18 @@ run's own spend against its own ceiling, with the lineage total beside it.
 
 Reaching a ceiling stops model calls; it never stops the run. The directors fall back
 to their scripted replies and the report records where the bench went quiet.
+
+**The same situation is only paid for once.** A director's briefing is cached under a
+digest of the assembled prompt, the reporting line it was drawn under, and what the call
+was for — so revisiting a checkpoint, or reaching one again in a fork, serves what the
+provider already said instead of asking again. A hit is not a call: it does not move
+either ceiling, and the HUD counts it separately, which is what "served from cache, not
+called" beside the spend figure means. Only a briefing that passed the guards is kept —
+never a scripted fallback, and never a reply the guards refused — so fixing a provider,
+raising a ceiling or switching to a model that follows the rules works immediately
+rather than replaying a stored refusal forever. Entries belong to one lineage, go when it
+does, and are dropped when the simulation's tuning changes; nothing in the cache is
+authoritative, and emptying `model_cache` costs a provider call and nothing else.
 
 The only spelling that removes a bound is the literal word `unlimited`, and it is
 announced at startup as a warning naming the variable — `0` means zero calls, and a

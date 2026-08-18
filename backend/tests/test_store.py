@@ -30,6 +30,7 @@ from logschema import (
     MUTABLE_TABLES,
     event_log,
     metadata,
+    model_cache,
     model_spend,
     runs,
     snapshots,
@@ -241,6 +242,22 @@ def test_the_other_tables_stay_mutable(store, handle, table_name: str) -> None:
             # actual reason this table cannot be append-only is asserted by the ledger's
             # own test in `test_modelgw.py`.
             delete(model_spend).where(model_spend.c.run_id == RUN),
+        ),
+        "model_cache": (
+            insert(model_cache).values(
+                cache_key="0" * 64,
+                lineage_root_id=RUN,
+                purpose="director_statement",
+                rules_ver=RULES_VERSION,
+                response_text="BRIEFING: ...",
+                model_identity="a-model",
+                created_at=utc_now_iso(),
+            ),
+            # Deletable, and that is the requirement rather than a convenience: the startup
+            # sweep removes entries written under a rules version no longer running, and a
+            # lineage's entries go with the lineage. An append-only cache would be a table
+            # that can only grow and can never be corrected.
+            delete(model_cache).where(model_cache.c.lineage_root_id == RUN),
         ),
     }
     statement, cleanup = tables[table_name]
@@ -614,6 +631,44 @@ def test_a_store_with_no_version_row_refuses(store) -> None:
 
     with pytest.raises(DdlVersionMismatch, match="no DDL version row"):
         store.check_ddl_version()
+
+
+def test_a_store_written_before_the_cache_table_existed_gains_it_without_a_wipe(store) -> None:
+    """The claim `DDL_VERSION`'s comment makes, held as a test rather than as prose.
+
+    U12 adds a table and does not move the version, and that is the rule rather than an exception:
+    the version exists to refuse a schema this build cannot *read*, and `create_all` is
+    check-first and runs at every startup, so a store written before the table existed grows it on
+    its next boot with nothing to migrate. DDL 3 could not do this because the same bump added a
+    column to `runs`, which is the case that is still a documented wipe.
+
+    Simulated by dropping the table from a provisioned store, which is what such a store looks
+    like from this build's side, and then doing what a restart does.
+    """
+    from sqlalchemy import inspect
+
+    model_cache.drop(store.engine)
+    assert "model_cache" not in set(inspect(store.engine).get_table_names())
+
+    # A restart: the pre-flight check first, against a store this process has not touched...
+    assert store.check_ddl_version() == DDL_VERSION, "an older store is not a mismatch"
+    # ...and then the creation step, which is where the table arrives.
+    store.create_all()
+
+    assert "model_cache" in set(inspect(store.engine).get_table_names())
+    with store.engine.begin() as connection:
+        connection.execute(
+            insert(model_cache).values(
+                cache_key="1" * 64,
+                lineage_root_id=RUN,
+                purpose="director_statement",
+                rules_ver=RULES_VERSION,
+                response_text="BRIEFING: ...",
+                model_identity="a-model",
+                created_at=utc_now_iso(),
+            )
+        )
+    assert store.check_ddl_version() == DDL_VERSION, "and the version row was not touched"
 
 
 # =========================================================================

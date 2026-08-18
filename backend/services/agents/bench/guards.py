@@ -13,6 +13,19 @@ condition that fired (R5, M21). One exit rather than five is what keeps the surf
 state per failure mode, and the enum rather than a message is what keeps a provider's phrasing out of
 an append-only log.
 
+**A cached answer is re-read and re-guarded every time it is served.** What the cache keeps is the
+provider's reply exactly as it arrived, so `prompts.parse` and both guard predicates run over a hit
+on the way out just as they did on the way in. A rule tightened tomorrow therefore refuses an entry
+written today, which is the property that makes caching a *cost* optimisation rather than a hole in
+the guards — storing the parsed, approved statement instead would have made every entry a permanent
+exemption from whatever the rules became.
+
+Nothing enters the cache until the guards have passed it, which is the other half of the same rule
+and the reason `BoundedGateway.complete` stages a write that `keep()` commits. What survives is one
+narrow case, named rather than papered over: an entry written before a rule was tightened is refused
+on every serve and never re-asked, because a hit reaches no provider. That is a mid-lineage code
+change, the remedy is emptying the table, and the README says so.
+
 **With no provider configured there is no fallback, and that is M20.** `NOT_CONFIGURED` returns
 nothing at all, so the request reaches its deadline exactly as it did before this unit existed and the
 conversation is the Phase 2 conversation. A canned block on a keyless run would be this repository
@@ -26,6 +39,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from modelgw import Completion, Failure, FailureKind
+from modelgw.cache import CacheKey, Purpose
 from modelgw.ceiling import BoundedGateway
 from modelgw.config import Prompt
 from simcore import statement as stmt
@@ -71,7 +85,7 @@ def prose_from_provider(situation: Situation, gateway: BoundedGateway) -> Prose 
         checkpoint=situation.checkpoint,
         retrieved=situation.retrieved,
     )
-    answer = _completed(gateway, situation.request.run_id, prompt)
+    answer = _completed(gateway, situation.request.run_id, prompt, cache_key_for(situation, prompt))
 
     if isinstance(answer, Failure):
         if answer.kind is FailureKind.NOT_CONFIGURED:
@@ -102,6 +116,26 @@ def prose_from_provider(situation: Situation, gateway: BoundedGateway) -> Prose 
         answer.model[: stmt.MAX_IDENTITY_CHARS],
         stmt.PRODUCER_MODEL,
         "",
+    )
+
+
+def cache_key_for(situation: Situation, prompt: Prompt) -> CacheKey:
+    """Where this statement's answer is kept, if one was ever kept (R3).
+
+    Derived here rather than inside the gateway because the two things beyond the prompt that
+    decide it — the authorization scope the context was drawn under, and what the call is *for* —
+    are facts about the situation, and a gateway that inferred either would be inferring the scope
+    it exists to be constrained by.
+
+    The scope is the one the request *carried*, which is the one the retrieval was actually run
+    under: `Authorized.to_payload()`, already sorted, already recorded on `REQUEST_RAISED`. So the
+    key can be re-derived from the log by anyone auditing why a hit was served.
+    """
+    return CacheKey.derive(
+        prompt,
+        scope=situation.request.authorized.to_payload(),
+        purpose=Purpose.DIRECTOR_STATEMENT,
+        run_id=situation.request.run_id,
     )
 
 
@@ -147,8 +181,15 @@ def refusal_of(answer: dict[str, Any], situation: Situation) -> str:
     return stmt.refusal(answer, authorized=situation.request.authorized, offered=situation.offered)
 
 
-def _completed(gateway: BoundedGateway, run_id: str, prompt: Prompt) -> Completion | Failure:
+def _completed(
+    gateway: BoundedGateway, run_id: str, prompt: Prompt, key: CacheKey | None = None
+) -> Completion | Failure:
     """One bounded call, from a worker thread with no event loop of its own.
+
+    The one place in the bench that reaches a provider, which is why the cache lookup is a
+    parameter of this call rather than a step threaded through the leg: `key` addresses the
+    answer, and the gateway serves it from the store before it spends anything, or writes it there
+    after it does.
 
     The kernel dispatches the producer through `asyncio.to_thread`, so this runs on a thread where
     `asyncio.run` is legal and the gateway's `httpx.AsyncClient` is created and closed inside one
@@ -164,7 +205,7 @@ def _completed(gateway: BoundedGateway, run_id: str, prompt: Prompt) -> Completi
 
     async def call() -> Completion | Failure:
         try:
-            return await gateway.complete(run_id, prompt)
+            return await gateway.complete(run_id, prompt, key)
         finally:
             await gateway.aclose()
 

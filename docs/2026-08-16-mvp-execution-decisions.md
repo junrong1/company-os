@@ -940,6 +940,10 @@ only the sequencing, because the dependency graph is no longer the plan's phase 
   `guards._completed` is the single provider call site the lookup wraps. Read "What U12 inherits"
   above before starting: the plan's file list puts a store-backed cache inside `modelgw`, which
   `test_modelgw.py` forbids, and the fork half of M33 stays unreachable until U16.
+
+  > Closed. See *What U12 found*, below. Both warnings held: the pure half is in `modelgw` and the
+  > store-backed half beside `StoreSpendLedger`, and the fork half of M33 is written, tested and
+  > inert until U16 copies a parent's lineage root.
 - **U16** (persistent forks) — file set is disjoint from both. It also inherits two findings: U9
   left `lineage_root_id` set at creation needing only the parent's root copied at fork, and U10 found
   `statement_request_id` is not run-scoped, so a parent and a fork at one tick mint the same id.
@@ -1105,3 +1109,88 @@ than assumed.
 `setup-uv` is pinned **exactly** rather than to a major, and that is not a style choice: it stopped
 publishing floating majors after v7, so `@v10` does not resolve at all and only `@v10.0.1` does.
 Worth knowing before the next dependency bump reaches for `@v11`.
+
+---
+
+## What U12 found, that U16, U14 and U19 need
+
+**The DDL version did not have to move, and the plan says it does.** The plan's System-Wide Impact
+lists the cache table alongside `lineage_root_id` and the spend counter as one bump, and decision §4
+above dropped the carry-forward *because* that bump also added a column to `runs`. That reasoning was
+right and it does not transfer: `create_all` is check-first and runs at every startup, so a **new
+table** appears on the next boot of an existing store with nothing to migrate and nothing to wipe.
+The skew is harmless in both directions — an older build ignores a table it never queries, and the
+cache is authoritative for nothing.
+
+So DDL stays at **3**, and the distinction is now written where it will be read: a change to an
+existing table's shape moves the version, a new table does not. `test_store.py` drops `model_cache`
+from a provisioned store, reopens it, and asserts the table returns and the version check passes —
+the claim is a test rather than a comment. The README's wipe section says the same in one paragraph,
+because "upgrading drops your runs" is a promise to an operator and it should not be stricter than
+it needs to be.
+
+### The write cannot happen where the answer arrives, and that is decision §3
+
+The obvious placement for the cache write is inside `BoundedGateway.complete`, on any `Completion`,
+next to the lookup. The first implementation did exactly that, passed every test written for it, and
+broke §3 of this document — *guard rejections write nothing* — through a door §3 did not name.
+
+A reply that **ranks the options** is a perfectly good HTTP response. The gateway cannot tell it from
+a usable one; only the guards can, and they run a level up in `produce_statement`. Cached on arrival,
+that reply is served back on every future visit to the situation, produces the scripted fallback each
+time, and costs no call — so the operator's remedy, switch to a model that follows the rule, changes
+nothing, because the address is the situation and not the model. At temperature zero the same prompt
+produces the same ranking anyway, which is what makes a stored one permanent rather than unlucky.
+
+The fix is a deferred write: `complete` **stages** an entry and `keep()` commits it, and the leg calls
+`keep()` only after `refusal_of` comes back empty. A `Failure` never stages, so a fallback cannot be
+kept even by a caller that commits unconditionally, and a served hit stages nothing, so committing
+one is a no-op. What this cost structurally is worth knowing: **the gateway's lifetime had to grow to
+match the decision that depends on it.** `compose_statement` used to build the bench and discard it
+inside one call; it now takes one built by `produce_statement`, which is the only place that knows
+whether the answer survived. Two test monkeypatches took the new parameter with it.
+
+### What is cached is the reply, not the statement — so the guards keep their grip
+
+The stored text is the provider's reply exactly as it arrived, and `prompts.parse` plus both guard
+predicates run over it again on the way out. Storing the parsed, approved statement instead would
+have been smaller and would have made every entry a permanent exemption from whatever the rules
+became. One narrow residue is left and is named rather than papered over: an entry written before a
+rule was tightened is refused on every serve and never re-asked, because a hit reaches no provider.
+That takes a code change mid-lineage, the remedy is emptying the table, and the README says so.
+
+### The lookup goes in front of the ceiling, and the off switch survives it
+
+A hit contacts nothing, so it is served even at an exhausted ceiling — refusing one would withhold a
+briefing the run already paid for. That does not weaken `COMPANY_OS_MODEL_MAX_CALLS=0`: entries are
+scoped to a lineage, so a lineage started at a ceiling of zero has none, and the bench is silent for
+its whole life. What it does mean is that *lowering* a ceiling mid-lineage stops new calls rather
+than repeated situations.
+
+### For U16
+
+`fork_run` still sets a child's `lineage_root_id` to its own id, so **the fork half of M33 is built,
+tested and inert**. `test_a_fork_reaches_its_parents_entry_once_the_lineage_root_is_copied` asserts
+both sides of that line — a miss before the column is pointed at the parent, a hit after — using the
+same `UPDATE`-it-directly workaround U9 used for the spend aggregate. Copying the root at fork turns
+two assertions live and needs nothing else from the cache.
+
+Two smaller things travel with it. `model_cache.lineage_root_id` is a foreign key with `ON DELETE
+CASCADE`, so a lineage's entries go when its root run row does — verified on Postgres, and on SQLite
+through the kernel engine's `PRAGMA foreign_keys=ON`. And the cache is one more reader that will
+notice `statement_request_id` not being run-scoped only if a fork ever mints a *different* prompt for
+the same address, which it cannot: the address is the prompt.
+
+### For U14 and U19
+
+`Purpose.CEO_SUMMARY` already exists in `modelgw/cache.py` and is already asserted not to collide
+with a director statement at the same tick and person. It is there before its producer deliberately —
+a summary served where a briefing was asked for is impossible to notice from the served text, so the
+namespace had to be in the key before the second producer was written rather than after somebody saw
+the wrong block on screen. U14's summaries should pass it and nothing else.
+
+U19 owns M34, and the cache is not the mechanism: pre-divergence statements are byte-identical
+because the fork copies the parent's event rows and replay reads the log.
+`test_emptying_the_cache_changes_nothing_about_what_the_log_folds_to` folds a run carrying a statement
+with the cache full and then empty and gets one hash, and `test_a_fold_cannot_reach_a_cache_at_all`
+says structurally why it could not have gone otherwise — `simcore` does not import `modelgw`.

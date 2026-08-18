@@ -1,6 +1,6 @@
 """The store's shape, and the DDL version that guards it.
 
-Six tables, and exactly one of them is append-only. That distinction is enforced by
+Seven tables, and exactly one of them is append-only. That distinction is enforced by
 per-dialect triggers on the log table alone: snapshots are dropped and re-folded when a
 tuning change invalidates them, the lease is updated on every heartbeat, the spend
 counter is incremented on every model call, and the version row is written once at
@@ -45,6 +45,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    Text,
     UniqueConstraint,
     text,
 )
@@ -65,6 +66,18 @@ from sqlalchemy import (
 #: and the plan already accepts that every scenario edit invalidates every run written
 #: against it. What is required instead is that a mismatch refuses, alters nothing and
 #: prints the remedy as a sentence.
+#:
+#: **`model_cache` arrived without moving this number, and that is the rule rather than an
+#: exception made for it.** The version exists to refuse a schema this build cannot read;
+#: a *new table* is not one. `create_all` runs at every startup and is check-first, so a
+#: store at 3 gains the table on its next boot with nothing to migrate and nothing to
+#: wipe — which is the carry-forward the plan asked for and DDL 3 could not have, because
+#: that bump also added a column. The skew is harmless in both directions: an older build
+#: pointed at a newer store ignores a table it never queries, and the cache is
+#: authoritative for nothing, so a lost one costs a provider call rather than a property.
+#: A change to an *existing* table's columns is what moves this number. `test_store.py`
+#: holds the claim rather than leaving it to this comment: it builds a store without the
+#: cache table, reopens it, and asserts the table appears and the version check passes.
 DDL_VERSION = 3
 
 #: Emits BIGINT on Postgres and INTEGER on SQLite. See the module docstring.
@@ -238,6 +251,60 @@ model_spend = Table(
 )
 
 
+#: Mutable, and the second table the kernel does not write. One row per cached provider
+#: answer (M33, R3).
+#:
+#: **Content-addressed, and scoped to a lineage.** `cache_key` is the digest
+#: `modelgw.cache` derives from the assembled prompt, the authorization scope the context
+#: was drawn under and a purpose namespace; `lineage_root_id` is what an entry may be
+#: served into. Both are the primary key, so two lineages that reach the same situation
+#: keep their own copies and neither can read the other's — a timeline that never granted
+#: an Authorization must not be handed a statement produced under one.
+#:
+#: **It stores the answer, never the question.** Only the prompt's digest is here, so this
+#: table cannot become a second copy of the run's world sitting outside the append-only
+#: log — which is also R6: no key, no auth header and no raw request or response envelope
+#: reaches the response cache.
+#:
+#: **What it does not store is the reason a hit is free.** No token counts: serving an
+#: entry contacts no provider, so the call costs nothing and the ceiling must not move.
+#: What a hit *is* counted as is `model_spend.cache_hits`, so "the ceiling is not moving"
+#: has a reading behind it.
+#:
+#: `rules_ver` is the build's, not the run's, and it is filtered on at every lookup as well
+#: as swept at startup: advice assembled under different tuning is not the same advice, and
+#: an entry that could still be served between a rules change and the next sweep would make
+#: the sweep the thing correctness rested on.
+#:
+#: Deleted with the run its lineage is rooted at, by the foreign key rather than by every
+#: future caller remembering to. A cache row outliving its lineage is a row nothing can
+#: ever match and nothing will ever remove.
+model_cache = Table(
+    "model_cache",
+    metadata,
+    Column("cache_key", String(64), primary_key=True),
+    Column(
+        "lineage_root_id",
+        String(64),
+        ForeignKey("runs.run_id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    # Already inside `cache_key`. Recorded again because a table of opaque digests is
+    # unreadable to an operator asking why the bench is quiet, and one column is a cheaper
+    # answer than a script that recomputes digests.
+    Column("purpose", String(32), nullable=False),
+    Column("rules_ver", String(64), nullable=False),
+    Column("response_text", Text, nullable=False),
+    # The model that wrote the prose, so a served hit is not misattributed: the statement
+    # in the log names it, and the log has to stay true about who said what. Never the
+    # provider — naming one would name a call that did not happen.
+    Column("model_identity", String(96), nullable=False, server_default=text("''")),
+    Column("created_at", String(32), nullable=False),
+    # The sweep's access path, and the only query here that is not by primary key.
+    Index("ix_model_cache_rules_ver", "rules_ver"),
+)
+
+
 #: Written once at creation. Checked at every startup.
 store_version = Table(
     "store_version",
@@ -252,10 +319,18 @@ store_version = Table(
 #: The one table that refuses mutation.
 APPEND_ONLY_TABLES = ("event_log",)
 
-#: The tables that must stay mutable for the recovery ladder — and the spend counter — to
-#: work. Registered rather than assumed: the append-only suite parametrizes over this
-#: tuple, so a table left out of it is skipped by that suite instead of failing it.
-MUTABLE_TABLES = ("runs", "snapshots", "writer_lease", "store_version", "model_spend")
+#: The tables that must stay mutable for the recovery ladder — and the spend counter, and
+#: the response cache — to work. Registered rather than assumed: the append-only suite
+#: parametrizes over this tuple, so a table left out of it is skipped by that suite instead
+#: of failing it.
+MUTABLE_TABLES = (
+    "runs",
+    "snapshots",
+    "writer_lease",
+    "store_version",
+    "model_spend",
+    "model_cache",
+)
 
 
 _REFUSAL = "event_log is append-only"

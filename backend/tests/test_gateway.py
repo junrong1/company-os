@@ -1424,7 +1424,7 @@ def test_a_briefing_crosses_the_whole_leg_and_lands_in_the_log(composed, monkeyp
     runtime, _ = composed
     seen: list[object] = []
 
-    def compose_prose(situation):
+    def compose_prose(situation, _gateway):
         # The context is the shipped retrieval's, drawn under the scope the request carried, and the
         # situation was assembled by the shipped reader — including the persona and the offer.
         seen.append(situation.retrieved)

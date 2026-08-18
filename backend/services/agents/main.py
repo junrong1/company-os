@@ -1,4 +1,4 @@
-"""Agents service entrypoint, and the run's model-spend counter.
+"""Agents service entrypoint, the run's model-spend counter, and its response cache.
 
 Like the domain service, it declares no dependencies: the kernel opens the stream
 (R17), so this service is reachable-and-serving or it is not, and it has no
@@ -23,6 +23,13 @@ fold cannot reproduce, and strict replay would fail on every run that used the b
 log carries the *fallback* and the closed-enum condition that fired; the counter is
 bookkeeping beside it.
 
+**Neither is the cache, and for a stronger reason.** `StoreResponseCache` keeps what a
+provider said so that the same situation reached again in the same lineage costs nothing,
+and it is authoritative for nothing at all: a fork copies its parent's event rows, so
+pre-divergence statements come out of the log byte for byte and the cache is never
+consulted for them. Emptying the table between a fork and a re-fold changes no state hash,
+which is the property that says where a statement actually lives.
+
 **This module is also the answering side of the statement seam** (U10). The kernel raises a
 statement request inside `step()` and hands it here through a callable the launcher
 installs — the same shape as the kernel client and the spend reader, and for the same
@@ -45,16 +52,19 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import Engine, create_engine, func, insert, select, update
+from sqlalchemy import Engine, create_engine, delete, func, insert, select, update
 
 import modelgw
 from contracts.envelope import Envelope, EventKind
-from logschema import event_log, model_spend, runs
+from logschema import event_log, model_cache, model_spend, runs
+from modelgw import Completion
+from modelgw.cache import CachedResponse, CacheKey, entry_from
 from modelgw.ceiling import BoundedGateway, Ceiling, Spend, announce
 from servicekit import logging as svclog
 from servicekit.app import create_service_app
 from servicekit.probes import store_url
 from servicekit.runtime import serve
+from simcore.rates import RULES_VERSION
 
 SERVICE = "agents"
 
@@ -76,12 +86,39 @@ def _on_start(_app: Any) -> Any:
     service says what it is configured with when it *starts*.
     """
     announce(CEILING, log)
+    _sweep_the_cache()
 
     def teardown() -> None:
         ledger().dispose()
+        response_cache().dispose()
         _dispose_log_engine()
 
     return teardown
+
+
+def _sweep_the_cache() -> None:
+    """Drop cached responses written under a rules version this build is not running.
+
+    At startup rather than on a timer, and swallowing its own failure: the cache is an
+    optimisation, so a store that is not there yet — which is the normal state of a service that
+    starts before its database — must not stop this service answering. `get` filters on the rules
+    version too, so nothing stale can be served in the meantime; this only reclaims the rows.
+    """
+    try:
+        removed = response_cache().evict_other_rules_versions()
+    except Exception as exc:  # noqa: BLE001 - housekeeping never blocks a startup
+        log.info(
+            "the response cache could not be swept at startup; entries under another rules "
+            "version are refused by every lookup regardless",
+            extra={"error": str(exc)},
+        )
+        return
+
+    if removed:
+        log.info(
+            "evicted cached responses written under another rules version",
+            extra={"evicted": removed, "rules_ver": RULES_VERSION},
+        )
 
 
 app = create_service_app(SERVICE, on_start=_on_start)
@@ -231,10 +268,154 @@ def _spend_from(row: Any) -> Spend:
     )
 
 
+class StoreResponseCache:
+    """The provider responses this lineage has already paid for, kept in `model_cache`.
+
+    Satisfies `modelgw.cache.ResponseCache`. The content address is derived in `modelgw.cache`,
+    which is stdlib-only because `test_modelgw.py` requires that package to import nothing but
+    `httpx`; everything here is the half that needs an engine, and it sits beside
+    `StoreSpendLedger` for the reason U9 put the ledger here — the service that has a store is
+    where the store-backed half of a `modelgw` protocol lives.
+
+    **An entry is addressed by the situation and scoped by the lineage.** The lookup joins to
+    `runs.lineage_root_id` rather than taking a root from the caller, exactly as the spend
+    aggregate does: one place records a lineage, and a caller cannot widen what it is served by
+    passing a different root. Until U16 copies a parent's root at fork, a child is its own root
+    and so hits nothing of its parent's — the fork half of M33 is unreachable until then, and the
+    test that pins this behaviour sets the column by hand to say so.
+
+    **A store this cannot reach is a miss, never an exception.** Both methods run on the worker
+    thread that produces a briefing, where an exception is a lost statement; a miss is one
+    provider call. The exception to that is `put` handed something that is not a `Completion`,
+    which is this repository calling it wrong rather than a database being down.
+
+    **Its own engine, like the ledger's and the log reader's.** Three handles on one DSN in one
+    process is the price of three concerns whose lifetimes and failure modes are separate — the
+    counter must keep counting when the cache is unreadable, and neither may be taken down by the
+    other's `dispose`.
+    """
+
+    __slots__ = ("_engine", "_rules_ver", "_url")
+
+    def __init__(self, url: str | None = None, rules_version: str = RULES_VERSION) -> None:
+        self._url = url
+        self._rules_ver = rules_version
+        self._engine: Engine | None = None
+
+    def get(self, key: CacheKey) -> Completion | None:
+        """The answer this lineage already has to this situation, or nothing.
+
+        Filtered on the rules version as well as swept for it at startup. Two defences rather
+        than one, because a sweep alone would leave a window between a tuning change and the next
+        restart in which advice assembled under the old numbers is served as if it were current —
+        and the sweep would then be the thing correctness rested on rather than housekeeping.
+        """
+        try:
+            with self._engine_for().connect() as connection:
+                row = connection.execute(
+                    select(model_cache.c.response_text, model_cache.c.model_identity)
+                    .select_from(
+                        model_cache.join(
+                            runs, runs.c.lineage_root_id == model_cache.c.lineage_root_id
+                        )
+                    )
+                    .where(
+                        runs.c.run_id == key.run_id,
+                        model_cache.c.cache_key == key.digest,
+                        model_cache.c.rules_ver == self._rules_ver,
+                    )
+                ).first()
+        except Exception as exc:  # noqa: BLE001 - an unreadable cache is a miss
+            log.warning(
+                "could not read the response cache; treating it as a miss",
+                extra={"run": key.run_id, "error": str(exc)},
+            )
+            return None
+
+        if row is None:
+            return None
+        return CachedResponse(text=row[0], model=row[1]).as_completion()
+
+    def put(self, key: CacheKey, served: Completion) -> None:
+        """Keep one provider answer for the next time this lineage reaches this situation.
+
+        `entry_from` runs first and outside the `try`: a `Failure` here is a fallback being
+        written as though it were a briefing, which is the one thing this cache must never hold,
+        and it is a defect in the caller rather than a store that went away.
+
+        A write that loses a race with another director's identical situation is a lost write, not
+        an error — the row that won says the same thing.
+        """
+        entry = entry_from(served)
+        try:
+            with self._engine_for().begin() as connection:
+                root = connection.execute(
+                    select(runs.c.lineage_root_id).where(runs.c.run_id == key.run_id)
+                ).scalar_one_or_none()
+                if root is None:
+                    # No run row to scope the entry to. Nothing to repair: an entry keyed to a
+                    # lineage that does not exist could never be matched and never be removed.
+                    return
+
+                already = connection.execute(
+                    select(model_cache.c.cache_key).where(
+                        model_cache.c.cache_key == key.digest,
+                        model_cache.c.lineage_root_id == root,
+                    )
+                ).first()
+                if already is not None:
+                    # Left as it was rather than overwritten. The digest is the situation, so the
+                    # two answers are answers to the same question, and keeping the first means a
+                    # replayed situation reads the same on the tenth visit as on the second.
+                    return
+
+                connection.execute(
+                    insert(model_cache).values(
+                        cache_key=key.digest,
+                        lineage_root_id=root,
+                        purpose=str(key.purpose),
+                        rules_ver=self._rules_ver,
+                        response_text=entry.text,
+                        model_identity=entry.model,
+                        created_at=_utc_now_iso(),
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 - a failed write costs a provider call, nothing more
+            log.warning(
+                "could not write the response cache; the next identical situation will call out",
+                extra={"run": key.run_id, "error": str(exc)},
+            )
+
+    def evict_other_rules_versions(self) -> int:
+        """Remove every entry written under a rules version this build is not running.
+
+        Housekeeping, run once at startup. It reclaims rows that `get` already refuses to serve,
+        which is the correct order of those two: a sweep that failed leaves the cache larger and
+        never wrong.
+        """
+        with self._engine_for().begin() as connection:
+            return connection.execute(
+                delete(model_cache).where(model_cache.c.rules_ver != self._rules_ver)
+            ).rowcount
+
+    def dispose(self) -> None:
+        if self._engine is not None:
+            self._engine.dispose()
+            self._engine = None
+
+    def _engine_for(self) -> Engine:
+        if self._engine is None:
+            self._engine = create_engine(self._url or store_url(), future=True)
+        return self._engine
+
+
 #: One ledger per process, holding one engine. Built on first use rather than at import so
 #: that a process with no store configured still imports, and reset by `importlib.reload`,
 #: which is how the suite gets a fresh one.
 _LEDGER: StoreSpendLedger | None = None
+
+#: The response cache, on the same terms as the ledger above.
+_CACHE: StoreResponseCache | None = None
 
 
 def ledger() -> StoreSpendLedger:
@@ -244,15 +425,29 @@ def ledger() -> StoreSpendLedger:
     return _LEDGER
 
 
-def bench(spend_ledger: Any = None) -> BoundedGateway:
-    """The bench this service calls through: one gateway, one ceiling, one counter.
+def response_cache() -> StoreResponseCache:
+    global _CACHE
+    if _CACHE is None:
+        _CACHE = StoreResponseCache()
+    return _CACHE
 
-    U11 calls this. U12 reports a cache hit through `note_cache_hit` on the same object,
-    which is what keeps a hit from counting against the call ceiling — and what keeps a
-    scripted fallback from being recorded as a hit, since that method takes a `Completion`.
+
+def bench(spend_ledger: Any = None, cache: Any = None) -> BoundedGateway:
+    """The bench this service calls through: one gateway, one ceiling, one counter, one cache.
+
+    U11 calls this. A cache hit is reported through `note_cache_hit` on the same object, which is
+    what keeps a hit from counting against the call ceiling — and what keeps a scripted fallback
+    from being recorded as a hit, since that method takes a `Completion`.
+
+    Both collaborators are arguments with defaults rather than constructed unconditionally, so a
+    test can supply an in-memory pair and a caller that wants the ceiling alone can pass a cache
+    that holds nothing. The shipped call passes neither and gets the store.
     """
     return BoundedGateway(
-        modelgw.from_environment(), CEILING, spend_ledger if spend_ledger is not None else ledger()
+        modelgw.from_environment(),
+        CEILING,
+        spend_ledger if spend_ledger is not None else ledger(),
+        cache if cache is not None else response_cache(),
     )
 
 
@@ -353,7 +548,8 @@ def produce_statement(request: Any) -> dict[str, Any] | None:
     if situation is None:
         return None
 
-    prose = compose_statement(situation)
+    gateway = bench()
+    prose = compose_statement(situation, gateway)
     if prose is None:
         log.info(
             "no bench configured; the statement request is left for its deadline",
@@ -364,6 +560,12 @@ def produce_statement(request: Any) -> dict[str, Any] | None:
     answer = _answer_from(situation, prose)
     refusal = guards.refusal_of(answer, situation)
     if not refusal:
+        # Only now is the reply worth keeping. `complete` staged it and this is the acceptance:
+        # a briefing that ranked the options is a real provider response and must still write
+        # nothing, or the next visit to this situation would serve the refusal back rather than
+        # ask again — which is "guard rejections write nothing" failing through a side door,
+        # with switching to a better model as the remedy that does not work.
+        gateway.keep()
         return answer
 
     if answer[stmt.KEY_PRODUCER_KIND] == stmt.PRODUCER_SCRIPTED:
@@ -392,7 +594,9 @@ def produce_statement(request: Any) -> dict[str, Any] | None:
     return _answer_from(situation, guards.fallback_prose(stmt.FALLBACK_GUARD_REFUSED))
 
 
-def compose_statement(situation: Any) -> tuple[str, str, tuple[int, ...], str, str, str] | None:
+def compose_statement(
+    situation: Any, gateway: Any
+) -> tuple[str, str, tuple[int, ...], str, str, str] | None:
     """The prose half: what the director says, and whether a provider said it.
 
     Returns `(briefing, objection, citations, model_identity, producer_kind, fallback)`, or `None`
@@ -401,13 +605,16 @@ def compose_statement(situation: Any) -> tuple[str, str, tuple[int, ...], str, s
     shipped transport around it — which is what `test_a_briefing_crosses_the_whole_leg_and_lands_in_the_log`
     does, and the property it proves is worth more than the line it costs.
 
-    The gateway is built per statement rather than held. `guards._completed` explains why: the call
-    runs on a worker thread with its own event loop, and an `httpx.AsyncClient` created in the
-    launcher's loop and awaited in this one is a cross-loop bug this shape cannot have.
+    The gateway is built per statement rather than held, and it is now built by the *caller* rather
+    than here. `guards._completed` explains the per-statement half: the call runs on a worker thread
+    with its own event loop, and an `httpx.AsyncClient` created in the launcher's loop and awaited in
+    this one is a cross-loop bug this shape cannot have. What changed is who holds it, and the reason
+    is the cache — the answer's entry is written only once the guards have accepted it, so the object
+    that staged the write has to outlive this call.
     """
     from agents.bench import guards
 
-    return guards.prose_from_provider(situation, bench())
+    return guards.prose_from_provider(situation, gateway)
 
 
 def _situation_for(request: Any) -> Any:

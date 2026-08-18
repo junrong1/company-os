@@ -39,7 +39,11 @@ climbing (M20).
 **A cache hit is not a call, and a fallback is not a hit.** `note_cache_hit` takes the
 `Completion` that was served rather than nothing at all, so a `Failure` cannot be
 recorded as a hit even by accident. That is the execution decision "a scripted fallback
-is never a cache entry" made structural instead of stated; U12 owns the cache itself.
+is never a cache entry" made structural instead of stated; `modelgw.cache` holds the
+content address and the protocol, and the lookup runs here because a hit must be served
+*before* the ceiling refuses — see `BoundedGateway.complete`. The *write* runs here too
+and waits to be told: only the caller knows whether the answer survived the guards, so
+`complete` stages an entry and `keep` commits it.
 
 Stdlib only, deliberately. `tests/test_modelgw.py` asserts this package imports nothing
 outside the standard library but `httpx`, so the store-backed ledger lives with the
@@ -58,6 +62,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from modelgw import Answer, Completion, Failure, FailureKind, ModelGateway
+from modelgw.cache import CacheKey, ResponseCache
 from modelgw.config import Prompt
 
 __all__ = [
@@ -387,10 +392,18 @@ class BoundedGateway:
     branch as a 429, with no new arm and no exception.
     """
 
-    def __init__(self, gateway: ModelGateway, ceiling: Ceiling, ledger: SpendLedger) -> None:
+    def __init__(
+        self,
+        gateway: ModelGateway,
+        ceiling: Ceiling,
+        ledger: SpendLedger,
+        cache: ResponseCache | None = None,
+    ) -> None:
         self._gateway = gateway
         self._ceiling = ceiling
         self._ledger = ledger
+        self._cache = cache
+        self._unkept: tuple[CacheKey, Completion] | None = None
 
     @property
     def present(self) -> bool:
@@ -430,12 +443,35 @@ class BoundedGateway:
             )
         return self._ledger.add(run_id, Spend(cache_hits=1))
 
-    async def complete(self, run_id: str, prompt: Prompt) -> Answer:
+    async def complete(self, run_id: str, prompt: Prompt, key: CacheKey | None = None) -> Answer:
         """One call, against this run's budget. Returns an answer or a typed failure.
 
         Every refusal below happens with the provider untouched, which is the reason the
         ceiling is a wrapper rather than a check inside `ModelGateway.complete`.
+
+        **`key` is optional so that a caller with no situation to address stays unchanged.** The
+        cache is content-addressed on the assembled prompt, the authorization scope and a purpose
+        (R3), and only the bench knows those — a caller that passes nothing gets the ceiling
+        alone, which is what every test of this class and every future non-bench caller wants.
+
+        **The cache is consulted before the ceiling, and that ordering is deliberate.** The
+        ceiling bounds what a run *spends*; a hit spends nothing, contacts nothing and counts as
+        no call, so refusing to serve one at an exhausted ceiling would withhold a briefing that
+        was already paid for. It does not weaken the off switch: entries are scoped to a lineage,
+        so a lineage started under a ceiling of zero has none to serve and the bench is silent for
+        its whole life, which is what setting zero is for. What it does mean is that *lowering* a
+        ceiling mid-lineage stops new calls rather than repeated situations, and the remedy for
+        that — emptying the table — loses nothing the log does not already hold.
+
+        A failed lookup is a miss and a failed write costs one provider call next time. Neither
+        raises: this runs on a worker thread whose whole job is to be optional.
         """
+        if self._cache is not None and key is not None:
+            served = self._cache.get(key)
+            if served is not None:
+                self.note_cache_hit(run_id, served)
+                return served
+
         spend = self._ledger.read(run_id)
 
         if spend.calls >= self._ceiling.max_calls:
@@ -477,6 +513,11 @@ class BoundedGateway:
                     output_tokens=answer.usage.output_tokens,
                 ),
             )
+            if self._cache is not None and key is not None:
+                # Staged, not written. Whether this answer was *usable* is the caller's
+                # verdict — a reply that ranks the options is a provider response and still
+                # must not be kept — so the write waits for `keep()`. See its docstring.
+                self._unkept = (key, answer)
         elif answer.kind is not FailureKind.NOT_CONFIGURED:
             # A 500, a timeout and a 429 each cost an attempt. Not counting them would let
             # a misconfigured run retry forever against a counter that never moves — and R5
@@ -486,6 +527,31 @@ class BoundedGateway:
             self._ledger.add(run_id, ONE_CALL)
 
         return answer
+
+    def keep(self) -> None:
+        """Write what the last call produced, now that the caller has accepted it.
+
+        **The write is deferred because "the provider answered" and "the answer was usable"
+        are different facts, and only the caller knows the second.** A reply that ranks the
+        options is a good HTTP response and this repository refuses it; caching it would serve
+        that refusal back on every future visit to the situation, and the operator would switch
+        to a better model and see no change at all. That is the execution decision "guard
+        rejections write nothing" failing through a door it did not name.
+
+        A no-op unless the last call reached a provider, answered, and carried a key: a served
+        hit needs no write, and a `Failure` never stages anything, so a fallback cannot be kept
+        even by a caller that calls this unconditionally. Callable after `aclose`, because a
+        cache is not the HTTP client.
+
+        Safe to hold on the instance because a gateway is built per statement and makes one call.
+        A caller that made two would keep only the second, which is why this is not a general
+        commit protocol and why the docstring says so rather than the type.
+        """
+        staged, self._unkept = self._unkept, None
+        if staged is None or self._cache is None:
+            return
+        key, answer = staged
+        self._cache.put(key, answer)
 
     async def aclose(self) -> None:
         await self._gateway.aclose()
