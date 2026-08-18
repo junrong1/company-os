@@ -548,7 +548,8 @@ def produce_statement(request: Any) -> dict[str, Any] | None:
     if situation is None:
         return None
 
-    prose = compose_statement(situation)
+    gateway = bench()
+    prose = compose_statement(situation, gateway)
     if prose is None:
         log.info(
             "no bench configured; the statement request is left for its deadline",
@@ -559,6 +560,12 @@ def produce_statement(request: Any) -> dict[str, Any] | None:
     answer = _answer_from(situation, prose)
     refusal = guards.refusal_of(answer, situation)
     if not refusal:
+        # Only now is the reply worth keeping. `complete` staged it and this is the acceptance:
+        # a briefing that ranked the options is a real provider response and must still write
+        # nothing, or the next visit to this situation would serve the refusal back rather than
+        # ask again — which is "guard rejections write nothing" failing through a side door,
+        # with switching to a better model as the remedy that does not work.
+        gateway.keep()
         return answer
 
     if answer[stmt.KEY_PRODUCER_KIND] == stmt.PRODUCER_SCRIPTED:
@@ -587,7 +594,9 @@ def produce_statement(request: Any) -> dict[str, Any] | None:
     return _answer_from(situation, guards.fallback_prose(stmt.FALLBACK_GUARD_REFUSED))
 
 
-def compose_statement(situation: Any) -> tuple[str, str, tuple[int, ...], str, str, str] | None:
+def compose_statement(
+    situation: Any, gateway: Any
+) -> tuple[str, str, tuple[int, ...], str, str, str] | None:
     """The prose half: what the director says, and whether a provider said it.
 
     Returns `(briefing, objection, citations, model_identity, producer_kind, fallback)`, or `None`
@@ -596,13 +605,16 @@ def compose_statement(situation: Any) -> tuple[str, str, tuple[int, ...], str, s
     shipped transport around it — which is what `test_a_briefing_crosses_the_whole_leg_and_lands_in_the_log`
     does, and the property it proves is worth more than the line it costs.
 
-    The gateway is built per statement rather than held. `guards._completed` explains why: the call
-    runs on a worker thread with its own event loop, and an `httpx.AsyncClient` created in the
-    launcher's loop and awaited in this one is a cross-loop bug this shape cannot have.
+    The gateway is built per statement rather than held, and it is now built by the *caller* rather
+    than here. `guards._completed` explains the per-statement half: the call runs on a worker thread
+    with its own event loop, and an `httpx.AsyncClient` created in the launcher's loop and awaited in
+    this one is a cross-loop bug this shape cannot have. What changed is who holds it, and the reason
+    is the cache — the answer's entry is written only once the guards have accepted it, so the object
+    that staged the write has to outlive this call.
     """
     from agents.bench import guards
 
-    return guards.prose_from_provider(situation, bench())
+    return guards.prose_from_provider(situation, gateway)
 
 
 def _situation_for(request: Any) -> Any:

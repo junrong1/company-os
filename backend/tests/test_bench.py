@@ -28,6 +28,7 @@ import pytest
 
 import modelgw
 from modelgw import FailureKind
+from modelgw.cache import CachedResponse, MemoryResponseCache, Purpose
 from modelgw.ceiling import BoundedGateway, Ceiling, MemorySpendLedger, Spend
 from modelgw.config import ENV_API_KEY, PROVIDERS
 from simcore import items as work
@@ -599,15 +600,24 @@ def _situation() -> guards.Situation:
     )
 
 
-def _gateway(provider: MockProvider | None, ledger: MemorySpendLedger | None = None) -> Any:
-    """A bounded gateway over a mock transport, or over no configuration at all."""
+def _gateway(
+    provider: MockProvider | None,
+    ledger: MemorySpendLedger | None = None,
+    cache: MemoryResponseCache | None = None,
+) -> Any:
+    """A bounded gateway over a mock transport, or over no configuration at all.
+
+    The cache defaults to nothing rather than to an empty one, so every test above reaches the
+    provider exactly as many times as it says it does. The tests that are about the cache pass one
+    in and keep hold of it across calls, which is the only way a second call can hit.
+    """
     gateway = (
         modelgw.from_environment(env_for("openai"), transport=provider.transport)
         if provider is not None
         else modelgw.from_environment({})
     )
     return BoundedGateway(
-        gateway, Ceiling.from_environment({}), ledger or MemorySpendLedger()
+        gateway, Ceiling.from_environment({}), ledger or MemorySpendLedger(), cache
     )
 
 
@@ -845,6 +855,192 @@ def test_a_log_this_process_cannot_read_is_a_declined_statement(
 
 
 # =========================================================================
+# U12: the same situation, answered once (M33; R3)
+# =========================================================================
+#
+# The address itself is `test_modelgw.py`'s. What is here is what the *leg* does with it: which
+# scope and purpose reach the key, that the guards still run over a served reply, and that a
+# fallback leaves nothing behind for the next attempt to trip over.
+
+
+def _leg_with_a_cache(
+    monkeypatch: pytest.MonkeyPatch, recorder: Any, provider: MockProvider
+) -> tuple[Any, MemoryResponseCache, MemorySpendLedger]:
+    """The answering leg with one cache and one counter held across calls."""
+    import agents.main as agents_main
+
+    cache = MemoryResponseCache()
+    ledger = MemorySpendLedger()
+    monkeypatch.setattr(agents_main, "_read_run", lambda _run_id: recorder.log)
+    monkeypatch.setattr(agents_main, "bench", lambda *_a, **_k: _gateway(provider, ledger, cache))
+    return agents_main, cache, ledger
+
+
+def test_the_key_is_the_scope_the_request_carried_and_the_purpose_of_the_call() -> None:
+    """R3's two non-prompt inputs, read off the situation rather than inferred.
+
+    The scope is the one recorded on `REQUEST_RAISED`, so anyone auditing why a hit was served can
+    re-derive the address from the log alone. A gateway that inferred it would be inferring the
+    scope it exists to be constrained by.
+    """
+    situation = _situation()
+    prompt = prompts.build(
+        persona=situation.persona,
+        checkpoint=situation.checkpoint,
+        retrieved=situation.retrieved,
+    )
+    key = guards.cache_key_for(situation, prompt)
+
+    assert key.run_id == situation.request.run_id
+    assert key.purpose is Purpose.DIRECTOR_STATEMENT
+    assert (
+        key.digest
+        == guards.cache_key_for(situation, prompt).digest
+    ), "the same situation twice is one address"
+
+    widened = guards.Situation(
+        request=stmt.StatementRequest(
+            run_id=situation.request.run_id,
+            request_id=situation.request.request_id,
+            person=DIRECTOR,
+            owning_item=ITEM,
+            cp_index=0,
+            raised_at_tick=situation.request.raised_at_tick,
+            authorized=stmt.Authorized(
+                director=DIRECTOR,
+                people=situation.request.authorized.people | {"dir_sales"},
+                items=situation.request.authorized.items,
+            ),
+        ),
+        persona=situation.persona,
+        checkpoint=situation.checkpoint,
+        offered=situation.offered,
+        retrieved=situation.retrieved,
+    )
+    assert guards.cache_key_for(widened, prompt).digest != key.digest, (
+        "a scope a grant widened is a different address, even for one identical prompt"
+    )
+
+
+def test_the_second_visit_to_one_situation_costs_no_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M33 over the whole leg: the same log, the same director, the same checkpoint.
+
+    Two `produce_statement` calls, one provider request. The second answer is the first answer,
+    and the counter records a hit rather than a call.
+    """
+    from test_pending_input import Recorder
+
+    recorder = Recorder()
+    pending = recorder.open_a_checkpoint_in_person()
+    provider = answering(ok_payload("openai", A_GOOD_REPLY_UNCITED))
+    agents_main, _cache, ledger = _leg_with_a_cache(monkeypatch, recorder, provider)
+
+    request = _request_from(recorder, pending)
+    first = agents_main.produce_statement(request)
+    second = agents_main.produce_statement(request)
+
+    assert first is not None and second is not None
+    assert first[stmt.KEY_BRIEFING] == second[stmt.KEY_BRIEFING]
+    assert second[stmt.KEY_PRODUCER_KIND] == stmt.PRODUCER_MODEL
+    assert second[stmt.KEY_MODEL_IDENTITY] == first[stmt.KEY_MODEL_IDENTITY], (
+        "the model that wrote the prose, not the one that would have been asked"
+    )
+    assert len(provider.requests) == 1, "the second visit did not reach a provider"
+
+    spend = ledger.read(request.run_id)
+    assert spend.calls == 1 and spend.cache_hits == 1
+
+
+def test_a_served_reply_is_guarded_again_on_the_way_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The property that makes caching a cost optimisation rather than a hole in the guards.
+
+    What is kept is the provider's reply exactly as it arrived, so `parse` and both predicates run
+    over a hit as they did over the call. A rule tightened after an entry was written therefore
+    refuses that entry — where storing the approved statement would have made every entry a
+    permanent exemption from whatever the rules became.
+    """
+    from test_pending_input import Recorder
+
+    recorder = Recorder()
+    pending = recorder.open_a_checkpoint_in_person()
+    provider = answering(ok_payload("openai", A_GOOD_REPLY_UNCITED))
+    agents_main, cache, _ledger = _leg_with_a_cache(monkeypatch, recorder, provider)
+    request = _request_from(recorder, pending)
+
+    assert agents_main.produce_statement(request) is not None
+
+    # The entry, rewritten in place to a reply that ranks — which is what a guard tightened
+    # tomorrow makes of a reply that was acceptable today.
+    (address,) = list(cache.by_lineage)
+    cache.by_lineage[address] = CachedResponse(text=RANKING_FIXTURE, model="a-model-2026")
+
+    answer = agents_main.produce_statement(request)
+
+    assert answer is not None
+    assert answer[stmt.KEY_PRODUCER_KIND] == stmt.PRODUCER_SCRIPTED
+    assert answer[stmt.KEY_FALLBACK] == stmt.FALLBACK_GUARD_REFUSED
+    # And the narrow residue this leaves, asserted rather than left to be discovered: a hit reaches
+    # no provider, so an entry written before a rule was tightened is refused on every serve and
+    # never re-asked. It takes a code change mid-lineage to reach, and emptying the table is the
+    # remedy — which is why the write side refuses a *fresh* refusal instead of relying on this.
+    assert len(provider.requests) == 1
+
+
+def test_a_reply_the_guards_refused_is_not_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Execution decision §3, in the words it uses: guard rejections write nothing.
+
+    A ranking reply is a provider response, so the gateway cannot tell it from a usable one — and
+    at temperature zero the same prompt produces it again, which is what would make a stored one
+    permanent. Keeping it would serve the CEO a fallback on every future visit to this situation
+    with no call to show for it, and the operator's remedy — switch to a model that follows the
+    rule — would change nothing, because the address is the situation and not the model.
+    """
+    from test_pending_input import Recorder
+
+    recorder = Recorder()
+    pending = recorder.open_a_checkpoint_in_person()
+    ranking = answering(ok_payload("openai", RANKING_FIXTURE))
+    agents_main, cache, _ledger = _leg_with_a_cache(monkeypatch, recorder, ranking)
+    request = _request_from(recorder, pending)
+
+    answer = agents_main.produce_statement(request)
+    assert answer is not None and answer[stmt.KEY_FALLBACK] == stmt.FALLBACK_GUARD_REFUSED
+    assert cache.by_lineage == {}, "a refused reply is not an answer to the situation"
+
+    agents_main.produce_statement(request)
+    assert len(ranking.requests) == 2, "so a better model would get its turn"
+
+
+def test_a_fallback_leaves_nothing_behind_for_the_next_visit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """M21 meeting M33. The scripted reply is not an answer to the situation, so it is not kept.
+
+    The operator's remedy for a failing provider is to fix the provider; a cached fallback would
+    make that silently not work for every situation already visited.
+    """
+    from test_pending_input import Recorder
+
+    recorder = Recorder()
+    pending = recorder.open_a_checkpoint_in_person()
+    broken = answering({"error": "no"}, status=500)
+    agents_main, cache, _ledger = _leg_with_a_cache(monkeypatch, recorder, broken)
+    request = _request_from(recorder, pending)
+
+    answer = agents_main.produce_statement(request)
+    assert answer is not None
+    assert answer[stmt.KEY_FALLBACK] == FailureKind.PROVIDER_ERROR.value
+    assert cache.by_lineage == {}, "nothing was kept"
+
+    agents_main.produce_statement(request)
+    assert len(broken.requests) == 2, "the next visit asked again rather than replaying a fallback"
+
+
+# =========================================================================
 # The fixtures U13's CI assertion rests on
 # =========================================================================
 
@@ -928,7 +1124,9 @@ def test_a_refused_fallback_keeps_its_condition_rather_than_being_relabelled(
         return ("I recommend the first option.", "None.", (), "", stmt.PRODUCER_SCRIPTED, reason)
 
     monkeypatch.setattr(guards, "fallback_prose", refusable)
-    monkeypatch.setattr(agents_main, "compose_statement", lambda _s: refusable("timeout"))
+    monkeypatch.setattr(
+        agents_main, "compose_statement", lambda _s, _gateway: refusable("timeout")
+    )
 
     assert agents_main.produce_statement(_request_from(recorder, pending)) is None
 
