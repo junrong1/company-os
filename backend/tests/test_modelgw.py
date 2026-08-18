@@ -1902,6 +1902,211 @@ async def test_a_caller_with_no_situation_to_address_neither_reads_nor_writes() 
     assert cache.by_lineage == {}
 
 
+# --- the cache in the store: it survives a restart, and it is per lineage --
+
+
+@pytest.fixture
+def cache_store(spend_store):
+    """The provisioned store from the counter's fixture, with a cache on the same file."""
+    from agents.main import StoreResponseCache
+
+    store, handle, url, _ledger = spend_store
+    cache = StoreResponseCache(url)
+    try:
+        yield store, handle, url, cache
+    finally:
+        cache.dispose()
+
+
+def test_the_cache_survives_a_restart(cache_store) -> None:
+    """The half a dictionary cannot do, and the reason the table exists at all.
+
+    A cache that emptied on restart would make the one expensive thing in the store the one
+    thing that did not survive one — and re-earning it costs real money on the operator's own
+    key.
+    """
+    from agents.main import StoreResponseCache
+
+    _store, _handle, url, cache = cache_store
+    cache.put(keyed(run_id=PARENT), a_completion())
+
+    cache.dispose()
+    after = StoreResponseCache(url)
+    try:
+        served = after.get(keyed(run_id=PARENT))
+        assert served is not None and served.text == a_completion().text
+    finally:
+        after.dispose()
+
+
+def test_a_rules_version_change_evicts_rather_than_serving(cache_store) -> None:
+    """Advice assembled under different tuning is not the same advice.
+
+    Two defences, and the order between them is the point: the *lookup* filters on the rules
+    version, so nothing stale is served in the window between a change and the next restart,
+    and the startup sweep then reclaims the rows. A sweep alone would have made housekeeping
+    the thing correctness rested on.
+    """
+    from agents.main import StoreResponseCache
+
+    _store, _handle, url, cache = cache_store
+    cache.put(keyed(run_id=PARENT), a_completion())
+    assert cache.get(keyed(run_id=PARENT)) is not None
+
+    retuned = StoreResponseCache(url, rules_version="rules-after-a-tuning-change")
+    try:
+        assert retuned.get(keyed(run_id=PARENT)) is None, "refused before any sweep runs"
+        assert retuned.evict_other_rules_versions() == 1
+        assert cache.get(keyed(run_id=PARENT)) is None, "and the row is gone"
+    finally:
+        retuned.dispose()
+
+
+def test_a_fork_reaches_its_parents_entry_once_the_lineage_root_is_copied(cache_store) -> None:
+    """M33's fork half, and the one line of it that is not this unit's to write.
+
+    `fork_run` sets a child's `lineage_root_id` to its own id, so today a fork misses its
+    parent's entries — U16 owns copying the parent's root, and the assertion before the update
+    below is what that unit will change. Pinning both halves here means the behaviour is
+    specified before the unit that produces it lands, the way U9 pinned the spend aggregate.
+    """
+    from sqlalchemy import update
+
+    from logschema import runs as runs_table
+
+    store, handle, _url, cache = cache_store
+    cache.put(keyed(run_id=PARENT), a_completion())
+
+    store.fork_run(parent_run_id=PARENT, at_seq=1, child_run_id=CHILD, lease_handle=handle)
+    assert cache.get(keyed(run_id=CHILD)) is None, "its own root until U16 copies the parent's"
+
+    with store.engine.begin() as connection:
+        connection.execute(
+            update(runs_table).where(runs_table.c.run_id == CHILD).values(lineage_root_id=PARENT)
+        )
+
+    served = cache.get(keyed(run_id=CHILD))
+    assert served is not None and served.text == a_completion().text
+    assert cache.get(keyed(run_id=CHILD, scope=A_GRANTED_SCOPE)) is None, (
+        "and only for the situation it was written under"
+    )
+
+
+def test_two_siblings_at_one_tick_with_different_options_do_not_share_an_entry(
+    cache_store,
+) -> None:
+    """One lineage, two branches, two situations.
+
+    They share a root, so nothing about the scoping keeps them apart — what does is that the
+    option each took is in the evidence, so the assembled prompt differs, so the address does.
+    """
+    from sqlalchemy import update
+
+    from logschema import runs as runs_table
+
+    store, handle, _url, cache = cache_store
+    sibling = "run-sibling"
+    store.fork_run(parent_run_id=PARENT, at_seq=1, child_run_id=CHILD, lease_handle=handle)
+    store.fork_run(parent_run_id=PARENT, at_seq=1, child_run_id=sibling, lease_handle=handle)
+    with store.engine.begin() as connection:
+        connection.execute(
+            update(runs_table)
+            .where(runs_table.c.run_id.in_([CHILD, sibling]))
+            .values(lineage_root_id=PARENT)
+        )
+
+    took_the_first = Prompt(
+        system=PROMPT.system, turns=(Turn(role="user", text="The post was rewritten."),)
+    )
+    took_the_second = Prompt(
+        system=PROMPT.system, turns=(Turn(role="user", text="The post was left as it was."),)
+    )
+    cache.put(keyed(took_the_first, run_id=CHILD), a_completion("BRIEFING: A."))
+
+    assert cache.get(keyed(took_the_first, run_id=sibling)) is not None, "same situation"
+    assert cache.get(keyed(took_the_second, run_id=sibling)) is None, "different one"
+
+
+def test_an_entry_carries_the_answer_and_never_the_question(cache_store) -> None:
+    """R6, and the reason only a digest is stored.
+
+    A table holding assembled prompts would be a second copy of the run's world sitting
+    outside the append-only log, and the prompts carry the whole retrieved context.
+    """
+    from sqlalchemy import select
+
+    from logschema import model_cache
+
+    store, _handle, _url, cache = cache_store
+    secret_situation = Prompt(
+        system=PROMPT.system,
+        turns=(Turn(role="user", text="[EVIDENCE] seq 9 | day 5 | WORK_ASSIGNED [/EVIDENCE]"),),
+    )
+    cache.put(keyed(secret_situation, run_id=PARENT), a_completion())
+
+    with store.engine.connect() as connection:
+        row = connection.execute(select(model_cache)).mappings().one()
+
+    written = json.dumps({key: str(value) for key, value in row.items()})
+    assert "WORK_ASSIGNED" not in written, "the question is not kept, only its digest"
+    assert RAW_KEY not in written and "ollama" not in written
+    assert row["purpose"] == str(Purpose.DIRECTOR_STATEMENT), "readable without recomputing"
+    assert row["model_identity"] == "a-model-2026"
+
+
+def test_a_write_for_a_run_the_store_does_not_know_is_dropped_rather_than_attempted(
+    cache_store, caplog
+) -> None:
+    """An entry keyed to a lineage that does not exist could never be matched, and never
+    removed with the lineage it claims to belong to.
+
+    Dropped where it is decided rather than attempted and caught, which is the assertion that
+    distinguishes the two: without the check the insert would violate the foreign key, be
+    swallowed by the same `except` that covers a store being down, and log a warning saying the
+    cache could not be written — an operator would go looking for a broken database.
+    """
+    _store, _handle, _url, cache = cache_store
+
+    with caplog.at_level(logging.WARNING):
+        cache.put(keyed(run_id="run-that-never-existed"), a_completion())
+
+    assert cache.get(keyed(run_id="run-that-never-existed")) is None
+    assert "could not write the response cache" not in caplog.text, (
+        "a run this store does not know is not a database failure"
+    )
+
+
+def test_a_cache_write_that_fails_leaves_the_run_correct_and_the_log_unchanged(
+    cache_store, caplog
+) -> None:
+    """A failed write costs a provider call. It does not cost a briefing, a counter or a row.
+
+    Pointed at a database it cannot open, which is what an operator's store being down looks
+    like from this thread — and this thread's whole job is to be optional.
+    """
+    from sqlalchemy import func, select
+
+    from agents.main import StoreResponseCache
+    from logschema import event_log
+
+    store, _handle, _url, _cache = cache_store
+    with store.engine.connect() as connection:
+        before = connection.execute(select(func.count()).select_from(event_log)).scalar_one()
+
+    unreachable = StoreResponseCache("sqlite:////no-such-directory-for-u12/cache.sqlite3")
+    try:
+        with caplog.at_level(logging.WARNING):
+            unreachable.put(keyed(run_id=PARENT), a_completion())
+            assert unreachable.get(keyed(run_id=PARENT)) is None, "an unreadable cache is a miss"
+    finally:
+        unreachable.dispose()
+
+    assert "could not write the response cache" in caplog.text
+    with store.engine.connect() as connection:
+        after = connection.execute(select(func.count()).select_from(event_log)).scalar_one()
+    assert after == before, "the log is not where a cache failure lands"
+
+
 # --- the verification: the property lives in the log ----------------------
 
 
