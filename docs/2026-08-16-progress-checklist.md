@@ -25,6 +25,7 @@ stands against it. Statuses come from the plan frontmatter, the coverage audit
 - [x] `docs/plans/2026-08-14-002-feat-option-consequence-comparison-plan.md` — `status: completed`
 - [x] `docs/2026-08-14-phase-1-coverage-audit.md` — requirements audited against code after Phase 2
 - [x] `docs/residual-review-findings/feat-option-consequence-comparison.md` — three findings accepted knowingly
+- [x] `docs/residual-review-findings/feat-company-os-mvp-u16.md` — **the open list from U16's review.** Twelve reviewers, five findings fixed on the branch, twelve carried. Each names the unit it belongs to; U17 owns the fork cap, U19 owns the inherited-statement asymmetry, and two are cheap enough to take next
 - [x] `docs/design/art-direction.html` — approved specimen, load-bearing for three client units
 - [x] `docs/prd/2026-08-16-company-os-mvp-prd.md` — MVP PRD, M1–M67, `status: active`
 - [x] `docs/plans/2026-08-16-1527-feat-company-os-visual-redesign-plan.md` — the daylight redesign's Product Contract, R1–R13 + R9a, F1–F3, AE1–AE4
@@ -134,6 +135,10 @@ pushed the office off the screen.
 | Nothing synchronises the command path against the tick loop | residual finding 1, P1 | **M63** |
 | A comparison occupies the worker pool every run's clock depends on | residual finding 2, P1 (mitigated, not closed) | **M64** |
 | A pre-change run shows every option as costing nothing | residual finding 3, P2 | not in the PRD — still open |
+| A fork can be made without limit, and no run is ever evicted | U16 review, finding 1 | **U17** — the first unit with a surface that can show or bound a lineage |
+| Two synchronous routes now share one starved threadpool | U16 review, finding 2 (widens a U5 register item) | the `async` change the register already scopes |
+| A forked child's inherited bench statements are never asked | U16 review, finding 9 | **U19** — it owns the property the asymmetry threatens |
+| Three names for the fork point's sequence, and a proto that drifts from the shipped JSON | U16 review, finding 5 | open, cheap |
 | R44, the in-person claim is never validated | audit gap 4 | **closed as a decision** — an explicit PRD non-goal while the product is local |
 | R41, authored-tuning marking on every surface | audit gap 5 | **closed** by Phase 3 U2 |
 

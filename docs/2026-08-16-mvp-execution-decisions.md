@@ -538,6 +538,12 @@ for the clock to be protected and it now is, but `post_command` is a synchronous
 40 concurrent comparisons still exhaust the route pool. Making it `async` reaches into the gateway
 and the launcher.
 
+> **U16 widened this, knowingly.** `post_fork` is a second synchronous route whose handler parks on
+> the same two-slot `BRANCH_LIMITER`, so the exposure is no longer comparisons alone — and
+> `diagnose`, the call an operator makes when things are stalling, is one of the routes that then
+> cannot be served. Recorded here rather than left in the code comment that says it, so whoever
+> makes the `async` change knows it has two callers to move.
+
 **No authored checkpoint offers six options.** Found by U5. All nine offer three, while
 `MAX_BRANCHES_PER_COMPARISON` is 6 — so the plan's "six-option comparison" and its 1.6s figure
 cannot be produced from the shipped scenario, and U5's load tests synthesise the width. Not a
@@ -1282,11 +1288,18 @@ Emitting it as the child's first divergent event was the obvious move and was **
 not inserting anything ahead of the divergence has a property worth more:
 
 **The child's `DECISION_RESOLVED` takes the same sequence number as its parent's.** Both timelines
-hold an event at sequence *n*, and they differ there and nowhere before. "The decision that separated
-them" is then a pair — `(parent, n)` and `(child, n)` — rather than a join through two mutable
-columns, which is what M50 asks U18 for and what M55 asks U20 for. Parentage stays in `runs`, where
-it belongs; the log carries the divergence itself. `test_a_child_takes_the_other_option_and_resolves_
-the_checkpoint_once` asserts the sequence as well as the option.
+hold an event at sequence *n*, and they differ there and nowhere before. Parentage stays in `runs`,
+where it belongs; the log carries the divergence itself. `test_a_child_takes_the_other_option_and_
+resolves_the_checkpoint_once` asserts the sequence as well as the option.
+
+> **Corrected after review.** This paragraph originally credited that alignment with making "the
+> decision that separated them" cheap for U18 and U20 — a pair `(parent, n)` and `(child, n)` rather
+> than a join through two mutable columns. That is not true, and the architecture review said so:
+> both units address through `runs.parent_run_id` and `forked_at_seq`, and `forked_at_seq + 1` is a
+> fixed computable offset whether or not a marker event sits in front of it. The decision not to
+> emit `RUN_FORKED` is still right, on the simpler ground it should have rested on from the start:
+> the fact is already durable in `runs`, and a zero-content event that the fold skips as operational
+> adds a row and no information. The alignment is a pleasant consequence, not the reason.
 
 ### The copy and the divergence are one transaction, and the reason is a bad retry
 
