@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event, func, insert, select, update
+from sqlalchemy import Engine, create_engine, event, func, insert, literal, select, update
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
@@ -89,6 +89,21 @@ class FencedOut(StoreError):
 FORK_PREFIX_MAX_EVENTS = 5_000
 
 
+def prefix_bound_refusal(through_seq: int, prefix_size: int, bound: int) -> str:
+    """The sentence a fork above the bound is refused with, written once.
+
+    Two callers check this: the kernel, so an oversized prefix is refused before it pays for a
+    fold, and `fork_run` itself, inside the transaction, which is where the count is
+    authoritative. Two checks are correct; two sentences would be two things to keep in step.
+    """
+    return (
+        f"the prefix at sequence {through_seq} holds {prefix_size} events, above the bound of "
+        f"{bound}. Refusing rather than holding the single writer in one long transaction, "
+        "which would stall every other run's ticks and read as a store outage that is not "
+        "happening."
+    )
+
+
 @dataclass(slots=True)
 class AppendResult:
     """What one committed tick produced."""
@@ -104,6 +119,19 @@ class ForkResult:
     child_run_id: str
     copied_through_seq: int
     refusal: str = ""
+    #: The tick the child was born at — the tick of its fork point, never the parent's present
+    #: one. See `fork_run` for what the parent's present tick would cost.
+    child_tick: int = 0
+    #: The lineage the child belongs to, copied from the parent (R21).
+    lineage_root_id: str = ""
+    #: What the divergence appended, committed in the same transaction as the copy. Empty when
+    #: the fork carried no divergence, and empty on `existed` — those envelopes were published
+    #: by the call that first made this child.
+    envelopes: list[Envelope] = field(default_factory=list)
+    #: Whether this call found the child rather than making it. The retry-after-a-restart case:
+    #: the gateway's ledger is in-memory, so a retried fork reaches the store, and the store is
+    #: what makes it idempotent (M47).
+    existed: bool = False
 
     @property
     def forked(self) -> bool:
@@ -156,6 +184,51 @@ def make_engine(url: str, echo: bool = False) -> Engine:
         connection.exec_driver_sql("BEGIN IMMEDIATE")
 
     return engine
+
+
+def _write_events(
+    connection: Any,
+    *,
+    run_id: str,
+    next_seq: int,
+    emitted: list[Any],
+    rules_ver: str,
+    tick: int,
+    fail_between_events: bool = False,
+) -> list[Envelope]:
+    """Build and insert a contiguous block of events, inside a transaction already open.
+
+    Shared by the two things that append: a tick, and the divergence a fork commits alongside
+    its copy. One function rather than two because the envelope is the log's contract — the
+    sequence, the schema version, the canonical payload check — and a second copy of it in the
+    fork path would be a second place for that contract to be almost right.
+
+    It opens no transaction and takes no lease: both belong to the caller, which is what lets
+    a fork's copy and its divergence be one commit rather than two.
+    """
+    envelopes: list[Envelope] = []
+    ingested_at = utc_now_iso()
+
+    for offset, item in enumerate(emitted):
+        envelope = build(
+            seq=next_seq + offset,
+            tick=tick,
+            kind=item.kind if isinstance(item.kind, EventKind) else EventKind(item.kind),
+            rules_ver=rules_ver,
+            payload=item.payload,
+            run_id=run_id,
+            command_id=getattr(item, "command_id", "") or "",
+            request_id=getattr(item, "request_id", "") or "",
+        )
+        row = envelope.to_dict()
+        row["ingested_at"] = ingested_at
+        connection.execute(insert(event_log).values(**row))
+        envelopes.append(envelope)
+
+        if fail_between_events and offset == 0 and len(emitted) > 1:
+            raise StoreError("injected failure between two events of one tick")
+
+    return envelopes
 
 
 class LogStore:
@@ -338,27 +411,15 @@ class LogStore:
                 # memory, so an aborted tick cannot advance the cursor.
                 next_seq = self._committed_head(connection, run_id) + 1
 
-                envelopes: list[Envelope] = []
-                ingested_at = utc_now_iso()
-
-                for offset, item in enumerate(emitted):
-                    envelope = build(
-                        seq=next_seq + offset,
-                        tick=tick,
-                        kind=item.kind if isinstance(item.kind, EventKind) else EventKind(item.kind),
-                        rules_ver=rules_ver,
-                        payload=item.payload,
-                        run_id=run_id,
-                        command_id=getattr(item, "command_id", "") or "",
-                        request_id=getattr(item, "request_id", "") or "",
-                    )
-                    row = envelope.to_dict()
-                    row["ingested_at"] = ingested_at
-                    connection.execute(insert(event_log).values(**row))
-                    envelopes.append(envelope)
-
-                    if fail_between_events and offset == 0 and len(emitted) > 1:
-                        raise StoreError("injected failure between two events of one tick")
+                envelopes = _write_events(
+                    connection,
+                    run_id=run_id,
+                    next_seq=next_seq,
+                    emitted=emitted,
+                    rules_ver=rules_ver,
+                    tick=tick,
+                    fail_between_events=fail_between_events,
+                )
 
                 head = next_seq + len(emitted) - 1
                 connection.execute(
@@ -391,12 +452,16 @@ class LogStore:
     def fork_run(
         self,
         parent_run_id: str,
-        at_seq: int,
+        through_seq: int,
         child_run_id: str,
         lease_handle: LeaseHandle,
+        *,
+        child_tick: int | None = None,
+        emitted: list[Any] | None = None,
+        rules_ver: str = "",
         prefix_bound: int = FORK_PREFIX_MAX_EVENTS,
     ) -> ForkResult:
-        """Copy a parent's log prefix into a new run, atomically.
+        """Copy a parent's log prefix into a new run, and diverge it, in one transaction.
 
         An eager prefix copy rather than a copy-on-read view, because a view would make
         every child fold depend on its parent's rows staying exactly as they were — and the
@@ -411,6 +476,27 @@ class LogStore:
         stall every other run's ticks, and the plan is explicit that this surfaces as a
         phantom outage in the lag metric — an operator would be looking for a store problem
         that does not exist.
+
+        **`emitted` is the divergence, and it commits here rather than in a second append.**
+        A child that carried its parent's prefix and nothing else is a plausible-looking run
+        that is not a fork — it is a paused copy — and the retry that would fix it finds the
+        child row already there and reports success. So the two are one transaction: a fork
+        either has its different decision or it never happened, and the existence of the child
+        row is therefore a complete fork rather than a stage of one.
+
+        **`child_tick` is the tick at the fork point, and passing the parent's present tick is
+        the defect this parameter exists to have a name for.** The child row used to inherit
+        `current_tick`, so a child forked at day four while the parent had reached day twelve
+        resumed by folding the copied prefix eight days forward with no inputs — a run that
+        looks like a fork and is not the fork point. `None` means the highest tick the copied
+        prefix holds, which is the honest answer when there is no divergence to place; the
+        kernel passes the tick of the decision being reconsidered, so the child diverges at the
+        same instant its parent did.
+
+        **A child id that already exists is returned rather than raised on.** The gateway's
+        deduplicating ledger is in memory, so a fork retried after a restart reaches this far;
+        because the id is minted from the caller's idempotency key it lands on the child the
+        first attempt made, and the retry's answer is that child (M47).
         """
         with self.engine.begin() as connection:
             token = lease_module.current_token(connection)
@@ -426,37 +512,52 @@ class LogStore:
             if parent is None:
                 raise StoreError(f"no such run: {parent_run_id}")
 
-            prefix_size = int(
-                connection.execute(
-                    select(func.count(event_log.c.seq)).where(
-                        event_log.c.run_id == parent_run_id, event_log.c.seq <= at_seq
-                    )
-                ).scalar_one()
-            )
+            existing = connection.execute(
+                select(runs).where(runs.c.run_id == child_run_id)
+            ).mappings().first()
+            if existing is not None:
+                return ForkResult(
+                    child_run_id=child_run_id,
+                    copied_through_seq=int(existing["forked_at_seq"] or 0),
+                    child_tick=int(existing["current_tick"]),
+                    lineage_root_id=str(existing["lineage_root_id"]),
+                    existed=True,
+                )
+
+            prefix = connection.execute(
+                select(
+                    func.count(event_log.c.seq),
+                    func.coalesce(func.max(event_log.c.tick), 0),
+                ).where(event_log.c.run_id == parent_run_id, event_log.c.seq <= through_seq)
+            ).first()
+            prefix_size, prefix_tick = int(prefix[0]), int(prefix[1])
+
             if prefix_size == 0:
                 raise StoreError(
-                    f"run {parent_run_id} has no events at or before sequence {at_seq}"
+                    f"run {parent_run_id} has no events at or before sequence {through_seq}"
                 )
             if prefix_size > prefix_bound:
                 return ForkResult(
                     child_run_id="",
                     copied_through_seq=0,
-                    refusal=(
-                        f"the prefix at sequence {at_seq} holds {prefix_size} events, above "
-                        f"the bound of {prefix_bound}. Refusing rather than holding the "
-                        "single writer in one long transaction, which would stall every "
-                        "other run's ticks and read as a store outage that is not happening."
-                    ),
+                    refusal=prefix_bound_refusal(through_seq, prefix_size, prefix_bound),
                 )
+
+            born_at = prefix_tick if child_tick is None else child_tick
+            lineage_root_id = str(parent["lineage_root_id"])
 
             # The child inherits seed, quantum, grid and horizon. Horizon especially: it is
             # chosen at genesis and immutable, so a fork cannot outlive its parent's bound.
+            #
+            # It inherits neither `terminal_seq` nor `terminal_reason`, and that is the whole
+            # of what makes forking an ended timeline work: the fork point is before the
+            # terminal event, so the child is a run that has not ended yet.
             connection.execute(
                 insert(runs).values(
                     run_id=child_run_id,
                     run_seed=parent["run_seed"],
-                    current_tick=parent["current_tick"],
-                    head_seq=at_seq,
+                    current_tick=born_at,
+                    head_seq=through_seq,
                     rate=0,  # a fresh child starts paused; starting it is a decision
                     rules_ver=parent["rules_ver"],
                     quantum_sim_seconds=parent["quantum_sim_seconds"],
@@ -464,30 +565,64 @@ class LogStore:
                     grid_rows=parent["grid_rows"],
                     horizon_tick=parent["horizon_tick"],
                     parent_run_id=parent_run_id,
-                    forked_at_seq=at_seq,
-                    # The creation rule, applied uniformly: a new row's lineage root is its
-                    # own id. **U16 owns changing this to the parent's root**, which is
-                    # R21's second half and what makes the HUD's aggregate span a lineage
-                    # rather than a run. Written this way rather than left null so the
-                    # column has no "no lineage yet" state for a reader to handle, and so
-                    # the one line U16 changes is visible instead of implied.
-                    lineage_root_id=child_run_id,
+                    forked_at_seq=through_seq,
+                    # R21's second half, and the line U9 left for this unit: a child belongs
+                    # to its parent's lineage rather than founding one of its own. It is what
+                    # makes the HUD's aggregate span a lineage, and it is what makes U12's
+                    # response cache — keyed on `(cache_key, lineage_root_id)` — reach a
+                    # parent's entry from a child, which until now it could not.
+                    lineage_root_id=lineage_root_id,
                     created_at=utc_now_iso(),
                 )
             )
 
-            rows = connection.execute(
-                select(event_log)
-                .where(event_log.c.run_id == parent_run_id, event_log.c.seq <= at_seq)
-                .order_by(event_log.c.seq)
-            ).mappings().all()
+            # One set-based insert rather than one round-trip per event. At the prefix bound
+            # that is the difference between a statement and five thousand of them, inside a
+            # transaction that holds the store's write lock — and on SQLite the loser of that
+            # contention surfaces as a killed tick loop rather than as a slow fork.
+            copied_columns = [column.name for column in event_log.columns]
+            connection.execute(
+                insert(event_log).from_select(
+                    copied_columns,
+                    select(
+                        *[
+                            literal(child_run_id).label("run_id")
+                            if column.name == "run_id"
+                            else column
+                            for column in event_log.columns
+                        ]
+                    )
+                    .where(
+                        event_log.c.run_id == parent_run_id,
+                        event_log.c.seq <= through_seq,
+                    )
+                    .order_by(event_log.c.seq),
+                )
+            )
 
-            for row in rows:
-                copied = dict(row)
-                copied["run_id"] = child_run_id
-                connection.execute(insert(event_log).values(**copied))
+            envelopes: list[Envelope] = []
+            if emitted:
+                envelopes = _write_events(
+                    connection,
+                    run_id=child_run_id,
+                    next_seq=through_seq + 1,
+                    emitted=emitted,
+                    rules_ver=rules_ver,
+                    tick=born_at,
+                )
+                connection.execute(
+                    update(runs)
+                    .where(runs.c.run_id == child_run_id)
+                    .values(head_seq=through_seq + len(emitted))
+                )
 
-            return ForkResult(child_run_id=child_run_id, copied_through_seq=at_seq)
+            return ForkResult(
+                child_run_id=child_run_id,
+                copied_through_seq=through_seq,
+                child_tick=born_at,
+                lineage_root_id=lineage_root_id,
+                envelopes=envelopes,
+            )
 
     # --- reading ---------------------------------------------------------
 
@@ -510,6 +645,22 @@ class LogStore:
         # Envelope.from_dict validates the payload on read as well as before append, so a
         # non-canonical value that somehow reached the store is caught rather than folded.
         return [Envelope.from_dict(dict(row)) for row in rows]
+
+    def prefix_size(self, run_id: str, through_seq: int) -> int:
+        """How many events a fork at this sequence would copy.
+
+        Asked before the prefix is read, so an oversized one is refused without being pulled into
+        memory first — and so the refusal can name the real count rather than the bound plus one,
+        which is all a limited read could say.
+        """
+        with self.engine.connect() as connection:
+            return int(
+                connection.execute(
+                    select(func.count(event_log.c.seq)).where(
+                        event_log.c.run_id == run_id, event_log.c.seq <= through_seq
+                    )
+                ).scalar_one()
+            )
 
     def sequence_density(self, run_id: str) -> tuple[int, int]:
         """(count, max) for the run. A gap between them localises a corrupt tail."""
@@ -539,6 +690,51 @@ class _WriteJob:
     result: AppendResult | None = None
     error: BaseException | None = None
 
+    def perform(self, store: LogStore) -> AppendResult:
+        return store.append_tick(
+            run_id=self.run_id,
+            emitted=self.emitted,
+            lease_handle=self.lease_handle,
+            rules_ver=self.rules_ver,
+            tick=self.tick,
+        )
+
+
+@dataclass(slots=True)
+class _ForkJob:
+    """A fork, queued behind the ticks rather than racing them (R22).
+
+    The copy is a write, and on SQLite every write takes the database's one write lock. Run
+    out of band it contends with the writer for that lock, and the loser is whichever
+    transaction asked second — which is a killed tick loop about as often as it is a failed
+    fork. Queued here it simply waits its turn, and the clock waits one transaction for it,
+    which is what the prefix bound is sized to keep short.
+    """
+
+    parent_run_id: str
+    through_seq: int
+    child_run_id: str
+    lease_handle: LeaseHandle
+    child_tick: int | None
+    emitted: list[Any]
+    rules_ver: str
+    prefix_bound: int
+    done: threading.Event = field(default_factory=threading.Event)
+    result: ForkResult | None = None
+    error: BaseException | None = None
+
+    def perform(self, store: LogStore) -> ForkResult:
+        return store.fork_run(
+            parent_run_id=self.parent_run_id,
+            through_seq=self.through_seq,
+            child_run_id=self.child_run_id,
+            lease_handle=self.lease_handle,
+            child_tick=self.child_tick,
+            emitted=self.emitted,
+            rules_ver=self.rules_ver,
+            prefix_bound=self.prefix_bound,
+        )
+
 
 class StoreWriter:
     """One queue, one worker, one tick per transaction.
@@ -547,17 +743,25 @@ class StoreWriter:
     sole-writer true at the *transaction* level rather than merely at the process level —
     with more than one run active, concurrent appends could otherwise make a later
     sequence visible before an earlier one.
+
+    A fork is the second job kind, for the same reason there is a queue at all rather than
+    because a fork is a tick. See `_ForkJob`.
     """
 
     def __init__(self, store: LogStore) -> None:
         self.store = store
-        self._queue: queue.Queue[_WriteJob | None] = queue.Queue()
+        self._queue: queue.Queue[_WriteJob | _ForkJob | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._appends = 0
+        self._forks = 0
 
     @property
     def appends(self) -> int:
         return self._appends
+
+    @property
+    def forks(self) -> int:
+        return self._forks
 
     def start(self) -> None:
         if self._thread is not None:
@@ -578,14 +782,11 @@ class StoreWriter:
             if job is None:
                 return
             try:
-                job.result = self.store.append_tick(
-                    run_id=job.run_id,
-                    emitted=job.emitted,
-                    lease_handle=job.lease_handle,
-                    rules_ver=job.rules_ver,
-                    tick=job.tick,
-                )
-                self._appends += 1
+                job.result = job.perform(self.store)
+                if isinstance(job, _ForkJob):
+                    self._forks += 1
+                else:
+                    self._appends += 1
             except BaseException as exc:  # noqa: BLE001 - relayed to the submitter
                 job.error = exc
             finally:
@@ -624,6 +825,47 @@ class StoreWriter:
         assert job.result is not None
         return job.result
 
+    def submit_fork(
+        self,
+        parent_run_id: str,
+        through_seq: int,
+        child_run_id: str,
+        lease_handle: LeaseHandle,
+        *,
+        child_tick: int | None = None,
+        emitted: list[Any] | None = None,
+        rules_ver: str = "",
+        prefix_bound: int = FORK_PREFIX_MAX_EVENTS,
+        timeout: float = 30.0,
+    ) -> ForkResult:
+        """Enqueue a fork and wait for the commit.
+
+        Blocking for the same reason `submit` is: the caller has to know the child is durable
+        before it registers a run against it, and a run registered against a copy that never
+        committed is a run whose next command raises.
+        """
+        if self._thread is None:
+            raise StoreError("the store writer is not running; call start() first")
+
+        job = _ForkJob(
+            parent_run_id=parent_run_id,
+            through_seq=through_seq,
+            child_run_id=child_run_id,
+            lease_handle=lease_handle,
+            child_tick=child_tick,
+            emitted=list(emitted or ()),
+            rules_ver=rules_ver,
+            prefix_bound=prefix_bound,
+        )
+        self._queue.put(job)
+
+        if not job.done.wait(timeout=timeout):
+            raise StoreError(f"the store writer did not commit the fork within {timeout}s")
+        if job.error is not None:
+            raise job.error
+        assert job.result is not None
+        return job.result
+
 
 __all__ = [
     "AppendResult",
@@ -639,4 +881,5 @@ __all__ = [
     "StoreWriter",
     "is_append_only_refusal",
     "make_engine",
+    "prefix_bound_refusal",
 ]

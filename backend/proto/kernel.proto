@@ -35,10 +35,14 @@ service Kernel {
   // answer (R3).
   rpc Replay(ReplayRequest) returns (ReplayResponse);
 
-  // Fork at an arbitrary event index. Executed as a command enqueued to the
-  // parent's tick loop and committed at a tick boundary inside the lease-fenced
-  // transaction — the only path that satisfies both the lease and the
-  // sole-appender rule, which is why it is not a free-standing store operation.
+  // Take a past decision differently, and get a run back for it. Committed
+  // inside the lease-fenced transaction — the only path that satisfies both the
+  // lease and the sole-appender rule, which is why it is not a free-standing
+  // store operation.
+  //
+  // Its own method rather than a CommandKind, for the reason run creation is its
+  // own verb: a command must never bring a simulation into being. See FORK_RUN
+  // below.
   rpc Fork(ForkRequest) returns (ForkResponse);
 
   // R32: a run leaves the machine as a self-contained artifact.
@@ -67,7 +71,16 @@ message Command {
 
 enum CommandKind {
   COMMAND_KIND_UNSPECIFIED = 0;
+
+  // The two values with no dispatch entry, and it is the same reason for both:
+  // each of them creates a run, and a command must never bring a simulation
+  // into being — a typo'd id in a client would silently start one. So creation
+  // is `POST /runs` and forking is `POST /runs/{id}/fork`, each with its own
+  // request and response message, and neither is a kind. Kept here rather than
+  // reserved because the vocabulary is worth reading whole.
   START_RUN = 1;
+  FORK_RUN = 9;
+
   ASSIGN_WORK = 2;
   REASSIGN_WORK = 3;
   RETURN_TO_BACKLOG = 4;
@@ -75,7 +88,6 @@ enum CommandKind {
   SUBMIT_CEO_INPUT = 6;
   SET_RATE = 7;
   REQUEST_HIRE = 8;
-  FORK_RUN = 9;
 
   // Ask a person one of the four questions. The kernel matches the typed text to an
   // intent, because it is the side that prices the answer.
@@ -175,7 +187,23 @@ message ReplayResponse {
 
 message ForkRequest {
   string parent_run_id = 1;
+
+  // The sequence of the DECISION_RESOLVED being reconsidered — not the fork
+  // point. The copy stops one short of it, so the child arrives with that
+  // checkpoint still open and settles it differently; forking *at* the
+  // resolution would copy the original decision and then apply a second one to
+  // a closed checkpoint.
   uint64 at_seq = 2;
+
+  // The option to take instead. Applied inside the fork rather than as a
+  // follow-up command, because a child arrives paused and the paused-run guard
+  // rejects every command but rate and comparison.
+  uint32 option_index = 3;
+
+  // Client-supplied, and required: the child's id is minted from it, which is
+  // what makes a retry idempotent after a restart has emptied the gateway's
+  // in-memory ledger.
+  string idempotency_key = 4;
 }
 
 message ForkResponse {
@@ -183,8 +211,28 @@ message ForkResponse {
   uint64 copied_through_seq = 2;
   // A prefix above the size bound is refused with a reason rather than blocking
   // the single writer in one long transaction, which would surface as a phantom
-  // outage in the lag metric.
+  // outage in the lag metric. Every other refusal — a sequence that is not a
+  // decision, an option that does not exist, an unanswered request about the
+  // item, a fork past the inherited horizon — arrives here too, and each mutates
+  // nothing.
   string refusal = 3;
+
+  // The tick the child was born at: the tick of the decision it reconsiders,
+  // never the parent's present tick.
+  uint64 forked_at_tick = 4;
+
+  // The lineage the child joins, which is its parent's rather than its own.
+  string lineage_root_id = 5;
+
+  // The decision, as the child took it and as the parent took it.
+  string item = 6;
+  uint32 cp_index = 7;
+  uint32 option_index = 8;
+  uint32 parent_option_index = 9;
+
+  // False when this call found the child rather than making it — a retry under
+  // an idempotency key that already forked.
+  bool created = 10;
 }
 
 message ExportRequest {

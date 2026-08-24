@@ -26,6 +26,7 @@ for the REST half, which is the other thing R26 asks for.
 
 from __future__ import annotations
 
+import math
 import os
 import secrets
 import uuid
@@ -264,6 +265,129 @@ async def post_run(body: dict[str, Any] | None = None) -> dict[str, Any]:
         extra={"run": run_id, "seed": int(seed), "scenario": created.get("scenario", "")},
     )
     return {**created, "created": True}
+
+
+#: The widest value the store's sequence and tick columns hold — `BigInteger` on Postgres,
+#: `INTEGER` on SQLite, both signed 64-bit. A number above it is refused here rather than
+#: reaching a bind parameter, where psycopg and pysqlite each raise their own `OverflowError`
+#: from inside the driver and it surfaces as a 500 on a request the client can fix.
+SIGNED_64_BIT_MAX = 2**63 - 1
+
+
+def _whole_number(payload: dict[str, Any], key: str) -> int:
+    """One required non-negative integer off a client-supplied body, or a 400 saying why.
+
+    **`int()` alone is three bugs, and two of them are silent.** `int(8.9)` is 8, so a
+    non-integral JSON number forks a *different decision* than the caller named with no error at
+    all — the worst of the three, because nothing about the response says it happened. `int(1e999)`
+    raises `OverflowError` on the infinity JSON decodes that to, and `int(10**40)` succeeds and
+    then raises `OverflowError` inside the database driver; neither is a `TypeError` or a
+    `ValueError`, so the guard that named those two caught neither and both reached the client as
+    a 500 from a route whose docstring promises a 400.
+
+    Modelled on `apply_command`'s `whole()`, which draws the same distinction for the same reason
+    one layer down. This one additionally refuses a bool — `isinstance(True, int)` is true in
+    Python, and `{"at_seq": true}` is a client mistake worth naming rather than forking sequence 1.
+    """
+    if key not in payload:
+        raise HTTPException(
+            status_code=400,
+            detail=f"a fork needs {key!r}: which decision, and which option instead",
+        )
+
+    value = payload[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{key!r} is {value!r}, which is not a whole number",
+        )
+    if isinstance(value, float):
+        # Finiteness first, and not merely for tidiness: `1e999` decodes to `inf`, and `int(inf)`
+        # raises `OverflowError` — so a wholeness check written as `value != int(value)` raises
+        # from inside the guard that exists to prevent exactly that.
+        if not math.isfinite(value):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{key!r} is {value!r}, which is not a finite number",
+            )
+        if value != int(value):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{key!r} is {value!r}, which is not whole. Refusing rather than truncating: "
+                    "rounding it would name a different "
+                    f"{'decision' if key == 'at_seq' else 'option'} than you asked for, and "
+                    "nothing in the answer would say so."
+                ),
+            )
+
+    whole = int(value)
+    if not 0 <= whole <= SIGNED_64_BIT_MAX:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{key!r} is {whole}, outside the range the store holds "
+                f"(0 to {SIGNED_64_BIT_MAX})."
+            ),
+        )
+    return whole
+
+
+@app.post("/runs/{run_id}/fork")
+def post_fork(run_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Take a past decision differently, and get a timeline back for it (M44).
+
+    **Its own verb rather than a command kind**, and `post_run` above already argues it: a fork
+    creates a run, and a command must never bring a simulation into being. It is also the only
+    thing the client can do to a run that has *ended* — going back from a finished timeline is
+    the point — and `POST /runs/{id}/commands` refuses a terminated run for a reason that is
+    correct about commands and wrong about this.
+
+    **Synchronous, like the command route.** Folding the parent's prefix is bounded pure-Python
+    work and the write blocks on the store, so FastAPI's threadpool is where it belongs; the
+    creation route above is `async` only because starting a clock needs the loop, and a child
+    arrives paused.
+
+    A refusal is a 200 with a `refusal` sentence, for the reason a rejected command is: the
+    request was well-formed and the answer is "no", which the client renders. An unknown parent
+    is a 404, and a missing or non-integer field is a 400 — those are the caller's mistakes.
+    """
+    payload = body or {}
+    client = kernel()
+
+    at_seq = _whole_number(payload, "at_seq")
+    option_index = _whole_number(payload, "option_index")
+
+    try:
+        forked = client.fork_run(
+            run_id,
+            at_seq,
+            option_index,
+            str(payload.get("idempotency_key", "")),
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"no run {run_id}") from None
+
+    if forked.get("refusal"):
+        log.info(
+            "fork refused",
+            extra={"run": run_id, "at_seq": at_seq, "reason": forked["refusal"]},
+        )
+    else:
+        log.info(
+            "run forked",
+            extra={
+                "run": run_id,
+                "child": forked.get("child_run_id", ""),
+                "at_seq": at_seq,
+                # `minted` rather than `created`, and the rename is not taste: `created` is a
+                # `LogRecord` attribute — the record's own timestamp — and stdlib logging raises
+                # `KeyError: Attempt to overwrite 'created' in LogRecord` rather than shadowing
+                # it. Inside a route that is a 500 on a fork that already committed.
+                "minted": forked.get("created", False),
+            },
+        )
+    return forked
 
 
 @app.get("/scenarios")

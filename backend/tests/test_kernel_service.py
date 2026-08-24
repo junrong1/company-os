@@ -22,9 +22,10 @@ from contracts.envelope import EventKind
 from contracts.grpc import kernel_pb2
 from kernel import lease as lease_module
 from kernel import loop as loop_module
-from kernel.loop import KernelRuntime, RunLoop
+from kernel.loop import KernelRuntime, RunLoop, child_run_id_for
 from kernel.store import LogStore, make_engine
 from simcore import compare as branching
+from simcore import log as folder
 from simcore import pending as pend
 from simcore import snapshot as snapshotting
 from simcore import step as sim
@@ -1747,21 +1748,29 @@ async def test_every_append_in_this_file_publishes_what_it_committed() -> None:
     structural property of this file rather than a habit, and the five sites are genesis,
     `set_rate`, `_advance`, `deliver_statement` and `apply_command`.
 
-    **A unit adding a sixth append should extend the count here and publish.** The count is an
+    **A unit adding a seventh append should extend the count here and publish.** The count is an
     equality rather than a floor so that an append arriving with no publish and an append arriving
-    with no docstring both fail — U10 added `deliver_statement`, which is the fifth, and moved this
-    number with it.
+    with no docstring both fail — U10 added `deliver_statement`, which is the fifth, and U16 added
+    `fork`, which is the sixth and appends into the child it just made rather than into the parent
+    it copied.
+
+    Both submit methods are counted, and that is not incidental: `submit_fork` is a *second*
+    method on the same writer, so counting only `submit` would let an append arrive under a new
+    name with no publish and this test stay green — which is the one failure it exists to prevent.
     """
     import ast
     import inspect
 
     from kernel import loop as loop_module
 
-    def calls(node, attribute: str) -> bool:
+    APPENDS = {"submit", "submit_fork"}
+
+    def calls(node, attributes: set[str] | str) -> bool:
+        wanted = {attributes} if isinstance(attributes, str) else attributes
         return any(
             isinstance(inner, ast.Call)
             and isinstance(inner.func, ast.Attribute)
-            and inner.func.attr == attribute
+            and inner.func.attr in wanted
             for inner in ast.walk(node)
         )
 
@@ -1769,11 +1778,11 @@ async def test_every_append_in_this_file_publishes_what_it_committed() -> None:
     appenders = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and calls(node, "submit")
+        if isinstance(node, ast.FunctionDef) and calls(node, APPENDS)
     ]
 
-    assert len(appenders) == 5, (
-        f"{len(appenders)} functions append, not the five this file documents "
+    assert len(appenders) == 6, (
+        f"{len(appenders)} functions append, not the six this file documents "
         f"({', '.join(node.name for node in appenders)}). Either an append was added without a "
         "publish, or one was removed and the module docstring is now wrong"
     )
@@ -2177,3 +2186,665 @@ async def test_a_statement_request_with_no_answerable_scope_is_left_not_raised(
     before = run.state.tick
     runtime._advance(run, 20)
     assert run.state.tick == before + 20
+
+
+# =========================================================================
+# Persistent forks (U16): a fork is a run
+# =========================================================================
+
+
+def _a_decision_to_reconsider(runtime, horizon: int = SHORT_HORIZON_TICKS, option: int = 0):
+    """A run that reached a checkpoint and settled it. Returns the resolution's sequence."""
+    run = _blocked_at_a_decision(runtime, horizon=horizon)
+    envelopes = runtime.apply_command(
+        RUN,
+        kernel_pb2.RESOLVE_CHECKPOINT,
+        canonical.encode(
+            {"item": "wi_ap_map", "cp_index": 0, "option_index": option, "in_person": True}
+        ),
+    )
+    assert len(envelopes) == 1 and envelopes[0].kind is EventKind.DECISION_RESOLVED
+    return run, envelopes[0].seq
+
+
+def _rows(store, run_id: str) -> list[dict]:
+    from sqlalchemy import select
+
+    from logschema import event_log
+
+    with store.engine.connect() as connection:
+        return [
+            dict(row)
+            for row in connection.execute(
+                select(event_log).where(event_log.c.run_id == run_id).order_by(event_log.c.seq)
+            )
+            .mappings()
+            .all()
+        ]
+
+
+async def test_a_child_takes_the_other_option_and_resolves_the_checkpoint_once(runtime) -> None:
+    """Covers M44. The product's central beat: the same moment, a different answer.
+
+    Two assertions, and the second is the one that would be silently wrong. The child's state
+    has to reflect the alternative — otherwise the fork is a copy — and its log has to hold
+    *exactly one* resolution for that checkpoint, because the obvious implementation forks at
+    the resolution rather than before it and then applies a second decision to a checkpoint that
+    is already closed.
+    """
+    run, decision_seq = _a_decision_to_reconsider(runtime, option=0)
+    parent_metrics = dict(run.state.metrics)
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert outcome.forked, outcome.refusal
+    assert (outcome.option_index, outcome.parent_option_index) == (1, 0)
+
+    child = runtime.runs[outcome.child_run_id]
+    decisions = child.state.items["wi_ap_map"].decisions
+    assert len(decisions) == 1
+    spec = child.state.spec_of("wi_ap_map")
+    assert decisions[0].choice == spec.checkpoints[0].options[1].label
+    assert decisions[0].choice != spec.checkpoints[0].options[0].label
+    assert dict(child.state.metrics) != parent_metrics, "the timelines diverged"
+
+    resolutions = [
+        envelope
+        for envelope in runtime.store.read_events(outcome.child_run_id)
+        if envelope.kind is EventKind.DECISION_RESOLVED
+    ]
+    assert len(resolutions) == 1, "one decision for one checkpoint, not the parent's and a second"
+    assert resolutions[0].seq == decision_seq, (
+        "the divergence takes the sequence the parent's decision has, so the two timelines "
+        "differ at one number rather than being offset from each other"
+    )
+    assert resolutions[0].decoded_payload()["option_index"] == 1
+
+
+async def test_the_parents_log_is_byte_identical_before_and_after_a_fork(runtime) -> None:
+    """Covers M48. A fork reads its parent and writes nothing to it.
+
+    Asserted on the stored rows rather than on the envelopes, so `ingested_at` and the metadata
+    columns are in the comparison too: an append that touched the parent at all would move one.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime)
+    before = _rows(runtime.store, RUN)
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert outcome.forked, outcome.refusal
+
+    assert _rows(runtime.store, RUN) == before
+    assert runtime.store.run_row(RUN)["head_seq"] == before[-1]["seq"]
+
+
+async def test_a_child_is_born_at_the_decision_it_reconsiders(runtime) -> None:
+    """Covers R20, at the runtime rather than at the store.
+
+    The parent runs on for a sim-day and a half after the decision. Before this, the child row
+    took the parent's *present* tick, so resuming it folded the copied prefix that far forward
+    with no inputs — a child that looks plausible and is not the fork point.
+    """
+    run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+    decided_at = run.state.tick
+    runtime._advance(run, 800)
+    assert run.state.tick == decided_at + 800
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert outcome.forked, outcome.refusal
+    assert outcome.forked_at_tick == decided_at
+
+    child_row = runtime.store.run_row(outcome.child_run_id)
+    assert child_row["current_tick"] == decided_at
+    assert runtime.runs[outcome.child_run_id].state.tick == decided_at
+
+    # The parent has genuinely moved on. Its *row* is compared loosely on purpose: `current_tick`
+    # is written by `append_tick`, so it tracks the last tick that emitted something rather than
+    # the clock — which is a difference worth not asserting past, and is exactly why `fold` takes
+    # `through_tick` from the row instead of inferring it from the log.
+    assert run.state.tick == decided_at + 800
+    assert runtime.store.run_row(RUN)["current_tick"] > decided_at
+
+
+async def test_a_child_is_registered_so_the_next_command_against_it_is_answered(
+    runtime,
+) -> None:
+    """The third of the three defects. `runtime.fork` never put the child in `self.runs`, so
+    `apply_command` raised `KeyError` on it — which reaches the client as a 500 rather than as
+    anything it can act on. A fork that hands back a run id has to hand back a usable run.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime)
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+
+    assert outcome.child_run_id in runtime.runs
+    child = runtime.runs[outcome.child_run_id]
+    assert child.rate == 0, "a fork arrives paused; starting it is the player's decision"
+
+    envelope = runtime.set_rate(outcome.child_run_id, 1)
+    assert envelope is not None and envelope.kind is EventKind.RATE_CHANGED
+    assert runtime.runs[outcome.child_run_id].rate == 1
+
+
+async def test_two_forks_of_one_decision_are_two_timelines(runtime) -> None:
+    """Covers M47. The whole mechanic is the same moment answered two ways.
+
+    The old id was `uuid5(parent, at_seq)`, so both of these hashed to one value and the second
+    insert failed on the primary key — the id was derived from the fork *point*, which is the
+    one thing two forks of a decision have in common. It comes off the caller's idempotency key
+    now, and two forks are two calls with two keys.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime)
+
+    first = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    second = runtime.fork(RUN, at_seq=decision_seq, option_index=2, idempotency_key="key-2")
+
+    assert first.forked and second.forked, (first.refusal, second.refusal)
+    assert first.child_run_id != second.child_run_id
+
+    for outcome, option in ((first, 1), (second, 2)):
+        events = runtime.store.read_events(outcome.child_run_id)
+        assert [e.seq for e in events] == list(range(1, decision_seq + 1)), (
+            "each child carries the whole prefix and its own divergence"
+        )
+        assert events[-1].decoded_payload()["option_index"] == option
+
+    # Same sequence values in three runs, which is why resume is keyed on (run, seq).
+    assert runtime.store.run_row(first.child_run_id)["forked_at_seq"] == decision_seq - 1
+    assert runtime.store.run_row(second.child_run_id)["forked_at_seq"] == decision_seq - 1
+
+
+async def test_a_retried_fork_answers_with_the_child_it_already_made(runtime) -> None:
+    """Covers M47's second half, including the case that made it a store problem.
+
+    A client that never saw its response retries. Inside one process the answer could come from
+    a ledger — but the gateway's is in memory, so the retry that matters is the one that arrives
+    after a restart with nothing remembering the first attempt. That is what the second half of
+    this test is: a *second runtime* on the same store, which is what a restart is.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime)
+    first = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert first.forked and first.created
+
+    again = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert again.child_run_id == first.child_run_id
+    assert not again.created, "the retry found the child rather than making one"
+    assert again.option_index == 1 and again.item == "wi_ap_map"
+
+    runtime.writer.stop()
+    with runtime.store.engine.begin() as connection:
+        lease_module.release(connection, runtime.lease)
+
+    restarted = KernelRuntime(runtime.store)
+    restarted.start()
+    try:
+        restarted.resume_all()
+        after_restart = restarted.fork(
+            RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1"
+        )
+        assert after_restart.child_run_id == first.child_run_id
+        assert not after_restart.created
+        # And exactly two runs exist, not three.
+        assert len(restarted.store.list_runs()) == 2
+    finally:
+        restarted.writer.stop()
+
+
+async def test_a_child_survives_a_restart_at_its_own_tick_with_its_own_state(runtime) -> None:
+    """Covers M45. The fork is only a run if a process that never saw it can pick it up.
+
+    The comparison is a state hash rather than a spot check on a metric, because what has to
+    survive is the whole fold — and the child's fold is the one place a wrong `current_tick`
+    hides: it would resume to a state that is internally consistent and is not the fork.
+    """
+    from simcore import hashing
+
+    _run, decision_seq = _a_decision_to_reconsider(runtime)
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    live = runtime.runs[outcome.child_run_id]
+    live_hash = hashing.state_hash(sim.snapshot(live.state)).overall
+
+    runtime.writer.stop()
+    with runtime.store.engine.begin() as connection:
+        lease_module.release(connection, runtime.lease)
+
+    restarted = KernelRuntime(runtime.store)
+    restarted.start()
+    try:
+        resumed = restarted.resume_all()
+        assert outcome.child_run_id not in resumed, "a paused child does not start a clock"
+        assert outcome.child_run_id in restarted.runs, "but it is rebuilt and reachable"
+
+        child = restarted.runs[outcome.child_run_id]
+        assert child.state.tick == outcome.forked_at_tick
+        assert hashing.state_hash(sim.snapshot(child.state)).overall == live_hash
+
+        # And it plays forward from there under its own clock.
+        restarted._advance(child, 60)
+        assert child.state.tick == outcome.forked_at_tick + 60
+    finally:
+        restarted.writer.stop()
+
+
+async def test_a_fork_of_a_fork_of_a_fork_reports_its_whole_lineage(runtime) -> None:
+    """Covers M46, and R21's second half with it.
+
+    Three deep, each forked from the child before it. What is checked is both shapes of
+    parentage: `parent_run_id` is a chain, and `lineage_root_id` is flat — every timeline in the
+    tree names the same root, which is what lets U12's response cache and M28's spend aggregate
+    be one query instead of a recursive walk.
+    """
+    run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+
+    lineage = [RUN]
+    parent = RUN
+    for depth in range(3):
+        outcome = runtime.fork(
+            parent, at_seq=decision_seq, option_index=1 + (depth % 2), idempotency_key=f"k{depth}"
+        )
+        assert outcome.forked, outcome.refusal
+        assert outcome.lineage_root_id == RUN
+        lineage.append(outcome.child_run_id)
+        parent = outcome.child_run_id
+
+    assert len(set(lineage)) == 4, "four distinct runs"
+
+    for depth, run_id in enumerate(lineage[1:]):
+        row = runtime.store.run_row(run_id)
+        assert row["parent_run_id"] == lineage[depth], "parentage is direct, one link at a time"
+        assert row["lineage_root_id"] == RUN, "and the lineage is flat"
+
+    # The deepest one folds, and to the option it took rather than to its grandparent's.
+    deepest = runtime.runs[lineage[-1]]
+    assert len(deepest.state.items["wi_ap_map"].decisions) == 1
+    assert deepest.state.tick == run.state.tick
+
+
+async def test_a_terminated_timeline_can_still_be_forked(runtime) -> None:
+    """Going back from an ended run is the demo's last beat, so it cannot be an error.
+
+    It is also the one thing the client can do to a finished run, which is why a fork is not a
+    command: `POST /runs/{id}/commands` answers RUN_TERMINATED, correctly, for everything that
+    appends to the run — and a fork appends to a *different* run.
+
+    Ended twice over, because the two are not the same thing today and finding that out is worth
+    keeping: the run's *state* ends when the fold reaches the horizon, but **nothing in the
+    kernel calls `store.terminate_run`**, so `runs.terminal_seq` and `runs.terminal_reason` stay
+    null for the life of the process. That is a pre-existing gap rather than this unit's — it
+    leaves `append_tick`'s append-after-terminal refusal and `resume_all`'s skip both unreachable
+    in production — and it is in the deferred defect register. Here the row is set by hand as
+    well, so the fork is proved against the state the row is meant to be in.
+    """
+    run, decision_seq = _a_decision_to_reconsider(runtime, horizon=SHORT_HORIZON_TICKS)
+
+    runtime._advance(run, SHORT_HORIZON_TICKS)
+    assert run.state.terminal_reason == "horizon", "the parent has to have actually ended"
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert outcome.forked, outcome.refusal
+
+    child_row = runtime.store.run_row(outcome.child_run_id)
+    assert child_row["terminal_reason"] is None, "the child is before the ending, so it has none"
+    assert child_row["horizon_tick"] == SHORT_HORIZON_TICKS, "and it inherits the same bound"
+    assert not runtime.runs[outcome.child_run_id].state.terminal_reason
+
+    # And again with the row saying so, which is what the store's own guards read.
+    runtime.store.terminate_run(RUN, terminal_seq=runtime.store.head_seq(RUN), reason="horizon")
+    marked = runtime.fork(RUN, at_seq=decision_seq, option_index=2, idempotency_key="key-2")
+    assert marked.forked, marked.refusal
+    assert marked.child_run_id != outcome.child_run_id
+
+
+async def test_every_fork_refusal_carries_a_reason_and_mutates_nothing(runtime) -> None:
+    """The four refusals, each proved to leave the store exactly as it found it.
+
+    "Mutates nothing" is not a claim about the fork's own transaction here — the store already
+    rolls that back — it is that a refusal happens *before* the writer is asked at all. So the
+    run count and both logs are compared around every one of them.
+    """
+    run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+
+    def unchanged() -> tuple:
+        return (
+            len(runtime.store.list_runs()),
+            runtime.store.sequence_density(RUN),
+            runtime.writer.forks,
+        )
+
+    # 1. A sequence that is not a decision — which is how "forking a still-open checkpoint"
+    #    arrives, since an unsettled checkpoint has no resolution to point at.
+    before = unchanged()
+    raised = runtime.fork(RUN, at_seq=decision_seq - 1, option_index=1, idempotency_key="a")
+    assert not raised.forked
+    assert "CHECKPOINT_RAISED, not a decision" in raised.refusal
+    assert "settle it first" in raised.refusal
+    assert unchanged() == before
+
+    # 2. Above the prefix bound.
+    bounded = runtime.fork(
+        RUN, at_seq=decision_seq, option_index=1, idempotency_key="b", prefix_bound=2
+    )
+    assert not bounded.forked
+    assert "above the bound of 2" in bounded.refusal
+    assert "single writer" in bounded.refusal
+    assert unchanged() == before, "refused before the writer was ever asked"
+
+    # 3. Past the inherited horizon. Constructed on the row rather than played into, because a
+    #    run ends *at* its horizon — so a decision at or past one is a state the simulation will
+    #    not produce, and the guard is the invariant that says a child cannot outlive the bound
+    #    its lineage was created with.
+    from sqlalchemy import update
+
+    from logschema import runs as runs_table
+
+    with runtime.store.engine.begin() as connection:
+        connection.execute(
+            update(runs_table).where(runs_table.c.run_id == RUN).values(horizon_tick=1)
+        )
+    past_horizon = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="c")
+    assert not past_horizon.forked
+    assert "at or past the horizon of 1" in past_horizon.refusal
+    assert "no time left to play" in past_horizon.refusal
+    with runtime.store.engine.begin() as connection:
+        connection.execute(
+            update(runs_table).where(runs_table.c.run_id == RUN).values(horizon_tick=4_000)
+        )
+    assert unchanged() == before
+
+    # 4. An unanswered request about the item being re-decided. Reachable: the resolver leg
+    #    raises one on a blocked item, and the CEO is free to decide before it answers.
+    outstanding = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="d")
+    assert outstanding.forked, "the control: with nothing outstanding this fork is legal"
+
+    second_run = _a_run_with_an_unanswered_request_at_its_decision(runtime)
+    refused = runtime.fork(
+        second_run[0], at_seq=second_run[1], option_index=1, idempotency_key="e"
+    )
+    assert not refused.forked
+    assert "unanswered request(s)" in refused.refusal
+    assert "already been taken" in refused.refusal
+    assert runtime.store.run_row(child_run_id_for(second_run[0], "e")) is None
+
+    # And an option that does not exist, which `resolve_checkpoint` refuses on the fold rather
+    # than after the copy — the reason the alternative is applied before anything is written.
+    no_such = runtime.fork(RUN, at_seq=decision_seq, option_index=99, idempotency_key="f")
+    assert not no_such.forked
+    assert "no option 99" in no_such.refusal
+
+
+def _a_run_with_an_unanswered_request_at_its_decision(runtime) -> tuple[str, int]:
+    """A second run whose decision was taken while a request about the item was outstanding."""
+    other = "run-with-a-question"
+    runtime.create_run(other, SEED, horizon_tick=SHORT_HORIZON_TICKS)
+    run = runtime.runs[other]
+    runtime.apply_command(
+        other,
+        kernel_pb2.ASSIGN_WORK,
+        canonical.encode({"item": "wi_ap_map", "person": "stf_ap", "via_manager": False}),
+    )
+    while run.state.items["wi_ap_map"].status != sim.STATUS_BLOCKED:
+        runtime._advance(run, 1)
+
+    runtime.writer.submit(
+        run_id=other,
+        emitted=sim.raise_request(
+            run.state, pend.AGENTS, "wi_ap_map", request_id="req-still-waiting"
+        ),
+        lease_handle=runtime.lease,
+        rules_ver=loop_module.RULES_VERSION,
+        tick=run.state.tick,
+    )
+
+    envelopes = runtime.apply_command(
+        other,
+        kernel_pb2.RESOLVE_CHECKPOINT,
+        canonical.encode(
+            {"item": "wi_ap_map", "cp_index": 0, "option_index": 0, "in_person": True}
+        ),
+    )
+    return other, envelopes[0].seq
+
+
+async def test_a_fork_without_an_idempotency_key_is_refused(runtime) -> None:
+    """The key is the child's identity, so a fork without one is not retryable — and a fork
+    whose response the client never saw is exactly the case the key exists for.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime)
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="")
+    assert not outcome.forked
+    assert "needs an idempotency key" in outcome.refusal
+    assert len(runtime.store.list_runs()) == 1
+
+
+async def test_forking_a_run_that_does_not_exist_raises_rather_than_refusing(runtime) -> None:
+    """A 404 rather than a 200 with a sentence: a refusal answers a well-formed request about a
+    run that exists, and this is neither.
+    """
+    with pytest.raises(KeyError, match="no such run"):
+        runtime.fork("run-nope", at_seq=2, option_index=1, idempotency_key="k")
+
+
+async def test_a_child_id_is_the_same_value_in_any_process(runtime) -> None:
+    """What makes a retry after a restart find its child rather than make a second one."""
+    assert child_run_id_for("run-a", "key-1") == child_run_id_for("run-a", "key-1")
+    assert child_run_id_for("run-a", "key-1") != child_run_id_for("run-a", "key-2")
+    assert child_run_id_for("run-a", "key-1") != child_run_id_for("run-b", "key-1")
+    # The separator matters: without it these two pairs would hash the same string.
+    assert child_run_id_for("run-a", "b-key") != child_run_id_for("run-a\nb", "key")
+    assert child_run_id_for("run-a", "key").startswith("run-")
+
+
+async def test_starting_a_forked_child_actually_moves_its_clock(runtime) -> None:
+    """The defect the compose path found and every unit test missed.
+
+    A fork arrives paused and, unlike every other run in the system, with **no tick task** —
+    creating one at fork would be a task with nothing to do. `set_rate` did not make one either,
+    because it never had to: every run got its task at creation and a paused run's task stays
+    alive and idle. So the child's clock could not be started at all.
+
+    Nothing said so. `set_rate` answered with a `RATE_CHANGED` envelope, the run row said rate 3,
+    `/runs/{id}/state` reported rate 3, and sim-time stood still until the process was restarted
+    and `resume_all` built the task. This asserts the tick, because the rate is exactly what was
+    lying.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+    # A client watching the parent, which is the situation a player forks from — and what
+    # records the runtime's loop handle. In deployment `start_background` records it at startup;
+    # here the runtime was built directly, so this stands in for it without starting the
+    # parent's clock and racing the manual advances above.
+    runtime.subscribe(RUN)
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    child = runtime.runs[outcome.child_run_id]
+
+    assert child.task is None, "a fork has no tick task; that is what makes this reachable"
+
+    runtime.set_rate(outcome.child_run_id, 2)
+    assert child.rate == 2
+
+    started_at = child.state.tick
+    for _ in range(100):
+        await asyncio.sleep(0.05)
+        if child.state.tick > started_at:
+            break
+
+    assert child.task is not None, "unpausing has to build the task nothing else was going to"
+    assert child.state.tick > started_at, (
+        f"the child reports rate {child.rate} and has not moved from tick {started_at}"
+    )
+
+    await runtime.stop_run(outcome.child_run_id)
+
+
+async def test_a_retry_reports_the_tick_the_child_was_born_at(runtime) -> None:
+    """Found by review, and it is this unit's own second defect on the idempotent path.
+
+    `_fork_already_taken` read `forked_at_tick` off `runs.current_tick` — a column `append_tick`
+    rewrites on every commit the child makes. So a retry arriving *after* the child had played
+    forward answered with the child's now. Measured before the fix: a child born at 613 reported
+    1080, while its own divergence event at that sequence still carried 613.
+
+    The divergence event is immutable and `_fork_already_taken` already reads it, which is what
+    makes the fix free. What this test does that the original retry test did not: it advances the
+    child between the two calls, which is the whole of what exposes it.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+    first = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert first.forked and first.created
+
+    child = runtime.runs[first.child_run_id]
+    runtime._advance(child, 600)
+    assert child.state.tick > first.forked_at_tick, "the child has to have actually moved"
+    assert runtime.store.run_row(first.child_run_id)["current_tick"] > first.forked_at_tick
+
+    again = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert again.child_run_id == first.child_run_id
+    assert not again.created
+    assert again.forked_at_tick == first.forked_at_tick, (
+        f"the retry reported tick {again.forked_at_tick} for a child born at "
+        f"{first.forked_at_tick} — the birth tick came off the mutable run row again"
+    )
+
+
+async def test_a_fork_whose_writer_gives_up_after_committing_adopts_the_child(
+    runtime, monkeypatch
+) -> None:
+    """The one door `submit_fork`'s timeout leaves open, and what it used to cost.
+
+    `submit` abandons its own wait after thirty seconds *while the writer may still land the
+    transaction* — the case `PUBLISH_HELD_BACK_BOUND` documents for appends. For a fork that left
+    a child row committed with no `RunLoop` against it, which is a genuinely unusable timeline:
+    `/runs/{id}/state` answers from the row and reports the run as existing, while a command
+    against it answers not-found.
+
+    The timeout is manufactured rather than waited for — thirty seconds is not something to
+    reproduce — and the commit is left to happen, which is exactly the shape being tested.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+
+    real = runtime.writer.submit_fork
+
+    def commits_then_gives_up(**job):
+        real(**job)
+        raise loop_module.StoreError("the store writer did not commit the fork within 30.0s")
+
+    monkeypatch.setattr(runtime.writer, "submit_fork", commits_then_gives_up)
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+
+    assert outcome.forked, outcome.refusal
+    assert not outcome.created, "the child was adopted, not made by this call"
+    assert outcome.child_run_id in runtime.runs, "and it is a usable run, not a stranded row"
+    assert outcome.forked_at_tick == runtime.runs[RUN].state.tick
+
+    monkeypatch.undo()
+    envelope = runtime.set_rate(outcome.child_run_id, 1)
+    assert envelope is not None, "the adopted child takes commands"
+
+
+async def test_a_fork_whose_writer_fails_without_committing_says_retrying_is_safe(
+    runtime, monkeypatch
+) -> None:
+    """The other half: nothing landed, so the refusal has to say so.
+
+    The copy and the divergence are one transaction, which is what makes "retry under the same
+    key" sound advice rather than a hope — and the sentence says it, because a client that has
+    just been refused needs to know whether it is about to make a second timeline.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+
+    def never_commits(**_job):
+        raise loop_module.StoreError("the store writer did not commit the fork within 30.0s")
+
+    monkeypatch.setattr(runtime.writer, "submit_fork", never_commits)
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+
+    assert not outcome.forked
+    assert "did not complete this fork" in outcome.refusal
+    assert "retrying under the same idempotency key is safe" in outcome.refusal
+    assert len(runtime.store.list_runs()) == 1, "and nothing was written"
+
+
+async def test_a_fenced_out_kernel_refuses_a_fork_with_the_leases_reason(
+    runtime, monkeypatch
+) -> None:
+    """A lease taken over mid-fork is a sentence, not a 500.
+
+    `apply_command` already turns `RunAlreadyTerminated` into a `CommandRejected` for the same
+    reason: the store is right to refuse, and what was wrong is the refusal reaching the client
+    as an opaque error rather than the reason it already carries.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+
+    def fenced(**_job):
+        raise loop_module.FencedOut(
+            "this kernel holds lease token 1 but the store's current token is 2"
+        )
+
+    monkeypatch.setattr(runtime.writer, "submit_fork", fenced)
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert not outcome.forked
+    assert "lease token" in outcome.refusal
+    assert len(runtime.store.list_runs()) == 1
+
+
+async def test_a_parent_this_build_cannot_fold_is_refused_with_the_folds_own_reason(
+    runtime, monkeypatch
+) -> None:
+    """A rules-version mismatch on the parent reached the client as a 500.
+
+    The fold's refusal already names both versions and the remedy — it is the sentence R10 exists
+    to produce — and `post_fork` catches nothing but `KeyError`, so it never got there.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+
+    def refuses(*_args, **_kwargs):
+        raise folder.FoldRefused(
+            "this log was written under rules version old; the running rules are new"
+        )
+
+    monkeypatch.setattr(folder, "fold", refuses)
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert not outcome.forked
+    assert "rules version" in outcome.refusal
+    assert len(runtime.store.list_runs()) == 1
+
+
+async def test_the_child_id_seed_cannot_be_made_ambiguous_by_its_contents(runtime) -> None:
+    """The collision review reproduced, now closed by construction.
+
+    The seed used to be `parent + "\\n" + key` with a comment saying neither value may contain a
+    newline — a precondition nothing enforced, and `POST /runs` accepts a client-supplied id.
+    Measured before the fix: both pairs below minted `run-cc3c2f6565de`. The seed is
+    length-prefixed now, so no content can shift the boundary between the two halves.
+    """
+    assert child_run_id_for("run-a", "b\nkey") != child_run_id_for("run-a\nb", "key")
+    assert child_run_id_for("run-a", ":b:key") != child_run_id_for("run-a:b", "key")
+    assert child_run_id_for("run-ab", "c") != child_run_id_for("run-a", "bc")
+
+    # Still deterministic, which is the property the whole retry path rests on.
+    assert child_run_id_for("run-a", "key-1") == child_run_id_for("run-a", "key-1")
+    assert child_run_id_for("run-a", "key").startswith("run-")
+
+
+async def test_an_identifier_carrying_a_control_character_is_refused(runtime) -> None:
+    """Defence in depth behind the length prefix, using simcore's own predicate.
+
+    Execution decision §1 forbids a second copy of a predicate, and
+    `simcore.scenario.control_character` is where the Unicode-category rule already lives — which
+    is why a zero-width joiner is refused alongside a newline rather than only the obvious one.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+
+    for key in ("a\nb", "a\tb", "a‍b", "a‮b"):
+        outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key=key)
+        assert not outcome.forked, f"{key!r} was accepted"
+        assert "idempotency key contains" in outcome.refusal
+
+    too_long = runtime.fork(
+        RUN, at_seq=decision_seq, option_index=1, idempotency_key="k" * 500
+    )
+    assert not too_long.forked
+    assert "above the bound of" in too_long.refusal
+
+    assert len(runtime.store.list_runs()) == 1, "every refusal wrote nothing"

@@ -12,6 +12,7 @@ class CommandKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     COMMAND_KIND_UNSPECIFIED: _ClassVar[CommandKind]
     START_RUN: _ClassVar[CommandKind]
+    FORK_RUN: _ClassVar[CommandKind]
     ASSIGN_WORK: _ClassVar[CommandKind]
     REASSIGN_WORK: _ClassVar[CommandKind]
     RETURN_TO_BACKLOG: _ClassVar[CommandKind]
@@ -19,11 +20,11 @@ class CommandKind(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     SUBMIT_CEO_INPUT: _ClassVar[CommandKind]
     SET_RATE: _ClassVar[CommandKind]
     REQUEST_HIRE: _ClassVar[CommandKind]
-    FORK_RUN: _ClassVar[CommandKind]
     ASK_PERSON: _ClassVar[CommandKind]
     COMPARE_OPTIONS: _ClassVar[CommandKind]
 COMMAND_KIND_UNSPECIFIED: CommandKind
 START_RUN: CommandKind
+FORK_RUN: CommandKind
 ASSIGN_WORK: CommandKind
 REASSIGN_WORK: CommandKind
 RETURN_TO_BACKLOG: CommandKind
@@ -31,7 +32,6 @@ RESOLVE_CHECKPOINT: CommandKind
 SUBMIT_CEO_INPUT: CommandKind
 SET_RATE: CommandKind
 REQUEST_HIRE: CommandKind
-FORK_RUN: CommandKind
 ASK_PERSON: CommandKind
 COMPARE_OPTIONS: CommandKind
 
@@ -153,22 +153,40 @@ class ReplayResponse(_message.Message):
     def __init__(self, matched: bool = ..., state_hash: _Optional[str] = ..., refusal: _Optional[str] = ..., diverged_at_seq: _Optional[int] = ..., diverged_at_tick: _Optional[int] = ...) -> None: ...
 
 class ForkRequest(_message.Message):
-    __slots__ = ("parent_run_id", "at_seq")
+    __slots__ = ("parent_run_id", "at_seq", "option_index", "idempotency_key")
     PARENT_RUN_ID_FIELD_NUMBER: _ClassVar[int]
     AT_SEQ_FIELD_NUMBER: _ClassVar[int]
+    OPTION_INDEX_FIELD_NUMBER: _ClassVar[int]
+    IDEMPOTENCY_KEY_FIELD_NUMBER: _ClassVar[int]
     parent_run_id: str
     at_seq: int
-    def __init__(self, parent_run_id: _Optional[str] = ..., at_seq: _Optional[int] = ...) -> None: ...
+    option_index: int
+    idempotency_key: str
+    def __init__(self, parent_run_id: _Optional[str] = ..., at_seq: _Optional[int] = ..., option_index: _Optional[int] = ..., idempotency_key: _Optional[str] = ...) -> None: ...
 
 class ForkResponse(_message.Message):
-    __slots__ = ("child_run_id", "copied_through_seq", "refusal")
+    __slots__ = ("child_run_id", "copied_through_seq", "refusal", "forked_at_tick", "lineage_root_id", "item", "cp_index", "option_index", "parent_option_index", "created")
     CHILD_RUN_ID_FIELD_NUMBER: _ClassVar[int]
     COPIED_THROUGH_SEQ_FIELD_NUMBER: _ClassVar[int]
     REFUSAL_FIELD_NUMBER: _ClassVar[int]
+    FORKED_AT_TICK_FIELD_NUMBER: _ClassVar[int]
+    LINEAGE_ROOT_ID_FIELD_NUMBER: _ClassVar[int]
+    ITEM_FIELD_NUMBER: _ClassVar[int]
+    CP_INDEX_FIELD_NUMBER: _ClassVar[int]
+    OPTION_INDEX_FIELD_NUMBER: _ClassVar[int]
+    PARENT_OPTION_INDEX_FIELD_NUMBER: _ClassVar[int]
+    CREATED_FIELD_NUMBER: _ClassVar[int]
     child_run_id: str
     copied_through_seq: int
     refusal: str
-    def __init__(self, child_run_id: _Optional[str] = ..., copied_through_seq: _Optional[int] = ..., refusal: _Optional[str] = ...) -> None: ...
+    forked_at_tick: int
+    lineage_root_id: str
+    item: str
+    cp_index: int
+    option_index: int
+    parent_option_index: int
+    created: bool
+    def __init__(self, child_run_id: _Optional[str] = ..., copied_through_seq: _Optional[int] = ..., refusal: _Optional[str] = ..., forked_at_tick: _Optional[int] = ..., lineage_root_id: _Optional[str] = ..., item: _Optional[str] = ..., cp_index: _Optional[int] = ..., option_index: _Optional[int] = ..., parent_option_index: _Optional[int] = ..., created: bool = ...) -> None: ...
 
 class ExportRequest(_message.Message):
     __slots__ = ("run_id",)

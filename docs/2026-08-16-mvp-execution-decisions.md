@@ -538,6 +538,12 @@ for the clock to be protected and it now is, but `post_command` is a synchronous
 40 concurrent comparisons still exhaust the route pool. Making it `async` reaches into the gateway
 and the launcher.
 
+> **U16 widened this, knowingly.** `post_fork` is a second synchronous route whose handler parks on
+> the same two-slot `BRANCH_LIMITER`, so the exposure is no longer comparisons alone — and
+> `diagnose`, the call an operator makes when things are stalling, is one of the routes that then
+> cannot be served. Recorded here rather than left in the code comment that says it, so whoever
+> makes the `async` change knows it has two callers to move.
+
 **No authored checkpoint offers six options.** Found by U5. All nine offer three, while
 `MAX_BRANCHES_PER_COMPARISON` is 6 — so the plan's "six-option comparison" and its 1.6s figure
 cannot be produced from the shipped scenario, and U5's load tests synthesise the width. Not a
@@ -569,6 +575,26 @@ raising `CommandRejected` on the live path only; see "What U10 found" above.
 **`frontend/scripts/screenshots.mjs` disagreed with M6.** Found by U2, **closed by U3**: the harness
 now injects `dir_hr`/`wi_hiring` with the label a real day-zero raise carries, the injection is kept
 with the reason stated, and the three PNGs are recaptured.
+
+**`store.terminate_run` has no production caller.** Found by U16 while writing the
+terminated-parent test. A run's state ends when the fold reaches its horizon and `RUN_TERMINATED` is
+logged, but nothing in the kernel writes `runs.terminal_seq` or `runs.terminal_reason` — only tests
+do. That leaves two guards unreachable in deployment: `append_tick`'s `RunAlreadyTerminated`
+refusal, which reads `runs.terminal_seq`, and `resume_all`'s skip of an ended run, which reads
+`runs.terminal_reason`. Nothing misbehaves today because both facts are re-derived from the folded
+log — a resumed terminated run's loop returns on its first wake, and the gateway reads
+`state.terminal_reason` for a live run. What it costs is that the *store*-level protection everyone
+assumes is there is not, and the fix is one call in the tick loop's termination path plus whatever
+turning two dormant guards live surfaces. U16 asserted around it rather than on it, and the fork
+path deliberately does not consult either column.
+
+**An `extra=` key colliding with a `LogRecord` attribute raises out of the logging call.** Found by
+U16 on `created`, and **closed in the same change** — the field is `minted`, and
+`test_no_log_call_names_an_extra_field_that_logging_reserves` now reads every `extra=` dict in the
+tree against a set computed from a real `LogRecord`. Recorded here because the *class* is what
+matters: `Logger.makeRecord` raises before any filter, so nothing `servicekit` installs can catch
+it, and inside a route it is a 500 on work that already committed. The tree is clean; the guard is
+what keeps it so.
 
 ---
 
@@ -1194,3 +1220,189 @@ because the fork copies the parent's event rows and replay reads the log.
 `test_emptying_the_cache_changes_nothing_about_what_the_log_folds_to` folds a run carrying a statement
 with the cache full and then empty and gets one hash, and `test_a_fold_cannot_reach_a_cache_at_all`
 says structurally why it could not have gone otherwise — `simcore` does not import `modelgw`.
+
+---
+
+## What U16 found, that U17, U18, U19, U20 and U25 need
+
+Fifteen units in. A fork is a run: it has a command path, an id that does not collide, a tick at its
+own fork point, and a place in the runtime. The three defects the plan named are closed, the cache
+half U12 left inert is live, and **the plan's shape for the fork was not the shape it took** — twice,
+each time for a reason worth carrying rather than a preference.
+
+### A fork is a verb, not a command kind — and `START_RUN` is the precedent
+
+The plan's approach says "the dispatch entry, the gateway route and the launcher's command mapping",
+which reads as a fork travelling as `CommandKind.FORK_RUN` through `POST /runs/{id}/commands`. It
+does not. It is `POST /runs/{id}/fork`, with its own request and response message, and the argument
+is one the repository had already made and written down.
+
+`post_run`'s docstring: *"a command must never bring a simulation into being, or a typo'd id in a
+client would silently start one. So creation is a different verb on a different path."* A fork
+creates a run. And the enum agrees: **`START_RUN = 1` has sat in `CommandKind` with no dispatch entry
+since run creation became its own verb.** `FORK_RUN = 9` joins it. The two values with no dispatch
+entry are exactly the two that create a run, which is a rule rather than two omissions —
+`test_forking_is_not_a_command_kind` states it and fails if either is ever mapped.
+
+Making it a kind would also have needed two carve-outs in `submit`'s guards. A fork is legal on a
+**paused** run and on a **terminated** one — going back from an ended timeline is the demo's last
+beat — and each carve-out would have been true for a reason that is not the guard's premise. The
+guards would have ended up describing forks rather than commands.
+
+The idempotency key stayed, and it does more work here than it does for a command: the child's id is
+`uuid5` over `(parent_run_id, key)`, so the **store** is what deduplicates a retry rather than the
+gateway's ledger — which is in memory and does not survive the restart a retry may cross. There is no
+ledger entry for a fork at all. `POST /runs` makes the same argument for creation: the run id is its
+own key.
+
+### The plan's fourth refusal would have refused most real forks
+
+The plan names four: a still-open checkpoint, the prefix bound, **"forking at a sequence with an
+outstanding request"**, and the inherited horizon. The third one, taken literally, is unusable.
+Measured on a real run: at the fork point of the first authored decision, `state.pending` holds the
+**domain period consult** — raised at tick 540 with a deadline of 1080, and outstanding for a large
+fraction of every sim-day. A blanket rule would refuse forks for a reason having nothing to do with
+the decision being reconsidered.
+
+Checking what the blanket version was defending against turned up nothing that survives contact with
+the code. Its origin is U10's finding that `statement_request_id` derives from
+`(director, item, cp_index, tick)` and is therefore shared by a parent and a fork at one tick — and
+U10 itself recorded that this *is not reachable through the kernel*: an answer names the run it is
+for and `deliver_statement` looks it up in that run's `pending`. The store's one-answer index is
+`(run_id, request_id)`. Pre-divergence the two runs are the same run, so a shared cache entry is
+correct rather than a leak. **Nothing breaks.**
+
+So the refusal is narrowed to what is reachable and is actually wrong: **a request raised about the
+item being re-decided**. The child settles that checkpoint at its own first tick, so a copied
+question about it can only ever be answered against a decision that has already been taken. The
+remedy is in the sentence — wait for the answer, or let the request reach its deadline.
+
+This leaves U10's original note open rather than closed. Closing it properly still needs a run
+identifier the fold reproduces, which is a `State` shape change; **U15 is the unit that already owns
+a shape move** and is the right place for it, not this one.
+
+### `RUN_FORKED` is still not emitted, and that buys U18 something
+
+The kind exists, `KIND_SCHEMA_VERSIONS` gives it version 1, and `log.py` folds it as operational.
+Emitting it as the child's first divergent event was the obvious move and was **not** taken, because
+not inserting anything ahead of the divergence has a property worth more:
+
+**The child's `DECISION_RESOLVED` takes the same sequence number as its parent's.** Both timelines
+hold an event at sequence *n*, and they differ there and nowhere before. Parentage stays in `runs`,
+where it belongs; the log carries the divergence itself. `test_a_child_takes_the_other_option_and_
+resolves_the_checkpoint_once` asserts the sequence as well as the option.
+
+> **Corrected after review.** This paragraph originally credited that alignment with making "the
+> decision that separated them" cheap for U18 and U20 — a pair `(parent, n)` and `(child, n)` rather
+> than a join through two mutable columns. That is not true, and the architecture review said so:
+> both units address through `runs.parent_run_id` and `forked_at_seq`, and `forked_at_seq + 1` is a
+> fixed computable offset whether or not a marker event sits in front of it. The decision not to
+> emit `RUN_FORKED` is still right, on the simpler ground it should have rested on from the start:
+> the fact is already durable in `runs`, and a zero-content event that the fold skips as operational
+> adds a row and no information. The alignment is a pleasant consequence, not the reason.
+
+### The copy and the divergence are one transaction, and the reason is a bad retry
+
+`fork_run` takes the divergence events and appends them inside the transaction that copies the
+prefix. Two transactions would leave a door open that is worse than a failure: a child holding its
+parent's prefix and nothing else is a **paused copy, not a fork**, and because the id is minted from
+the caller's key the retry that should repair it finds the child row already there and reports
+success. One transaction makes "a child row exists" mean "a complete fork exists", which is what the
+retry path is allowed to rely on.
+
+### The routing through the single writer is load-bearing, and a five-second default is hiding it
+
+The plan predicted that an out-of-band fork "contends with the writer for SQLite's write lock, and
+the loser surfaces as a killed tick loop". That is exactly right and **the shipped configuration
+hides it entirely**: pysqlite's busy timeout defaults to five seconds, so the loser *waits* rather
+than failing, and a property test cannot tell the two designs apart. Measured — an out-of-band fork
+racing 198 appends passes the same test the routed one does, on both dialects.
+
+At `?timeout=0` the prediction is exact and immediate: `OperationalError: database is locked` on
+`BEGIN IMMEDIATE`, the transaction rather than a statement inside it. **The loser is whichever party
+asked second, and across runs of that race it was the fork in some and the tick loop in others.**
+Half of that distribution is a stopped simulation with nothing wrong on the store side.
+
+That race is not what the suite asserts, because asserting the outcome of a race is how a test
+becomes the flake U13 spent a CI run finding — the first draft of it did exactly that and failed one
+run in four. `test_a_second_writer_loses_the_lock_rather_than_waiting_for_it` forces the interleaving
+instead: one connection holds the write lock, and both of the things that would have raced are shown
+to lose to it. The property test alongside it pins the *mechanism* — `writer.forks == 1` — because on
+the shipped configuration the property alone does not distinguish the designs.
+
+There is a second and better reason for the routing besides the contention, and it is the one to
+quote: **R35 says every append serialises through one writer, and a fork appends.**
+
+### What U16 found on its own path
+
+Three, and two of them are U16's own.
+
+**A forked child's clock could not be started.** Found on the compose path, not in the suite, and it
+is the sharpest thing here. A fork arrives paused and — unlike every other run in the system — with
+**no tick task**: creating one at fork would be a task with nothing to do. `set_rate` did not create
+one either, because it never had to; every run got its task at creation and a paused run's task stays
+alive and idle. So `set_rate` on a child returned `applied`, appended `RATE_CHANGED`, wrote rate 3 to
+the row, and `/runs/{id}/state` reported rate 3 — **and sim-time did not move.** It started on the
+next restart, when `resume_all` built the task. Every observable said the clock was running.
+
+`ensure_loop`'s own docstring had claimed the property all along — "the task's existence follows the
+rate" — and nothing had ever made it true for a run with no task. `set_rate` now starts the clock
+when it lifts a pause, through the same event-loop hop `_publish` uses and for the same reason. And
+`start_background` records the loop handle, because a process whose every stored run is paused calls
+neither `subscribe` nor `ensure_loop` and would have had nothing to schedule onto.
+
+**A log `extra=` key that collides with a `LogRecord` attribute raises out of the logging call.** The
+fork route logged `extra={"created": ...}` — the obvious word for "did this call make the child or
+find it" — and `created` is the record's own timestamp. `Logger.makeRecord` raises `KeyError:
+Attempt to overwrite 'created' in LogRecord`, *before* any filter, so nothing `servicekit` installs
+can catch it; inside a route that is a 500 on work that already committed. The field is `minted` now.
+This is the same failure family as `test_the_filter_never_raises_out_of_the_logging_call_that_
+triggered_it`, so the guard went beside it: `test_no_log_call_names_an_extra_field_that_logging_
+reserves` reads every `extra=` dict in the tree against a set computed from a real `LogRecord` — a
+literal set would have missed `taskName`, which arrived in 3.12. The tree is otherwise clean.
+
+**`store.terminate_run` has no production caller.** Pre-existing, found while writing the
+terminated-parent test. A run's *state* ends when the fold reaches the horizon and `RUN_TERMINATED`
+is logged, but nothing in the kernel writes `runs.terminal_seq` or `runs.terminal_reason` — only
+tests do. Two guards are therefore unreachable in deployment: `append_tick`'s
+`RunAlreadyTerminated` refusal, and `resume_all`'s skip of an ended run. The behaviour is right
+anyway, because both facts are re-derived from the folded log; what is missing is the row. Deferred,
+and in the register below.
+
+### For U17, U18 and U25
+
+- **The tree is a query and the columns are now interesting.** `lineage_root_id` is flat — every
+  timeline in a tree names the same root, asserted three deep — and `parent_run_id` is the chain.
+  `test_a_fork_of_a_fork_of_a_fork_reports_its_whole_lineage` pins both shapes at once, which is
+  what stops a future reader collapsing them.
+- **`ForkOutcome.to_dict()` is already the shape U25's panel needs**: the child, the decision
+  sequence, the fork point, the tick, the lineage root, the item and cp index, and *both* options —
+  the one taken and the parent's. A fork that returned only an id would leave the client fetching
+  three things to render what it just did.
+- **`decision_seq` is the decision, not the fork point.** The request names the
+  `DECISION_RESOLVED` to reconsider and the copy stops one short of it. U25's decisions projection
+  should carry the resolution sequence and send that.
+- **A child arrives paused and stays paused**, deliberately: U25 lands the player in the child at
+  rate zero with the Universe stage opening on the new node. `InProcessKernel.fork_run` calls no
+  `ensure_loop`, unlike `create_run`. Starting it is the player's `set_rate` — which now works.
+- **A refusal is a 200 with a sentence**, an unknown parent is a 404, a malformed body is a 400.
+  U25's "shows the reason rather than failing silently" reads `refusal`.
+- **U17 will want per-run locks in run-id order** for its switch command; `RunLoop.lock` is still
+  public and still orderable, and `fork` takes none at all — it reads the parent's *log*, which is
+  append-only and therefore immutable behind it.
+
+### For U19 and U20
+
+- M34's fork half is real now: two timelines differing only in a decision share a byte-identical
+  prefix, because the copy is `INSERT..SELECT` over every column but `run_id` —
+  `test_the_copy_carries_every_column_but_the_run_id` compares the stored rows including
+  `command_id`, `request_id` and `ingested_at`, so a copy that regenerated metadata would fail.
+- The child's `current_tick` is the tick of the decision it reconsiders. A re-fold of the child's
+  log through that tick reproduces the state the fork produced —
+  `test_a_child_survives_a_restart_at_its_own_tick_with_its_own_state` compares state hashes across
+  a second `KernelRuntime` on the same store, which is what a restart is.
+- One caution for U20's report fold: `runs.current_tick` is written by `append_tick`, so it tracks
+  the last tick that *emitted* something rather than the clock. A restart resumes a run at that tick
+  and loses the quiet ticks after it. Pre-existing, visible on the compose path (a parent at 4782
+  came back at 4539), and not this unit's — but a report that folds through `current_tick` inherits
+  it.

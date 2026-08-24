@@ -208,6 +208,32 @@ class InProcessKernel:
             "scenario": run.state.scenario.scenario_id,
         }
 
+    def fork_run(
+        self,
+        parent_run_id: str,
+        at_seq: int,
+        option_index: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Take a past decision differently. The child arrives paused, and stays paused.
+
+        No `ensure_loop` here, unlike `create_run`, and that is the design rather than an
+        omission: a fork lands the player in a timeline they have not looked at yet, so it
+        starts at rate zero and the first thing they do with it is a `set_rate` they chose.
+        Starting the clock here would run the new timeline forward while the Universe stage was
+        still animating into it.
+
+        An unknown parent arrives as `KeyError`, which the gateway answers 404 with — the same
+        shape `create_run` uses for a refused scenario, translated at this seam so the gateway
+        holds no simulation knowledge.
+        """
+        return self.runtime.fork(
+            parent_run_id,
+            at_seq,
+            option_index,
+            idempotency_key,
+        ).to_dict()
+
     def scenarios(self) -> list[dict[str, Any]]:
         """Every company a run could be created against, for the surface that offers the choice.
 

@@ -122,6 +122,24 @@ def test_the_fold_takes_live_head_as_a_parameter() -> None:
     assert "at_live_head" in fields
 
 
+def test_a_fork_carries_its_idempotency_key_and_the_option_it_takes_instead() -> None:
+    """M47, and the shape U16 gave the request.
+
+    The key is on the message rather than beside it because the child's id is *minted* from it:
+    a fork without one is not retryable, and a fork whose response the client never saw is the
+    case the key exists for. The option is on it because the alternative is applied inside the
+    fork — a child arrives paused, and the paused-run guard rejects every command but rate and
+    comparison, so a follow-up command could not settle the checkpoint.
+    """
+    from contracts.grpc import kernel_pb2
+
+    request = {field.name for field in kernel_pb2.ForkRequest.DESCRIPTOR.fields}
+    assert {"parent_run_id", "at_seq", "option_index", "idempotency_key"} <= request
+
+    response = {field.name for field in kernel_pb2.ForkResponse.DESCRIPTOR.fields}
+    assert {"child_run_id", "refusal", "forked_at_tick", "lineage_root_id", "created"} <= response
+
+
 def test_the_answer_streams_are_bidirectional_and_kernel_initiated() -> None:
     """R17: the kernel opens the stream; no service holds the kernel's address.
 
