@@ -119,8 +119,10 @@ lock — so no clock ever waits behind it and there is no order between the two 
 That rests on one invariant, so it is stated rather than assumed: **every append site in this file
 publishes what it committed.** Per-run sequences are gapless by construction — `append_tick` reads
 the committed head and adds one, and an aborted tick commits nothing — so the held-back set always
-drains as long as nothing appends silently. There are five append sites here and each publishes;
-`test_every_append_in_this_file_publishes_what_it_committed` reads the file to keep that true.
+drains as long as nothing appends silently. There are six append sites here and each publishes;
+`test_every_append_in_this_file_publishes_what_it_committed` reads the file to keep that true. The
+sixth is `fork`, which publishes into the child it just registered rather than into the parent it
+copied — a fork appends nothing to its parent at all (M48).
 `RATE_CHANGED` is published for that reason as much as for its own sake: an unpublished sequence
 is a hole every later frame would wait behind forever.
 
@@ -160,6 +162,7 @@ import asyncio
 import contextlib
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -167,7 +170,13 @@ import anyio.to_thread
 
 from contracts.envelope import Envelope, EventKind
 from kernel import lease as lease_module
-from kernel.store import LogStore, RunAlreadyTerminated, StoreWriter
+from kernel.store import (
+    FORK_PREFIX_MAX_EVENTS,
+    LogStore,
+    RunAlreadyTerminated,
+    StoreWriter,
+    prefix_bound_refusal,
+)
 from servicekit import logging as svclog
 from simcore import log as folder
 from simcore import pending as pend
@@ -255,6 +264,14 @@ BRANCH_SLOTS = 2
 #: command route is a synchronous FastAPI route and therefore runs on a worker thread, which is
 #: what makes that safe; a future `async` caller has to hop to a thread first, or it will block
 #: every request and every WebSocket send on the queue this limiter is here to create.
+#:
+#: **A fork's fold draws from it too** (U16), and that is a reuse rather than an overload. What
+#: this limiter rations is bounded pure-Python work reached from a request thread, which is
+#: exactly what folding a prefix of up to `FORK_PREFIX_MAX_EVENTS` is; the route pool is forty
+#: deep, so forty concurrent forks would put forty folds against one GIL and starve the clock in
+#: precisely the shape U5 measured for comparisons. A second limiter would be a second number
+#: nobody sized. The fork releases it before it queues its write: this rations the CPU, and the
+#: single writer rations the store.
 BRANCH_LIMITER = threading.BoundedSemaphore(BRANCH_SLOTS)
 
 #: Clock slots beyond one per run: the lease heartbeat's.
@@ -351,6 +368,82 @@ class Diagnosis:
             "store_reachable": self.store_reachable,
             "lease_held": self.lease_held,
             "terminal_reason": self.terminal_reason,
+        }
+
+
+#: The namespace fork ids are minted in. Fixed, because the id has to be the same value on a
+#: retry that reaches a restarted process — that is the whole of what makes a fork idempotent
+#: once the gateway's in-memory ledger is gone (M47).
+FORK_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "https://company-os.invalid/forks")
+
+
+def child_run_id_for(parent_run_id: str, idempotency_key: str) -> str:
+    """The child a fork of this parent under this key produces. M47.
+
+    **Minted from the key, not from `(parent, at_seq)`.** The old derivation hashed the fork
+    *point*, so two forks of one decision — which is the entire mechanic: the same moment, two
+    different options — collided on one id and the second insert failed. The key is the caller's,
+    and two forks of one decision are two calls with two keys.
+
+    Deterministic rather than random for the other half of M47: a client that never saw its
+    response retries, the gateway's ledger is in memory and a restart empties it, so the retry
+    reaches the store — where a child id it can recompute is what turns a second fork into the
+    first one's answer.
+
+    Twelve hex characters, the shape `POST /runs` already mints. A collision would return
+    somebody else's child, so `fork` checks the found child's parentage rather than trusting the
+    id, and says so instead of answering with the wrong run.
+    """
+    # A newline between the two, so that a parent id ending in what a key begins with cannot
+    # produce the same digest as some other pair. Neither value may contain one.
+    seed = parent_run_id + "\n" + idempotency_key
+    return f"run-{uuid.uuid5(FORK_ID_NAMESPACE, seed).hex[:12]}"
+
+
+@dataclass(slots=True)
+class ForkOutcome:
+    """A timeline, or the reason there is not one.
+
+    A refusal rather than an exception, for the reason `post_command` answers a rejected command
+    with 200 and a sentence: the request was well-formed and the answer is "no", which the client
+    renders. The one exception is a parent that does not exist, which is a 404 and is raised.
+    """
+
+    child_run_id: str = ""
+    parent_run_id: str = ""
+    #: The sequence of the decision being reconsidered — the parent's `DECISION_RESOLVED`.
+    decision_seq: int = 0
+    #: The last sequence copied, which is the one *before* the decision.
+    forked_at_seq: int = 0
+    forked_at_tick: int = 0
+    lineage_root_id: str = ""
+    item: str = ""
+    cp_index: int = 0
+    #: The option this timeline takes, and the one its parent took.
+    option_index: int = 0
+    parent_option_index: int = 0
+    #: False when this call found the child rather than making it — a retry (M47).
+    created: bool = False
+    refusal: str = ""
+
+    @property
+    def forked(self) -> bool:
+        return not self.refusal
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "child_run_id": self.child_run_id,
+            "parent_run_id": self.parent_run_id,
+            "decision_seq": self.decision_seq,
+            "forked_at_seq": self.forked_at_seq,
+            "forked_at_tick": self.forked_at_tick,
+            "lineage_root_id": self.lineage_root_id,
+            "item": self.item,
+            "cp_index": self.cp_index,
+            "option_index": self.option_index,
+            "parent_option_index": self.parent_option_index,
+            "created": self.created,
+            "refusal": self.refusal,
         }
 
 
@@ -528,6 +621,12 @@ class KernelRuntime:
         self._statement_producer = producer
 
     async def start_background(self) -> None:
+        # The loop, recorded from the earliest point there is one. `subscribe` and `ensure_loop`
+        # record it too, but neither is guaranteed to have run: a process whose every stored run
+        # is paused calls neither, and `_start_the_clock_soon` would then have nothing to
+        # schedule a newly unpaused run's task onto. This method is `async`, so it is on the loop
+        # by construction.
+        self._loop = asyncio.get_running_loop()
         self._heartbeat = asyncio.create_task(self._renew_lease(), name="kernel-lease-heartbeat")
         self.resume_all()
         # After the runs exist, and on the event loop, which is where a task can be created. A
@@ -845,11 +944,43 @@ class KernelRuntime:
         # publisher rather than merely nice: an appended sequence that is never published is a hole
         # the ordering cursor would wait behind for the rest of the run.
         self._publish(run, appended.envelopes)
+
+        if previous == 0 and rate > 0:
+            self._start_the_clock_soon(run_id)
+
         log.info(
             "rate changed",
             extra={"run": run_id, "tick": effective_tick, "rate": rate, "was": previous},
         )
         return appended.envelopes[0] if appended.envelopes else None
+
+    def _start_the_clock_soon(self, run_id: str) -> None:
+        """Make a run that has just been unpaused actually tick.
+
+        `ensure_loop` is idempotent and its docstring already says the task's existence follows
+        the run's rate — but until U16 nothing *made* that true for a run with no task, because
+        every run got one at creation and a paused run's task stays alive and idle. **A fork is
+        the first run in the system that has no task**: it arrives at rate zero, so creating one
+        at fork would be a task with nothing to do, and the child's clock then had no way to
+        start.
+
+        Found on the compose path rather than in the suite, and the shape is worth keeping:
+        `set_rate` answered `applied`, `RATE_CHANGED` was appended, the run row said rate 3 and
+        `/runs/{id}/state` reported rate 3 — and the tick did not move. It started on the next
+        restart, when `resume_all` built the task. Every observable said the clock was running.
+
+        The hop is `_publish`'s, for `_publish`'s reason: `ensure_loop` calls `create_task` and
+        must be on the event loop, while `set_rate` is reached from a synchronous FastAPI route,
+        from the tick loop's own awaited path, and from a test with no loop at all. With no loop
+        recorded there is no clock to start and nothing to schedule onto, which is the test case.
+        """
+        loop = self._loop
+        if loop is None:
+            return
+        if _the_loop_we_are_on() is loop:
+            self.ensure_loop(run_id)
+            return
+        loop.call_soon_threadsafe(self.ensure_loop, run_id)
 
     # --- subscriptions ----------------------------------------------------
 
@@ -882,8 +1013,9 @@ class KernelRuntime:
 
         **Every append site in this file calls this, and calling it is not optional.** The
         ordering below releases a sequence only once every sequence before it has gone out, so an
-        append that returns without publishing is a hole every later frame waits behind. Four
-        sites: genesis, `set_rate`, `_advance` and `apply_command`.
+        append that returns without publishing is a hole every later frame waits behind. Six
+        sites: genesis, `set_rate`, `_advance`, `deliver_statement`, `apply_command`, and the
+        divergence a `fork` commits into the child it just made.
 
         **This is the thread boundary.** `_advance` runs on an anyio worker thread and
         `apply_command` on a Starlette one; subscriber queues are `asyncio.Queue`, which is not
@@ -1725,17 +1857,309 @@ class KernelRuntime:
 
     # --- fork and export --------------------------------------------------
 
-    def fork(self, parent_run_id: str, at_seq: int):
-        """Enqueued as a command and committed inside the lease-fenced transaction."""
-        import uuid
+    def fork(
+        self,
+        parent_run_id: str,
+        at_seq: int,
+        option_index: int,
+        idempotency_key: str,
+        prefix_bound: int = FORK_PREFIX_MAX_EVENTS,
+    ) -> ForkOutcome:
+        """Take a past decision differently, and get a run back for it (M44-M48).
 
-        child_run_id = f"{parent_run_id}-fork-{uuid.uuid5(uuid.NAMESPACE_URL, f'{parent_run_id}:{at_seq}').hex[:8]}"
-        return self.store.fork_run(
+        **A fork is not a command, and the two enum values with no dispatch entry are the two
+        that create a run.** `POST /runs` documents why: a command must never bring a simulation
+        into being, or a typo'd id in a client silently starts one. `START_RUN` has sat unused in
+        `CommandKind` since creation became its own verb; `FORK_RUN` joins it here for the same
+        reason and by the same argument. Making a fork a command would also need two carve-outs
+        in the gateway's guards — one for a paused run, one for a terminated one — each true for
+        a reason that is not the guard's premise, and the guards would be describing forks rather
+        than commands.
+
+        **The fork point is the sequence before the parent's resolution, and the different option
+        is applied inside the fork.** `at_seq` names the decision to reconsider; the copy stops
+        one short of it, so the child arrives with that checkpoint still open and settles it
+        differently. Forking *at* the resolution would copy the original decision and then apply
+        a second one to a closed checkpoint. It cannot be a follow-up command either, because a
+        child arrives paused and the paused-run guard rejects everything but rate and comparison.
+
+        **The child's divergent event takes the parent's decision sequence**, because nothing is
+        inserted ahead of it — no `RUN_FORKED`, though the kind exists and the fold already
+        treats it as operational. That is deliberate and it buys something: the divergence is one
+        sequence number, and both timelines hold an event at it, so "the decision that separated
+        them" is a pair `(parent, n)` and `(child, n)` rather than a join through two mutable
+        columns. U17's tree and U18's diff read parentage from `runs`, which is where it belongs;
+        what the log carries is the divergence itself.
+
+        **Everything that can refuse happens before anything is written**, which is what makes
+        "a refusal mutates nothing" structural rather than a claim: the prefix is folded and the
+        option applied to that fold *first*, so a bad option index, a checkpoint that is not
+        open, and every guard below all raise or return before the writer is ever asked.
+
+        **`in_person` is inherited from the parent's decision rather than chosen.** A fork is one
+        variable moved. Deciding in person is worth two morale and some Visibility, and a child
+        that changed the channel as well as the option would show a difference in the diff that
+        the option did not cause.
+
+        Runs on a request thread with no run lock held, and it takes none: it reads the parent's
+        *log*, which is append-only and therefore immutable behind it, never the parent's live
+        state. That is why a fork concurrent with a ticking parent is safe (R22) — the only
+        contention left is the store's write lock, and the write goes through the single writer.
+        """
+        if not idempotency_key:
+            return ForkOutcome(
+                refusal=(
+                    "a fork needs an idempotency key. It is what the child's id is minted from, "
+                    "so a fork whose response you never saw can be retried without making a "
+                    "second timeline."
+                )
+            )
+
+        parent_row = self.store.run_row(parent_run_id)
+        if parent_row is None:
+            raise KeyError(f"no such run: {parent_run_id}")
+
+        child_run_id = child_run_id_for(parent_run_id, idempotency_key)
+        through_seq = at_seq - 1
+
+        already = self.store.run_row(child_run_id)
+        if already is not None:
+            return self._fork_already_taken(already, parent_run_id, at_seq)
+
+        decision = self._decision_at(parent_run_id, at_seq)
+        if isinstance(decision, str):
+            return ForkOutcome(refusal=decision)
+
+        payload = decision.decoded_payload()
+        item_id = str(payload["item"])
+        cp_index = int(payload["cp_index"])
+        born_at = int(decision.tick)
+
+        horizon = parent_row["horizon_tick"]
+        if horizon is not None and born_at >= int(horizon):
+            return ForkOutcome(
+                refusal=(
+                    f"the decision at sequence {at_seq} was taken at tick {born_at}, at or past "
+                    f"the horizon of {int(horizon)} this lineage was created with. A child "
+                    "inherits its parent's horizon — it is fixed at genesis — so this fork would "
+                    "be a timeline with no time left to play."
+                )
+            )
+
+        # Counted before it is read, so an oversized prefix is refused without being pulled into
+        # memory and without paying for the fold below. Checked again inside the transaction,
+        # where the count is authoritative; one sentence, from one place.
+        size = self.store.prefix_size(parent_run_id, through_seq)
+        if size > prefix_bound:
+            return ForkOutcome(refusal=prefix_bound_refusal(through_seq, size, prefix_bound))
+
+        prefix = self.store.read_events(parent_run_id, through_seq=through_seq)
+
+        # The fold and the alternative decision, inside the limiter and outside every lock. See
+        # `BRANCH_LIMITER` for why a fork's fold belongs in the same pool a comparison's branches
+        # draw from, and the module docstring for why nothing slow may go inside `run.lock` —
+        # this takes none, because a log prefix cannot change behind it.
+        with BRANCH_LIMITER:
+            folded = folder.fold(prefix, at_live_head=True, through_tick=born_at)
+            child_state = folded.state
+
+            # Read off the fold's projection rather than off `child_state.pending`, and the
+            # difference is not cosmetic: `outstanding_requests` is built from the log's own
+            # `REQUEST_RAISED` events, while `pending` holds only what `step()` regenerated. A
+            # request raised from a command path is in the first and not the second, so the
+            # projection is the conservative reading — and it is the one a restarted kernel
+            # dispatches from, which is exactly the set the child would inherit.
+            blocking = sorted(
+                request_id
+                for request_id, subject in folded.outstanding_requests.items()
+                if subject.get("owning_item") == item_id
+            )
+            if blocking:
+                return ForkOutcome(
+                    refusal=(
+                        f"{item_id} still has {len(blocking)} unanswered request(s) at sequence "
+                        f"{through_seq} ({', '.join(blocking)}). This fork settles that "
+                        "checkpoint at its own first tick, so the copied question could only "
+                        "ever be answered against a decision that has already been taken. Wait "
+                        "for the answer or let the request reach its deadline, then fork."
+                    )
+                )
+
+            try:
+                emitted = sim.resolve_checkpoint(
+                    child_state,
+                    item_id,
+                    cp_index,
+                    option_index,
+                    in_person=bool(payload["in_person"]),
+                )
+            except sim.CommandRejected as rejected:
+                return ForkOutcome(refusal=str(rejected))
+
+        result = self.writer.submit_fork(
             parent_run_id=parent_run_id,
-            at_seq=at_seq,
+            through_seq=through_seq,
             child_run_id=child_run_id,
             lease_handle=self.lease,
+            child_tick=born_at,
+            emitted=emitted,
+            rules_ver=RULES_VERSION,
+            prefix_bound=prefix_bound,
         )
+        if not result.forked:
+            return ForkOutcome(refusal=result.refusal)
+
+        if result.existed:
+            # Two forks under one key, close enough together that both got past the row check
+            # above — two clicks on the same button. The writer serialises them, so the second
+            # one finds the first one's child, and the honest answer is that child rather than a
+            # `RunLoop` built from a fold nobody committed.
+            found = self.store.run_row(child_run_id)
+            assert found is not None, "the store said the child existed"
+            return self._fork_already_taken(found, parent_run_id, at_seq)
+
+        # Registered with the runtime, which the old fork never did — so the next command against
+        # a child raised `KeyError` out of `apply_command` and reached the client as a 500. The
+        # state handed over is the one the alternative was applied to, so the child's first frame
+        # is the fold a restart would rebuild rather than a second reconstruction of it.
+        child = RunLoop(
+            run_id=child_run_id,
+            state=child_state,
+            rate=0,
+            # Where the wire is caught up to. The copied prefix was published to the parent's
+            # subscribers as it happened and nobody is attached to a run that did not exist a
+            # moment ago; what must not happen is the publisher holding the divergence back
+            # waiting for sequences that were somebody else's.
+            published_seq=through_seq,
+        )
+        child.statement_subjects = {
+            request_id: dict(subject)
+            for request_id, subject in folded.outstanding_requests.items()
+            if subject.get("service") == pend.BENCH
+        }
+        self.runs[child_run_id] = child
+        self._publish(child, result.envelopes)
+
+        log.info(
+            "run forked",
+            extra={
+                "run": child_run_id,
+                "parent": parent_run_id,
+                "at_seq": at_seq,
+                "tick": born_at,
+                "lineage": result.lineage_root_id,
+            },
+        )
+        return ForkOutcome(
+            child_run_id=child_run_id,
+            parent_run_id=parent_run_id,
+            decision_seq=at_seq,
+            forked_at_seq=through_seq,
+            forked_at_tick=born_at,
+            lineage_root_id=result.lineage_root_id,
+            item=item_id,
+            cp_index=cp_index,
+            option_index=option_index,
+            parent_option_index=int(payload["option_index"]),
+            created=True,
+        )
+
+    def _decision_at(self, parent_run_id: str, at_seq: int) -> Envelope | str:
+        """The `DECISION_RESOLVED` at that sequence, or the sentence refusing it.
+
+        This is where "forking a still-open checkpoint" is answered. A checkpoint that has not
+        been settled has no resolution event, so the sequence a caller points at is the
+        `CHECKPOINT_RAISED` — and the refusal says so, rather than reporting a fork point that
+        happens to hold nothing.
+        """
+        if at_seq < 2:
+            return (
+                f"sequence {at_seq} is not a decision: sequence 1 is GENESIS and a fork copies "
+                "the prefix before the decision it reconsiders, so there is nothing above it."
+            )
+
+        found = self.store.read_events(
+            parent_run_id, after_seq=at_seq - 1, through_seq=at_seq
+        )
+        if not found:
+            return f"run {parent_run_id} has no event at sequence {at_seq}"
+        if found[0].kind is not EventKind.DECISION_RESOLVED:
+            return (
+                f"sequence {at_seq} of run {parent_run_id} is {found[0].kind.name}, not a "
+                "decision. A fork reconsiders a decision that was taken — point it at the "
+                "DECISION_RESOLVED you want to take differently. A checkpoint that is still open "
+                "has nothing to reconsider yet: settle it first, then fork it."
+            )
+        return found[0]
+
+    def _fork_already_taken(
+        self, child_row: dict[str, Any], parent_run_id: str, at_seq: int
+    ) -> ForkOutcome:
+        """A child this key already produced. M47's second half.
+
+        The gateway's ledger is in memory, so a fork retried after a restart arrives here with
+        nothing remembering the first attempt. Because the id is recomputable the retry lands on
+        the child that exists, and the answer is that child rather than a second timeline or an
+        integrity error.
+
+        **The found child's parentage is checked rather than assumed.** Twelve hex characters is
+        the id shape `POST /runs` mints and the odds are not the point: a digest collision here
+        would hand the caller somebody else's run as though it were their fork, and a stated
+        refusal is the only acceptable failure for that.
+        """
+        expected_seq = at_seq - 1
+        if (
+            str(child_row["parent_run_id"] or "") != parent_run_id
+            or int(child_row["forked_at_seq"] or 0) != expected_seq
+        ):
+            return ForkOutcome(
+                refusal=(
+                    f"run {child_row['run_id']} already exists and is not this fork: it is a "
+                    f"child of {child_row['parent_run_id']!r} at sequence "
+                    f"{child_row['forked_at_seq']}, not of {parent_run_id!r} at {expected_seq}. "
+                    "Retry with a different idempotency key."
+                )
+            )
+
+        child_run_id = str(child_row["run_id"])
+        if child_run_id not in self.runs:
+            # The fork committed and this process never saw it — it was made before a restart
+            # that `resume_all` has not reached, or by a call that died between the commit and
+            # the registration. Either way the run exists and a command against it must not
+            # raise, which is the third defect this unit closes.
+            self.resume_run(child_run_id)
+
+        # Read back off the child's own log rather than echoed from the request, so a retry's
+        # answer describes the timeline that exists rather than the one this call asked for. They
+        # agree unless the caller reused a key with a different option, which is a mistake worth
+        # showing them the truth about.
+        taken = self.store.read_events(
+            child_run_id, after_seq=expected_seq, through_seq=at_seq
+        )
+        payload = taken[0].decoded_payload() if taken else {}
+
+        return ForkOutcome(
+            child_run_id=child_run_id,
+            parent_run_id=parent_run_id,
+            decision_seq=at_seq,
+            forked_at_seq=expected_seq,
+            forked_at_tick=int(child_row["current_tick"]),
+            lineage_root_id=str(child_row["lineage_root_id"]),
+            item=str(payload.get("item", "")),
+            cp_index=int(payload.get("cp_index", 0)),
+            option_index=int(payload.get("option_index", 0)),
+            parent_option_index=self._parent_option_at(parent_run_id, at_seq),
+            created=False,
+        )
+
+    def _parent_option_at(self, parent_run_id: str, at_seq: int) -> int:
+        """Which option the parent took at that sequence, for a retry's answer."""
+        found = self.store.read_events(
+            parent_run_id, after_seq=at_seq - 1, through_seq=at_seq
+        )
+        if not found or found[0].kind is not EventKind.DECISION_RESOLVED:
+            return 0
+        return int(found[0].decoded_payload().get("option_index", 0))
 
     def export(self, run_id: str) -> tuple[bytes, str]:
         from simcore import export as exporter

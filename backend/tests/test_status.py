@@ -634,6 +634,55 @@ def test_the_filter_never_raises_out_of_the_logging_call_that_triggered_it() -> 
     assert "error" not in record.__dict__
 
 
+def test_no_log_call_names_an_extra_field_that_logging_reserves() -> None:
+    """The same failure family as the test above, from the other direction.
+
+    An `extra=` key that collides with a `LogRecord` attribute does not shadow it and does not
+    warn: `Logger.makeRecord` raises `KeyError: Attempt to overwrite 'created' in LogRecord`,
+    out of the `log.info()` that made it. That is before any filter, so nothing this package
+    installs can catch it — and inside a route it is a 500 on work that already committed.
+
+    **Found by U16, on `created`**, which is the record's own timestamp and also the obvious
+    word for "did this call make the child or find it". The field is `minted` now. The set is
+    computed from a real `LogRecord` rather than written out, because it grows: `taskName`
+    arrived in 3.12 and would have been an assertion nobody updated.
+
+    A tree read rather than a runtime check for the reason the two file-reading tests in
+    `test_kernel_service.py` are: what has to hold is a property of every call site, including
+    the ones no test reaches.
+    """
+    import ast
+    import logging as stdlib_logging
+    import pathlib
+
+    reserved = set(
+        vars(stdlib_logging.LogRecord("n", 20, "p", 1, "m", None, None))
+    ) | {"message", "asctime"}
+
+    backend = pathlib.Path(__file__).resolve().parent.parent
+    offences: list[str] = []
+
+    for path in sorted(backend.rglob("*.py")):
+        if any(part in {".venv", "__pycache__", "grpc"} for part in path.parts):
+            continue
+        for node in ast.walk(ast.parse(path.read_text())):
+            if not isinstance(node, ast.Call):
+                continue
+            for keyword in node.keywords:
+                if keyword.arg != "extra" or not isinstance(keyword.value, ast.Dict):
+                    continue
+                for key in keyword.value.keys:
+                    if isinstance(key, ast.Constant) and key.value in reserved:
+                        offences.append(
+                            f"{path.relative_to(backend)}:{key.lineno} extra={key.value!r}"
+                        )
+
+    assert not offences, (
+        "these log calls raise KeyError out of themselves, because the key is a LogRecord "
+        "attribute: " + ", ".join(offences)
+    )
+
+
 def test_the_filter_agrees_with_the_provider_side_scrubber_on_the_shapes_they_share() -> None:
     """Two redactors, pinned against each other rather than kept in step by hand.
 
