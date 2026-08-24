@@ -111,6 +111,49 @@ Add `"scenario":"ashcroft"` to the body to run a different company; omit it for 
 shipped one. `GET /scenarios` lists what this backend can start. See
 [Changing the company](#changing-the-company).
 
+### Fork a decision
+
+A fork takes a past decision differently and gives you a *run* for it: a timeline
+that plays forward on its own clock, survives a restart, and can be forked again.
+The parent is untouched — history is never rewritten.
+
+It is its own route for the same reason creation is: it makes a run, and a command
+must never do that. `START_RUN` and `FORK_RUN` are the two values in the command
+vocabulary with no dispatch entry, and that is the rule rather than two omissions.
+
+```bash
+# `at_seq` is the sequence of the DECISION_RESOLVED you want to take differently —
+# it is in `produced_seq` on the response to the resolve command that made it.
+curl -s -X POST http://127.0.0.1:8800/runs/demo/fork \
+  -H 'content-type: application/json' \
+  -d '{"at_seq":8,"option_index":1,"idempotency_key":"try-paper-instead"}'
+```
+
+The idempotency key is required, because **the child's id is minted from it**. That
+is what makes a retry safe across a restart: the gateway's command ledger is in
+memory, so a fork retried after one reaches the store, recomputes the same child id,
+and gets back the timeline the first attempt made rather than a second one. The
+response says which: `"created": false`.
+
+The child arrives **paused**, at the tick of the decision it reconsiders rather than
+at wherever the parent has since got to. Start it with `set_rate`:
+
+```bash
+curl -s -X POST http://127.0.0.1:8800/runs/<child>/commands \
+  -H 'content-type: application/json' \
+  -d '{"kind":"set_rate","payload":{"rate":3},"idempotency_key":"go"}'
+```
+
+A fork of a terminated run works — going back from a timeline that ended is the
+point. A refusal is a `200` with a `refusal` sentence rather than an error status:
+pointing at a sequence that is not a decision, an option that does not exist, a
+prefix above the copy bound, a request still unanswered about the item being
+re-decided, or a decision at or past the horizon the lineage was created with.
+
+Every timeline in a tree carries the same `lineage_root_id`, which is how the spend
+aggregate and the response cache span a lineage without walking a chain of parents.
+`parent_run_id` is the chain.
+
 ### Ports
 
 Only two ports reach the host, and only on loopback.

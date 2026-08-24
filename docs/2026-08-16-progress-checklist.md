@@ -49,7 +49,7 @@ stands against it. Statuses come from the plan frontmatter, the coverage audit
 | U4. Kernel port (world, people, work, assignment, sim) | `[x]` | `18fe1b9`; `test_kernel_port` |
 | U5. Parity suite and golden vectors | `[x]` | `e1e924c`, `a6a9890`; 42 parity tests, `frontend/tests/golden.test.ts` |
 | U6. Log store, append-only, writer lease | `[x]` | `2d16e59`, `413f101`; 38 store tests on both dialects |
-| U15. Fold, snapshot, replay, fork, export | `[~]` | `413f101`, `e1e924c`; `simcore/{log,snapshot,verify,export}.py`. **Fork ids derive from parent + sequence alone, so two forks at one tick collide, and the child arrives paused.** |
+| U15. Fold, snapshot, replay, fork, export | `[x]` | `413f101`, `e1e924c`; `simcore/{log,snapshot,verify,export}.py`. The colliding fork id is **closed by MVP U16** — it is minted from the fork's idempotency key now. A child still arrives paused, which stopped being a gap and became the design: U25 lands the player in the new timeline at rate zero |
 | U7. Capacity, hiring, morale, economy | `[x]` | `test_capacity`; draws, soft ceiling, degradation floor, hiring lag, desk guarantee |
 | U8. Run lifecycle and report service | `[~]` | `88997ba`; horizon, insolvency at a tick boundary, report folded from the log. **The client never calls the report** — audit gap 3. |
 | U9. Kernel service: tick loop and gRPC surface | `[~]` | `413f101`, `1029078`; tick loop, diagnose, position echo, single-process launcher. **gRPC server exists, no client leg was ever built.** |
@@ -141,10 +141,10 @@ pushed the office off the screen.
 
 ## Phase 5 — the MVP (`docs/plans/2026-08-16-001-feat-company-os-mvp-plan.md`)
 
-Twenty-five units in six phases. **Fourteen are done: Phases A, B and C are complete** — the
-repository runs, scenarios are files, and the bench briefs, refuses, proves itself in CI and pays
-for a situation once. Execution paused here by decision, with the tree clean and both suites green
-— not blocked. The plan's open questions and everything execution resolved or found are in
+Twenty-five units in six phases. **Fifteen are done: Phases A, B and C are complete, and Phase E
+has started** — the repository runs, scenarios are files, the bench briefs and refuses and pays for
+a situation once, and a past decision now forks into a timeline that plays forward and survives a
+restart. The plan's open questions and everything execution resolved or found are in
 [`docs/2026-08-16-mvp-execution-decisions.md`](2026-08-16-mvp-execution-decisions.md), which also
 carries the deferred defect register.
 
@@ -177,10 +177,16 @@ carries the deferred defect register.
 | U12. Caching on the situation | `[x]` | `modelgw/cache.py` holds the content address — the assembled prompt, the authorization scope and a purpose namespace — and `StoreResponseCache` in the agents service holds the table, scoped to a lineage and filtered on the rules version. The lookup runs in front of the ceiling because a hit is not a call; the *write* waits for `keep()`, because only the caller knows the guards passed. 37 new tests, and the DDL version did not move |
 | U13. Continuous integration for the keyless path | `[x]` | `.github/workflows/ci.yml` — four jobs, no secret of any kind: the keyless suite on both store dialects, the bench against the mock adapter, the client's four steps with the type check separated out, and `docker compose up` from a clean checkout reaching a client that creates a run. Found two live defects before it went green: a `tsc -b` failure the suites could not see, and a flaky comparison test only a shared runner loses |
 
-**Phases D, E, F.** Not started. U14 and U16 are unblocked; U15, U17–U23 and U25 sit behind them.
-U14's `Panels.tsx` half no longer collides with anything — U7 put the person's schema on the
-conversation rather than in the panel rail, and U11's bench block is its own section below the
-decision card.
+**Phase E — forks, timelines, the Universe.** One unit in, four to go.
+
+| Unit | Status | Evidence |
+|---|---|---|
+| U16. Persistent forks | `[x]` | `POST /runs/{id}/fork` — a verb rather than a command kind, joining `START_RUN` as the second `CommandKind` value with no dispatch entry, because both create a run. The three defects closed: the child id is minted from the idempotency key so two forks of one decision are two timelines; the child row records the tick of the decision it reconsiders rather than the parent's present tick; and the child is registered with the runtime. The prefix copy became one `INSERT..SELECT` inside the same transaction as the divergence, routed through the single writer. `lineage_root_id` now comes from the parent, which switched U12's cache half live. 34 new backend tests, both dialects; verified on the compose path against Postgres — a three-deep lineage, four clocks, one restart |
+
+**Phases D and F.** Not started. U14 is unblocked and unlocks U15. U17, U18, U19, U20 and U25 are
+all unblocked now that U16 is in; U21, U22 and U23 sit behind them. U14's `Panels.tsx` half no
+longer collides with anything — U7 put the person's schema on the conversation rather than in the
+panel rail, and U11's bench block is its own section below the decision card.
 
 **One fix outside the plan.** `a69c304` — a command's events were never published to a connected
 client. `_publish` had one caller inside the tick loop and published only what that batch returned,
@@ -229,6 +235,17 @@ Every shipped unit but one turned up a live defect on its path. The pattern is w
   `draw_delta: 0` where the state's `effect` simply has no key. A director could have written "0" and
   had it resolve to authored content. Found by U11 writing the cross-adapter equality test before any
   behaviour depended on it, and it is now parametrised over every shipped company.
+- A forked child's clock could not be started, and every observable said it was running. U16 found
+  it on the compose path rather than in its own suite: `set_rate` answered `applied`, appended
+  `RATE_CHANGED`, wrote the rate to the row and reported it on `/runs/{id}/state`, and sim-time did
+  not move. A fork is the first run in the system with **no tick task** — it arrives paused, and
+  every other run got its task at creation — so `set_rate` had never had to build one. It started
+  on the next restart, when `resume_all` did. This is the strongest argument yet for the plan's own
+  rule that a unit ends at a real run and not at a green suite.
+- A log `extra=` key that names a `LogRecord` attribute raises out of the `log.info()` that made
+  it, before any filter. U16 wrote `extra={"created": ...}` — the obvious word — and `created` is
+  the record's timestamp. Same family as the filter-that-killed-the-container, so the guard went
+  beside it and now reads every `extra=` dict in the tree.
 - U12 is the second unit to find its defect in its own first shape rather than in the tree. Writing
   the entry where the answer arrives — inside the gateway, on any `Completion` — is the obvious
   placement and it silently breaks a decision this plan had already made: a reply that *ranks the
@@ -290,21 +307,23 @@ Requirements this plan has moved are marked with the unit that moved them.
 - [x] M31 a statement replays exactly — **U10**, strict replay passes because the request is derived inside `step()` rather than read from the log. Still true with the bench live: **U11**'s guards are lexical over a closed vocabulary precisely because their refusal is an output event the fold regenerates
 - [x] M32 the retrieved context is logged and identical on replay — **U10**, after it caught its own window being latency-dependent
 - [x] M35 a comparison branch is never written to the store — and **U5** now proves the clock cannot be starved by one
-- [~] M33 — **U12**. Responses are cached on the situation, which R29 already replaced M33's
-  "tick, person, request" with: a digest of the assembled prompt, the authorization scope the
-  context was drawn under, and a purpose namespace. The *shared by every fork* half is built and
-  tested and still inert — `fork_run` sets a child's `lineage_root_id` to its own id, so a fork hits
-  nothing of its parent's until **U16** copies the root, and the test pins both sides of that line
-- [ ] M34 — U19. Not U12's: pre-divergence statements are byte-identical because the fork copies the
-  parent's event rows and replay reads the log, so the cache is a cost optimisation and authoritative
-  for nothing. A test folds a run with and without the table populated and gets one hash
+- [x] M33 — **U12**, closed by **U16**. Responses are cached on the situation, which R29 already
+  replaced M33's "tick, person, request" with: a digest of the assembled prompt, the authorization
+  scope the context was drawn under, and a purpose namespace. The *shared by every fork* half was
+  built, tested and inert until U16 copied the parent's `lineage_root_id` at fork; the test that
+  pinned both sides of that line no longer needs its hand-written `UPDATE`
+- [ ] M34 — U19. Not U12's and not U16's: pre-divergence statements are byte-identical because the
+  fork copies the parent's event rows and replay reads the log, so the cache is a cost optimisation
+  and authoritative for nothing. U16 made the copy an `INSERT..SELECT` over every column but the run
+  id, asserted on the stored rows, so the byte-identity half is now proved. A test folds a run with
+  and without the table populated and gets one hash
 
 **Memory and Authorization (M36–M43)** — [ ] none. U14 is unblocked; U15 behind it.
 
 **Forks, Timelines, Universe (M44–M52)**
 - [x] M51 comparison stays an in-place preview
-- [~] M44–M48 `store.fork_run` is replay-tested and `runs.lineage_root_id` now exists (**U9**), but the child id still collides at a shared tick and arrives paused — U16, which also inherits U10's finding that `statement_request_id` is not run-scoped
-- [ ] M49, M50, M52 — U17, U18
+- [x] M44–M48 — **U16**. A fork is a run: `POST /runs/{id}/fork` takes a past decision differently and hands back a timeline the client can switch into. The child id is minted from the fork's idempotency key, so two forks of one decision are two timelines and a retry is the first one's answer, including after a restart that emptied the ledger (M47); the child is born at the tick of the decision it reconsiders rather than at the parent's present tick, and resumes there (M45, R20); a fork of a fork of a fork folds and reports its whole lineage (M46); and the parent's log is byte-identical before and after, compared on the stored rows (M48). U10's finding that `statement_request_id` is not run-scoped is **not** closed here — closing it needs a run identifier the fold reproduces, which is a `State` shape change, and **U15** is the unit that already owns one
+- [ ] M49, M50, M52 — U17, U18. Both now unblocked: `lineage_root_id` is flat across a tree and `parent_run_id` is the chain, so the Universe tree is the query the plan said it would be
 
 **The Report (M53–M61)**
 - [~] M55 every claim resolves to its event — `services/report/fold.py`, and the report is now mounted and answering in the one process (**U24**)
@@ -327,21 +346,25 @@ Requirements this plan has moved are marked with the unit that moved them.
 
 ## The shape of it
 
-Across four completed plans, 28 units: 23 `[x]`, 5 `[~]` with a named gap, none abandoned. The
+Across four completed plans, 28 units: 24 `[x]`, 4 `[~]` with a named gap, none abandoned — Phase 1's
+U15 closed when MVP U16 minted a fork id that cannot collide. The
 simulation half of the product is built and covered by four suites plus golden vectors across two
 languages, and the daylight visual system is complete on top of it.
 
-The MVP plan is **14 of 25 units in**, with Phases A, B and C complete. Of the PRD's 67 requirements,
-roughly 8 were met when that plan was written and about 42 are met now — M13 is the one U7 closed,
-M15 and M16 stopped being half-met, U11 closed the five the bench is made of, U13 closed M30 and
-M67's proof half, and U12 built all of M33 but the one line U16 owns. The suites went from 699
-backend tests to **1,169**, and the client from 404 to **491**.
+The MVP plan is **15 of 25 units in**, with Phases A, B and C complete and Phase E started. Of the
+PRD's 67 requirements, roughly 8 were met when that plan was written and about 48 are met now — M13
+is the one U7 closed, M15 and M16 stopped being half-met, U11 closed the five the bench is made of,
+U13 closed M30 and M67's proof half, U12 built all of M33 but the one line U16 owned, and U16 closed
+that line plus the five forks are made of. The suites went from 699 backend tests to **1,249**, and
+the client from 404 to **491**.
 
-What remains is still concentrated where the plan said it would be, but the shape has changed. The
-bench was the plan's single biggest risk and the unit most likely to be "estimated as an edit"; its
-contract, its transport and now the four directors who actually brief and object all exist, and no
-event payload, schema version or golden fixture moved to get there. What does not exist is everything
-behind it: memory, Authorization, persistent forks, the Universe, the report.
+What remains is still concentrated where the plan said it would be, but the shape has changed twice.
+The bench was the plan's single biggest risk and the unit most likely to be "estimated as an edit";
+its contract, its transport and the four directors who actually brief and object all exist, and no
+event payload, schema version or golden fixture moved to get there. **Forks were the plan's second
+risk and are now in**, on the same terms: no event kind was added, no payload changed, no shape
+version moved, and the goldens did not regenerate. What does not exist is memory, Authorization, the
+Universe surfaces, and the report.
 
 **CI was the thing genuinely overdue, and it is now in.** Four jobs, no secret of any kind, and it
 earned itself twice before it was ever green: a second `tsc -b` failure sitting in a tree whose suites
@@ -350,7 +373,13 @@ Both had been in the tree for units. What CI does *not* prove is written down ra
 badge — the second boot that reuses the volume, the second writer that names the lease holder, the DDL
 wipe path, and anything against a real provider.
 
-Next is **U16**, and it is no longer a fork in the road. It unlocks five units — U17, U18, U19, U20
-and U25 — it is three defects above a store fork that is already nearly free, and it now has a sixth
-reason: U12 left a lineage-scoped cache whose fork half is written, tested and inert until a child
-carries its parent's `lineage_root_id`. **U14** is the other thing unblocked, and it unlocks one.
+**U16 is in, and it moved the bottleneck.** Five units came unblocked with it — U17, U18, U19, U20
+and U25 — so Phase E and most of Phase F are now reachable, and the response cache U12 left inert is
+live. It also cost the pattern its clearest illustration yet: the one defect the unit's own suite
+could not see was a forked child whose clock would not start, and every observable — the command
+outcome, the run row, the state endpoint — reported a running clock while sim-time stood still. It
+took a `docker compose up` to find.
+
+**U14 is the other thing unblocked**, it unlocks U15, and it is now the only entrance to Phase D.
+The natural order from here is **U25 then U17** (the client can reach a fork, then see the tree),
+with **U14** in parallel since its file set is disjoint from all of it.

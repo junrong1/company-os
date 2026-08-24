@@ -98,8 +98,10 @@ they deliberately do.
 ## Timelines
 
 **Fork**:
-A new Run branched from a past tick of another Run and played forward. Forking is how
-a decision is revisited; history is never changed.
+A new Run branched from a past Decision of another Run, taking a different Option, and
+played forward. Forking is how a decision is revisited; history is never changed. A Fork
+is a Run in every sense — it has its own clock, its own log and its own metrics, it
+survives a restart, and it can be Forked again.
 _Avoid_: undo, revert, rewind, branch, save state
 
 **Timeline**:
@@ -107,8 +109,15 @@ A Run seen as one branch of the tree that Forking produces. What the player swit
 between and compares.
 _Avoid_: world, save, run (a Run is the thing; a Timeline is its place in the tree)
 
+**Lineage**:
+Every Timeline descending from one Genesis, named by the Run at its root. Carried as a
+column on every Run rather than walked through parents, so that what spans a Universe —
+the spend aggregate, the response cache — is one query.
+_Avoid_: family, ancestry, chain
+
 **Universe**:
-The whole tree of Timelines descending from one Genesis. What the Report covers.
+The whole tree of Timelines descending from one Genesis — a Lineage, seen as a shape
+rather than as a set. What the Report covers.
 _Avoid_: campaign, project, workspace
 
 **Compare**:
