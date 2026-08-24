@@ -266,6 +266,73 @@ async def post_run(body: dict[str, Any] | None = None) -> dict[str, Any]:
     return {**created, "created": True}
 
 
+@app.post("/runs/{run_id}/fork")
+def post_fork(run_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Take a past decision differently, and get a timeline back for it (M44).
+
+    **Its own verb rather than a command kind**, and `post_run` above already argues it: a fork
+    creates a run, and a command must never bring a simulation into being. It is also the only
+    thing the client can do to a run that has *ended* — going back from a finished timeline is
+    the point — and `POST /runs/{id}/commands` refuses a terminated run for a reason that is
+    correct about commands and wrong about this.
+
+    **Synchronous, like the command route.** Folding the parent's prefix is bounded pure-Python
+    work and the write blocks on the store, so FastAPI's threadpool is where it belongs; the
+    creation route above is `async` only because starting a clock needs the loop, and a child
+    arrives paused.
+
+    A refusal is a 200 with a `refusal` sentence, for the reason a rejected command is: the
+    request was well-formed and the answer is "no", which the client renders. An unknown parent
+    is a 404, and a missing or non-integer field is a 400 — those are the caller's mistakes.
+    """
+    payload = body or {}
+    client = kernel()
+
+    try:
+        at_seq = int(payload["at_seq"])
+        option_index = int(payload["option_index"])
+    except KeyError as missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"a fork needs {missing.args[0]!r}: which decision, and which option instead",
+        ) from None
+    except (TypeError, ValueError) as bad:
+        raise HTTPException(
+            status_code=400, detail=f"'at_seq' and 'option_index' are whole numbers: {bad}"
+        ) from None
+
+    try:
+        forked = client.fork_run(
+            run_id,
+            at_seq,
+            option_index,
+            str(payload.get("idempotency_key", "")),
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"no run {run_id}") from None
+
+    if forked.get("refusal"):
+        log.info(
+            "fork refused",
+            extra={"run": run_id, "at_seq": at_seq, "reason": forked["refusal"]},
+        )
+    else:
+        log.info(
+            "run forked",
+            extra={
+                "run": run_id,
+                "child": forked.get("child_run_id", ""),
+                "at_seq": at_seq,
+                # `minted` rather than `created`, and the rename is not taste: `created` is a
+                # `LogRecord` attribute — the record's own timestamp — and stdlib logging raises
+                # `KeyError: Attempt to overwrite 'created' in LogRecord` rather than shadowing
+                # it. Inside a route that is a 500 on a fork that already committed.
+                "minted": forked.get("created", False),
+            },
+        )
+    return forked
+
+
 @app.get("/scenarios")
 def get_scenarios() -> dict[str, Any]:
     """The companies a run can be created against.

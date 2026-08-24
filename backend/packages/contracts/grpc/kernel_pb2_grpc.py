@@ -138,10 +138,14 @@ class KernelServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def Fork(self, request, context):
-        """Fork at an arbitrary event index. Executed as a command enqueued to the
-        parent's tick loop and committed at a tick boundary inside the lease-fenced
-        transaction — the only path that satisfies both the lease and the
-        sole-appender rule, which is why it is not a free-standing store operation.
+        """Take a past decision differently, and get a run back for it. Committed
+        inside the lease-fenced transaction — the only path that satisfies both the
+        lease and the sole-appender rule, which is why it is not a free-standing
+        store operation.
+
+        Its own method rather than a CommandKind, for the reason run creation is its
+        own verb: a command must never bring a simulation into being. See FORK_RUN
+        below.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

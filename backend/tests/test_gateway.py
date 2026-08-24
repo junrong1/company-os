@@ -1517,3 +1517,222 @@ def test_with_no_bench_configured_the_request_is_raised_and_left(composed) -> No
     before = run.state.tick
     runtime._advance(run, 40)
     assert run.state.tick == before + 40, "the clock waited for a bench that declined"
+
+
+# =========================================================================
+# Forking from the client's surface (U16)
+# =========================================================================
+
+
+def _a_decision_on_the_wire(composed, api, option: int = 0) -> int:
+    """Settle a checkpoint through the gateway and return the resolution's sequence."""
+    runtime, _client = composed
+    _stopped_at_a_decision(runtime)
+
+    response = command(
+        api,
+        "resolve_checkpoint",
+        {"item": "wi_ap_map", "cp_index": 0, "option_index": option, "in_person": True},
+        key="settle-it",
+    )
+    assert response.status_code == 200, response.text
+    produced = response.json()["produced_seq"]
+    assert len(produced) == 1
+    return produced[0]
+
+
+def test_a_fork_through_the_gateway_returns_a_timeline(composed, api) -> None:
+    """M44 as the client sees it: one call, and a run id it can switch into.
+
+    A route of its own rather than a command kind, for the reason `POST /runs` is: a fork
+    creates a run, and a command that could create one would let a typo'd id conjure a
+    simulation. The response is the shape U25 needs — the child, where it diverged, and both
+    options — because a fork that returned only an id would leave the client fetching three
+    things to render what it just did.
+    """
+    decision_seq = _a_decision_on_the_wire(composed, api, option=0)
+
+    response = api.post(
+        f"/runs/{RUN}/fork",
+        json={"at_seq": decision_seq, "option_index": 1, "idempotency_key": "fork-1"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["refusal"] == ""
+    assert body["created"] is True
+    assert body["child_run_id"].startswith("run-")
+    assert body["child_run_id"] != RUN
+    assert body["parent_run_id"] == RUN
+    assert body["lineage_root_id"] == RUN
+    assert (body["option_index"], body["parent_option_index"]) == (1, 0)
+    assert body["item"] == "wi_ap_map"
+    assert body["decision_seq"] == decision_seq
+    assert body["forked_at_seq"] == decision_seq - 1
+
+    # And it is a run the rest of the surface knows about.
+    state = api.get(f"/runs/{body['child_run_id']}/state")
+    assert state.status_code == 200
+    assert state.json()["tick"] == body["forked_at_tick"]
+    assert state.json()["rate"] == 0, "a fork arrives paused"
+
+
+def test_a_forked_child_is_commandable_and_streamable(composed, api) -> None:
+    """The child has to be a run in every sense, not a row. Before this unit `runtime.fork`
+    never registered it, so the first command against a fork raised `KeyError` inside the
+    kernel and reached the client as a 500.
+    """
+    decision_seq = _a_decision_on_the_wire(composed, api)
+    child = api.post(
+        f"/runs/{RUN}/fork",
+        json={"at_seq": decision_seq, "option_index": 1, "idempotency_key": "fork-1"},
+    ).json()["child_run_id"]
+
+    resumed = command(api, "set_rate", {"rate": 1}, key="start-the-child", run_id=child)
+    assert resumed.status_code == 200, resumed.text
+    assert resumed.json()["status"] == Outcome.APPLIED
+
+    with api.websocket_connect(f"/ws/{child}?after_seq=0") as socket:
+        first = socket.receive_json()
+        assert first["kind"] in {"GENESIS", "RESYNC"}
+
+
+def test_a_retried_fork_does_not_make_a_second_timeline(composed, api) -> None:
+    """The child id is minted from the key, so the store is what deduplicates rather than the
+    gateway's ledger — which is in memory and does not survive the restart a retry may cross.
+    """
+    runtime, _client = composed
+    decision_seq = _a_decision_on_the_wire(composed, api)
+    body = {"at_seq": decision_seq, "option_index": 1, "idempotency_key": "fork-1"}
+
+    first = api.post(f"/runs/{RUN}/fork", json=body).json()
+    again = api.post(f"/runs/{RUN}/fork", json=body).json()
+
+    assert again["child_run_id"] == first["child_run_id"]
+    assert first["created"] is True and again["created"] is False
+    assert len(runtime.store.list_runs()) == 2, "two runs, not three"
+
+
+def test_a_refused_fork_is_a_reason_rather_than_an_error(composed, api) -> None:
+    """The same shape a rejected command has: the request was well-formed and the answer is no,
+    which the client renders. U25's surface shows this sentence.
+    """
+    decision_seq = _a_decision_on_the_wire(composed, api)
+
+    refused = api.post(
+        f"/runs/{RUN}/fork",
+        json={"at_seq": decision_seq - 1, "option_index": 1, "idempotency_key": "fork-1"},
+    )
+    assert refused.status_code == 200, refused.text
+    assert refused.json()["child_run_id"] == ""
+    assert "not a decision" in refused.json()["refusal"]
+
+    no_option = api.post(
+        f"/runs/{RUN}/fork",
+        json={"at_seq": decision_seq, "option_index": 99, "idempotency_key": "fork-2"},
+    )
+    assert no_option.status_code == 200
+    assert "no option 99" in no_option.json()["refusal"]
+
+
+def test_a_fork_of_an_unknown_run_is_not_found_and_a_malformed_one_is_a_bad_request(
+    api,
+) -> None:
+    """Two client mistakes that are not refusals: a run that does not exist, and a body that
+    does not say which decision. Both are the caller's to fix, so both carry a status.
+    """
+    missing = api.post(
+        "/runs/run-nope/fork", json={"at_seq": 2, "option_index": 1, "idempotency_key": "k"}
+    )
+    assert missing.status_code == 404
+    assert "no run run-nope" in missing.json()["detail"]
+
+    no_seq = api.post(f"/runs/{RUN}/fork", json={"option_index": 1, "idempotency_key": "k"})
+    assert no_seq.status_code == 400
+    assert "at_seq" in no_seq.json()["detail"]
+
+    not_a_number = api.post(
+        f"/runs/{RUN}/fork",
+        json={"at_seq": "soon", "option_index": 1, "idempotency_key": "k"},
+    )
+    assert not_a_number.status_code == 400
+    assert "whole numbers" in not_a_number.json()["detail"]
+
+
+def test_forking_is_not_a_command_kind(composed) -> None:
+    """The launcher maps no command kind that would create a run, and there are two of them.
+
+    `START_RUN` and `FORK_RUN` are both in `CommandKind` and neither has a dispatch entry: run
+    creation became `POST /runs` and forking is `POST /runs/{id}/fork`, for the same reason in
+    both cases. A future contributor wiring either of them into `COMMAND_KINDS` would give a
+    command the power to bring a simulation into being, and this is what says no.
+    """
+    import single_process
+    from contracts.grpc import kernel_pb2
+
+    creates_a_run = {"START_RUN", "FORK_RUN"}
+    mapped = set(single_process.COMMAND_KINDS.values())
+
+    assert creates_a_run & mapped == set(), (
+        f"{sorted(creates_a_run & mapped)} is mapped as a command kind. A command must never "
+        "create a run: a typo'd id in a client would silently start one."
+    )
+    # Both still exist in the vocabulary — they are unmapped, not removed.
+    assert creates_a_run <= {value.name for value in kernel_pb2.CommandKind.DESCRIPTOR.values}
+
+    runtime, client = composed
+    rejected = client.submit(RUN, "fork_run", {}, "cmd-1")
+    assert rejected.status == Outcome.REJECTED
+    assert "unknown command kind" in rejected.reason
+
+
+def test_a_three_deep_lineage_plays_forward_and_each_timeline_reports_its_own_metrics(
+    composed, api
+) -> None:
+    """U16's verification, through the surface the client actually uses.
+
+    Three timelines from one decision — the parent and two children taking the other two
+    options — each played forward from the fork point under its own clock, and each answering
+    `/runs/{id}/state` with its own numbers. That last part is what makes the tree worth
+    drawing: if the three agreed, U17's nodes and U18's diff would have nothing to show.
+    """
+    runtime, _client = composed
+    decision_seq = _a_decision_on_the_wire(composed, api, option=0)
+
+    timelines = [RUN]
+    for option in (1, 2):
+        forked = api.post(
+            f"/runs/{RUN}/fork",
+            json={
+                "at_seq": decision_seq,
+                "option_index": option,
+                "idempotency_key": f"fork-{option}",
+            },
+        ).json()
+        assert forked["refusal"] == "", forked["refusal"]
+        timelines.append(forked["child_run_id"])
+
+    assert len(set(timelines)) == 3
+
+    # Each plays forward from where it is, under its own clock.
+    for run_id in timelines:
+        runtime._advance(runtime.runs[run_id], 400)
+
+    readings = {}
+    for run_id in timelines:
+        state = api.get(f"/runs/{run_id}/state")
+        assert state.status_code == 200, state.text
+        body = state.json()
+        assert body["run_id"] == run_id
+        readings[run_id] = tuple(sorted(body["metrics"].items()))
+
+    assert len(set(readings.values())) == 3, (
+        f"three timelines reported {len(set(readings.values()))} distinct sets of metrics: "
+        f"{readings}"
+    )
+
+    # And the lineage is one tree with one root, which is what U17 will draw.
+    rows = {row["run_id"]: row for row in runtime.store.list_runs()}
+    assert {rows[run_id]["lineage_root_id"] for run_id in timelines} == {RUN}
+    assert rows[timelines[1]]["parent_run_id"] == RUN
+    assert rows[timelines[2]]["parent_run_id"] == RUN

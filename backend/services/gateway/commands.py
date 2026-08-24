@@ -115,6 +115,32 @@ class KernelClient(Protocol):
         """
         ...
 
+    def fork_run(
+        self,
+        parent_run_id: str,
+        at_seq: int,
+        option_index: int,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Take a past decision differently. Deliberately not a command, like `create_run`.
+
+        A fork creates a run, and `create_run` already states why that cannot be a command: a
+        command answers not-found for an unknown run on purpose, so that a typo'd id cannot
+        conjure a simulation. It is also why a fork carries its *own* idempotency key rather
+        than going through the ledger — the child's id is minted from that key, so the store is
+        what makes a retry idempotent, and unlike the ledger the store survives a restart.
+
+        Making it a command would need two carve-outs in `submit`'s guards besides: a fork is
+        legal on a paused run *and* on a terminated one — going back from an ended timeline is
+        the demo's last beat — and each carve-out would be true for a reason that is not the
+        guard's premise.
+
+        `at_seq` is the sequence of the decision to reconsider. A refusal arrives as a
+        `refusal` on the returned mapping rather than as an exception, for the reason a rejected
+        command is a 200 with a sentence; an unknown parent raises `KeyError`, which is a 404.
+        """
+        ...
+
     def scenarios(self) -> list[dict[str, Any]]:
         """The companies a run could be created against, for the surface that offers the choice.
 
