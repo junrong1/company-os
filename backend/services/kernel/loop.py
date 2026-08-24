@@ -172,8 +172,10 @@ from contracts.envelope import Envelope, EventKind
 from kernel import lease as lease_module
 from kernel.store import (
     FORK_PREFIX_MAX_EVENTS,
+    FencedOut,
     LogStore,
     RunAlreadyTerminated,
+    StoreError,
     StoreWriter,
     prefix_bound_refusal,
 )
@@ -266,12 +268,18 @@ BRANCH_SLOTS = 2
 #: every request and every WebSocket send on the queue this limiter is here to create.
 #:
 #: **A fork's fold draws from it too** (U16), and that is a reuse rather than an overload. What
-#: this limiter rations is bounded pure-Python work reached from a request thread, which is
-#: exactly what folding a prefix of up to `FORK_PREFIX_MAX_EVENTS` is; the route pool is forty
-#: deep, so forty concurrent forks would put forty folds against one GIL and starve the clock in
-#: precisely the shape U5 measured for comparisons. A second limiter would be a second number
-#: nobody sized. The fork releases it before it queues its write: this rations the CPU, and the
-#: single writer rations the store.
+#: this limiter rations is bounded pure-Python work reached from a request thread; the route pool
+#: is forty deep, so forty concurrent forks would put forty folds against one GIL and starve the
+#: clock in precisely the shape U5 measured for comparisons. A second limiter would be a second
+#: number nobody sized. The fork releases it before it queues its write: this rations the CPU, and
+#: the single writer rations the store.
+#:
+#: **What bounds a fork's fold is the target tick, not `FORK_PREFIX_MAX_EVENTS`**, and this comment
+#: said otherwise until a review checked it. `_replay` runs `step()` once per tick from genesis to
+#: the fork point regardless of how few events the prefix holds, so a quiet run with a late decision
+#: costs what a busy one does, and `horizon_tick` is client-supplied with no upper bound. Unmeasured
+#: in both directions — unlike `BRANCH_SLOTS` above, which carries its table — so it is written down
+#: as a known gap rather than defended. See `docs/residual-review-findings/feat-company-os-mvp-u16.md`.
 BRANCH_LIMITER = threading.BoundedSemaphore(BRANCH_SLOTS)
 
 #: Clock slots beyond one per run: the lease heartbeat's.
@@ -393,11 +401,56 @@ def child_run_id_for(parent_run_id: str, idempotency_key: str) -> str:
     Twelve hex characters, the shape `POST /runs` already mints. A collision would return
     somebody else's child, so `fork` checks the found child's parentage rather than trusting the
     id, and says so instead of answering with the wrong run.
+
+    **The separator is length-prefixed rather than delimited, so no character has to be
+    forbidden for the seed to be unambiguous.** It used to be a newline with a comment saying
+    neither value may contain one — an invariant nothing enforced, and both values are reachable
+    with one: `POST /runs` accepts a client-supplied id and `.strip()` trims only the ends.
+    Measured before the fix: `("run-a", "b\\nkey")` and `("run-a\\nb", "key")` both minted
+    `run-cc3c2f6565de`. A length prefix cannot be spoofed by any content, so the guard in
+    `refuse_an_unusable_identifier` below is defence in depth rather than the mechanism.
     """
-    # A newline between the two, so that a parent id ending in what a key begins with cannot
-    # produce the same digest as some other pair. Neither value may contain one.
-    seed = parent_run_id + "\n" + idempotency_key
+    seed = f"{len(parent_run_id)}:{parent_run_id}:{idempotency_key}"
     return f"run-{uuid.uuid5(FORK_ID_NAMESPACE, seed).hex[:12]}"
+
+
+#: The longest idempotency key a fork will accept. Not a security bound — the key is hashed to
+#: twelve hex characters and an enormous one is merely wasteful — but an unbounded string a
+#: client can post is a value that ends up in a log line and a refusal sentence, and both have
+#: readers. Sized well above any UUID or ULID a client would mint.
+MAX_IDEMPOTENCY_KEY_CHARS = 128
+
+
+def refuse_an_unusable_identifier(label: str, value: str) -> str:
+    """Why this run id or idempotency key cannot be used, or "" if it can.
+
+    **The predicate is `simcore.scenario.control_character`, imported rather than restated.**
+    Execution decision §1 forbids a second copy of a predicate in the tree, and that function is
+    already the one place the Unicode-category rule is written down — it refuses every category
+    beginning with C, which is what makes a zero-width joiner or a right-to-left override refused
+    alongside a newline. A second `unicodedata` call here is exactly the drift §1 names.
+
+    Applied to a run id as well as a key because the two are concatenated into one digest seed,
+    and because a control character in a run id reaches the log line, the URL and the store.
+    """
+    from simcore import scenario as sc
+
+    if not value:
+        return ""
+    offending = sc.control_character(value)
+    if offending:
+        return (
+            f"the {label} contains {offending}, which cannot be used: it would reach a log line, "
+            "a URL and the store, and it is the kind of character that changes what a reader "
+            "sees without changing what is stored."
+        )
+    if len(value) > MAX_IDEMPOTENCY_KEY_CHARS and label == "idempotency key":
+        return (
+            f"the idempotency key is {len(value)} characters, above the bound of "
+            f"{MAX_IDEMPOTENCY_KEY_CHARS}. It is hashed to twelve, so a longer one buys nothing "
+            "and ends up quoted in a log line."
+        )
+    return ""
 
 
 @dataclass(slots=True)
@@ -1915,6 +1968,14 @@ class KernelRuntime:
                 )
             )
 
+        for label, value in (
+            ("idempotency key", idempotency_key),
+            ("run id", parent_run_id),
+        ):
+            unusable = refuse_an_unusable_identifier(label, value)
+            if unusable:
+                return ForkOutcome(refusal=unusable)
+
         parent_row = self.store.run_row(parent_run_id)
         if parent_row is None:
             raise KeyError(f"no such run: {parent_run_id}")
@@ -1960,7 +2021,16 @@ class KernelRuntime:
         # draw from, and the module docstring for why nothing slow may go inside `run.lock` —
         # this takes none, because a log prefix cannot change behind it.
         with BRANCH_LIMITER:
-            folded = folder.fold(prefix, at_live_head=True, through_tick=born_at)
+            try:
+                folded = folder.fold(prefix, at_live_head=True, through_tick=born_at)
+            except (folder.FoldRefused, folder.UnknownEventInFold) as refused:
+                # A parent whose log this build cannot fold — written under different rules
+                # (`check_rules_version`), or holding a kind this fold has no semantics for. The
+                # fold's own sentence names both versions and the remedy, and it is a far better
+                # answer than the 500 this used to be: `post_fork` catches nothing else, so a
+                # rules-version mismatch on the parent reached the client as an opaque error on a
+                # request that was well-formed.
+                return ForkOutcome(refusal=str(refused))
             child_state = folded.state
 
             # Read off the fold's projection rather than off `child_state.pending`, and the
@@ -1996,16 +2066,56 @@ class KernelRuntime:
             except sim.CommandRejected as rejected:
                 return ForkOutcome(refusal=str(rejected))
 
-        result = self.writer.submit_fork(
-            parent_run_id=parent_run_id,
-            through_seq=through_seq,
-            child_run_id=child_run_id,
-            lease_handle=self.lease,
-            child_tick=born_at,
-            emitted=emitted,
-            rules_ver=RULES_VERSION,
-            prefix_bound=prefix_bound,
-        )
+        # **The append stays in this method, beside the publish below**, and that is a constraint
+        # rather than a preference: `test_every_append_in_this_file_publishes_what_it_committed`
+        # reads this file and requires the function that appends to be the function that
+        # publishes, because an append whose caller forgets to publish leaves a sequence the
+        # ordering cursor waits behind for the rest of the run. Extracting the error handling into
+        # a helper split those two apart and the test said so immediately. Whoever splits `fork`
+        # into a plan half and a commit half has to move that guard deliberately, not around.
+        #
+        # Three things can be thrown here and none of them were caught before: `FencedOut` when
+        # the lease changed hands mid-fork, a `StoreError` when the writer does not commit inside
+        # its timeout, and any other store failure. `post_fork` catches only `KeyError`, so every
+        # one reached the client as an opaque 500 on a well-formed request — the shape
+        # `apply_command` already refuses to produce.
+        try:
+            result = self.writer.submit_fork(
+                parent_run_id=parent_run_id,
+                through_seq=through_seq,
+                child_run_id=child_run_id,
+                lease_handle=self.lease,
+                child_tick=born_at,
+                emitted=emitted,
+                rules_ver=RULES_VERSION,
+                prefix_bound=prefix_bound,
+            )
+        except FencedOut as fenced:
+            log.error("a fork was refused by the lease", extra={"error": str(fenced)})
+            return ForkOutcome(refusal=str(fenced))
+        except StoreError as failed:
+            # **The timeout is the interesting one, and a bare refusal would be a lie.**
+            # `submit_fork` abandons its own wait after thirty seconds *while the writer may still
+            # land the transaction* — the case `PUBLISH_HELD_BACK_BOUND` documents for appends.
+            # For a fork that leaves a child row committed with no `RunLoop` against it:
+            # `/runs/{id}/state` answers from the row and reports the run as existing, while a
+            # command against it answers not-found. So this looks before it refuses, and adopts a
+            # child that landed — the same reconciliation a retry would perform, done now.
+            landed = self.store.run_row(child_run_id)
+            if landed is None:
+                return ForkOutcome(
+                    refusal=(
+                        f"the store did not complete this fork: {failed}. Nothing was written — "
+                        "the copy and the divergence are one transaction — so retrying under the "
+                        "same idempotency key is safe and will not make a second timeline."
+                    )
+                )
+            log.warning(
+                "a fork's writer gave up but its transaction committed; adopting the child",
+                extra={"child": child_run_id, "error": str(failed)},
+            )
+            return self._fork_already_taken(landed, parent_run_id, at_seq)
+
         if not result.forked:
             return ForkOutcome(refusal=result.refusal)
 
@@ -2015,7 +2125,15 @@ class KernelRuntime:
             # one finds the first one's child, and the honest answer is that child rather than a
             # `RunLoop` built from a fold nobody committed.
             found = self.store.run_row(child_run_id)
-            assert found is not None, "the store said the child existed"
+            if found is None:
+                # Not an `assert`: this is a request path, and `assert` is stripped under `-O`,
+                # which would turn a store disagreeing with itself into a `TypeError` one line
+                # later inside `_fork_already_taken` instead of the sentence written here.
+                raise StoreError(
+                    f"the store reported that child {child_run_id} already existed and then "
+                    "could not produce its row. Refusing rather than registering a run this "
+                    "kernel cannot describe."
+                )
             return self._fork_already_taken(found, parent_run_id, at_seq)
 
         # Registered with the runtime, which the old fork never did — so the next command against
@@ -2138,12 +2256,19 @@ class KernelRuntime:
         )
         payload = taken[0].decoded_payload() if taken else {}
 
+        # **The birth tick comes off that event, never off `runs.current_tick`.** The row's tick is
+        # rewritten by `append_tick` on every commit the child makes, so a retry that arrives after
+        # the child has played forward would answer with the child's *now* — which is this unit's
+        # own second defect, reappearing on the idempotent path. Measured before the fix: a child
+        # born at 613 reported 1080. The divergence event is immutable and is already in hand.
+        born_at = int(taken[0].tick) if taken else int(child_row["current_tick"])
+
         return ForkOutcome(
             child_run_id=child_run_id,
             parent_run_id=parent_run_id,
             decision_seq=at_seq,
             forked_at_seq=expected_seq,
-            forked_at_tick=int(child_row["current_tick"]),
+            forked_at_tick=born_at,
             lineage_root_id=str(child_row["lineage_root_id"]),
             item=str(payload.get("item", "")),
             cp_index=int(payload.get("cp_index", 0)),

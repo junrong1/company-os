@@ -25,6 +25,7 @@ from kernel import loop as loop_module
 from kernel.loop import KernelRuntime, RunLoop, child_run_id_for
 from kernel.store import LogStore, make_engine
 from simcore import compare as branching
+from simcore import log as folder
 from simcore import pending as pend
 from simcore import snapshot as snapshotting
 from simcore import step as sim
@@ -2670,3 +2671,180 @@ async def test_starting_a_forked_child_actually_moves_its_clock(runtime) -> None
     )
 
     await runtime.stop_run(outcome.child_run_id)
+
+
+async def test_a_retry_reports_the_tick_the_child_was_born_at(runtime) -> None:
+    """Found by review, and it is this unit's own second defect on the idempotent path.
+
+    `_fork_already_taken` read `forked_at_tick` off `runs.current_tick` — a column `append_tick`
+    rewrites on every commit the child makes. So a retry arriving *after* the child had played
+    forward answered with the child's now. Measured before the fix: a child born at 613 reported
+    1080, while its own divergence event at that sequence still carried 613.
+
+    The divergence event is immutable and `_fork_already_taken` already reads it, which is what
+    makes the fix free. What this test does that the original retry test did not: it advances the
+    child between the two calls, which is the whole of what exposes it.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+    first = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert first.forked and first.created
+
+    child = runtime.runs[first.child_run_id]
+    runtime._advance(child, 600)
+    assert child.state.tick > first.forked_at_tick, "the child has to have actually moved"
+    assert runtime.store.run_row(first.child_run_id)["current_tick"] > first.forked_at_tick
+
+    again = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert again.child_run_id == first.child_run_id
+    assert not again.created
+    assert again.forked_at_tick == first.forked_at_tick, (
+        f"the retry reported tick {again.forked_at_tick} for a child born at "
+        f"{first.forked_at_tick} — the birth tick came off the mutable run row again"
+    )
+
+
+async def test_a_fork_whose_writer_gives_up_after_committing_adopts_the_child(
+    runtime, monkeypatch
+) -> None:
+    """The one door `submit_fork`'s timeout leaves open, and what it used to cost.
+
+    `submit` abandons its own wait after thirty seconds *while the writer may still land the
+    transaction* — the case `PUBLISH_HELD_BACK_BOUND` documents for appends. For a fork that left
+    a child row committed with no `RunLoop` against it, which is a genuinely unusable timeline:
+    `/runs/{id}/state` answers from the row and reports the run as existing, while a command
+    against it answers not-found.
+
+    The timeout is manufactured rather than waited for — thirty seconds is not something to
+    reproduce — and the commit is left to happen, which is exactly the shape being tested.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+
+    real = runtime.writer.submit_fork
+
+    def commits_then_gives_up(**job):
+        real(**job)
+        raise loop_module.StoreError("the store writer did not commit the fork within 30.0s")
+
+    monkeypatch.setattr(runtime.writer, "submit_fork", commits_then_gives_up)
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+
+    assert outcome.forked, outcome.refusal
+    assert not outcome.created, "the child was adopted, not made by this call"
+    assert outcome.child_run_id in runtime.runs, "and it is a usable run, not a stranded row"
+    assert outcome.forked_at_tick == runtime.runs[RUN].state.tick
+
+    monkeypatch.undo()
+    envelope = runtime.set_rate(outcome.child_run_id, 1)
+    assert envelope is not None, "the adopted child takes commands"
+
+
+async def test_a_fork_whose_writer_fails_without_committing_says_retrying_is_safe(
+    runtime, monkeypatch
+) -> None:
+    """The other half: nothing landed, so the refusal has to say so.
+
+    The copy and the divergence are one transaction, which is what makes "retry under the same
+    key" sound advice rather than a hope — and the sentence says it, because a client that has
+    just been refused needs to know whether it is about to make a second timeline.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+
+    def never_commits(**_job):
+        raise loop_module.StoreError("the store writer did not commit the fork within 30.0s")
+
+    monkeypatch.setattr(runtime.writer, "submit_fork", never_commits)
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+
+    assert not outcome.forked
+    assert "did not complete this fork" in outcome.refusal
+    assert "retrying under the same idempotency key is safe" in outcome.refusal
+    assert len(runtime.store.list_runs()) == 1, "and nothing was written"
+
+
+async def test_a_fenced_out_kernel_refuses_a_fork_with_the_leases_reason(
+    runtime, monkeypatch
+) -> None:
+    """A lease taken over mid-fork is a sentence, not a 500.
+
+    `apply_command` already turns `RunAlreadyTerminated` into a `CommandRejected` for the same
+    reason: the store is right to refuse, and what was wrong is the refusal reaching the client
+    as an opaque error rather than the reason it already carries.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+
+    def fenced(**_job):
+        raise loop_module.FencedOut(
+            "this kernel holds lease token 1 but the store's current token is 2"
+        )
+
+    monkeypatch.setattr(runtime.writer, "submit_fork", fenced)
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert not outcome.forked
+    assert "lease token" in outcome.refusal
+    assert len(runtime.store.list_runs()) == 1
+
+
+async def test_a_parent_this_build_cannot_fold_is_refused_with_the_folds_own_reason(
+    runtime, monkeypatch
+) -> None:
+    """A rules-version mismatch on the parent reached the client as a 500.
+
+    The fold's refusal already names both versions and the remedy — it is the sentence R10 exists
+    to produce — and `post_fork` catches nothing but `KeyError`, so it never got there.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+
+    def refuses(*_args, **_kwargs):
+        raise folder.FoldRefused(
+            "this log was written under rules version old; the running rules are new"
+        )
+
+    monkeypatch.setattr(folder, "fold", refuses)
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="key-1")
+    assert not outcome.forked
+    assert "rules version" in outcome.refusal
+    assert len(runtime.store.list_runs()) == 1
+
+
+async def test_the_child_id_seed_cannot_be_made_ambiguous_by_its_contents(runtime) -> None:
+    """The collision review reproduced, now closed by construction.
+
+    The seed used to be `parent + "\\n" + key` with a comment saying neither value may contain a
+    newline — a precondition nothing enforced, and `POST /runs` accepts a client-supplied id.
+    Measured before the fix: both pairs below minted `run-cc3c2f6565de`. The seed is
+    length-prefixed now, so no content can shift the boundary between the two halves.
+    """
+    assert child_run_id_for("run-a", "b\nkey") != child_run_id_for("run-a\nb", "key")
+    assert child_run_id_for("run-a", ":b:key") != child_run_id_for("run-a:b", "key")
+    assert child_run_id_for("run-ab", "c") != child_run_id_for("run-a", "bc")
+
+    # Still deterministic, which is the property the whole retry path rests on.
+    assert child_run_id_for("run-a", "key-1") == child_run_id_for("run-a", "key-1")
+    assert child_run_id_for("run-a", "key").startswith("run-")
+
+
+async def test_an_identifier_carrying_a_control_character_is_refused(runtime) -> None:
+    """Defence in depth behind the length prefix, using simcore's own predicate.
+
+    Execution decision §1 forbids a second copy of a predicate, and
+    `simcore.scenario.control_character` is where the Unicode-category rule already lives — which
+    is why a zero-width joiner is refused alongside a newline rather than only the obvious one.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, horizon=4_000)
+
+    for key in ("a\nb", "a\tb", "a‍b", "a‮b"):
+        outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key=key)
+        assert not outcome.forked, f"{key!r} was accepted"
+        assert "idempotency key contains" in outcome.refusal
+
+    too_long = runtime.fork(
+        RUN, at_seq=decision_seq, option_index=1, idempotency_key="k" * 500
+    )
+    assert not too_long.forked
+    assert "above the bound of" in too_long.refusal
+
+    assert len(runtime.store.list_runs()) == 1, "every refusal wrote nothing"

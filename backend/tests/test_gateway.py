@@ -1656,7 +1656,92 @@ def test_a_fork_of_an_unknown_run_is_not_found_and_a_malformed_one_is_a_bad_requ
         json={"at_seq": "soon", "option_index": 1, "idempotency_key": "k"},
     )
     assert not_a_number.status_code == 400
-    assert "whole numbers" in not_a_number.json()["detail"]
+    assert "not a whole number" in not_a_number.json()["detail"]
+
+
+def test_a_number_the_store_cannot_hold_is_a_reason_rather_than_a_five_hundred(api) -> None:
+    """Three ways `int()` alone was wrong, and two of them were silent.
+
+    Found by review, reproduced against the shipped app. A non-integral `at_seq` was **truncated**
+    — `int(8.9)` is 8 — so the fork settled a different decision than the caller named with
+    nothing in the answer saying so, which is worse than any error. `1e999` decodes to `inf` and
+    died at `int()`; `10**40` survived `int()` and died inside the database driver on the bind
+    parameter. `OverflowError` is neither `TypeError` nor `ValueError`, so the guard that named
+    those two caught neither, and both reached the client as a 500 from a route whose docstring
+    promises a 400.
+    """
+    # Sent as raw JSON text rather than through the client's encoder, because `1e999` is the
+    # point: Python's `json` refuses to *serialise* `inf` and happily *deserialises* it, so a
+    # browser can post a literal a test client will not build. The others ride the same path so
+    # the whole table is one shape.
+    for label, at_seq, expected in (
+        ("not whole", "8.9", "not whole"),
+        ("infinite", "1e999", "not a finite number"),
+        ("above int64", str(10**40), "outside the range the store holds"),
+        ("negative", "-1", "outside the range the store holds"),
+        ("a bool", "true", "not a whole number"),
+        ("null", "null", "not a whole number"),
+        ("a string", '"soon"', "not a whole number"),
+    ):
+        answer = api.post(
+            f"/runs/{RUN}/fork",
+            headers={"content-type": "application/json"},
+            content=(
+                f'{{"at_seq": {at_seq}, "option_index": 1, "idempotency_key": "k-{label}"}}'
+            ),
+        )
+        assert answer.status_code == 400, f"{label}: {answer.status_code} {answer.text}"
+        assert expected in answer.json()["detail"], (label, answer.json()["detail"])
+
+    # And the same guard on the sibling field, which reaches `resolve_checkpoint` rather than the
+    # store — so it was the one that happened to be safe, for a reason that is not this route's.
+    option = api.post(
+        f"/runs/{RUN}/fork",
+        json={"at_seq": 8, "option_index": 2.5, "idempotency_key": "k-opt"},
+    )
+    assert option.status_code == 400
+    assert "not whole" in option.json()["detail"]
+    assert "option" in option.json()["detail"], "the reason names which field it is about"
+
+
+def test_a_control_character_in_an_identifier_is_refused(composed, api) -> None:
+    """The child id's seed invariant, enforced rather than asserted.
+
+    `child_run_id_for` used to join the parent id and the key with a newline and carry a comment
+    saying neither may contain one — a precondition nothing checked, while `POST /runs` accepts a
+    client-supplied id and `.strip()` trims only the ends. Measured before the fix:
+    `("run-a", "b\\nkey")` and `("run-a\\nb", "key")` both minted `run-cc3c2f6565de`.
+
+    The seed is length-prefixed now, so the collision is closed by construction and this guard is
+    the second line rather than the mechanism: a control character in either value still reaches a
+    log line, a URL and the store, and the predicate refusing it is `simcore.scenario`'s own —
+    imported, not restated, per execution decision §1.
+    """
+    decision_seq = _a_decision_on_the_wire(composed, api)
+
+    refused = api.post(
+        f"/runs/{RUN}/fork",
+        json={"at_seq": decision_seq, "option_index": 1, "idempotency_key": "a\nb"},
+    )
+    assert refused.status_code == 200
+    assert "idempotency key contains" in refused.json()["refusal"]
+    assert refused.json()["child_run_id"] == ""
+
+    # A zero-width joiner, not a newline: the rule is the Unicode category, which is what makes a
+    # printable-looking format character refused alongside the obvious one.
+    invisible = api.post(
+        f"/runs/{RUN}/fork",
+        json={"at_seq": decision_seq, "option_index": 1, "idempotency_key": "a‍b"},
+    )
+    assert invisible.status_code == 200
+    assert "idempotency key contains" in invisible.json()["refusal"]
+
+    too_long = api.post(
+        f"/runs/{RUN}/fork",
+        json={"at_seq": decision_seq, "option_index": 1, "idempotency_key": "k" * 500},
+    )
+    assert too_long.status_code == 200
+    assert "above the bound of" in too_long.json()["refusal"]
 
 
 def test_forking_is_not_a_command_kind(composed) -> None:
