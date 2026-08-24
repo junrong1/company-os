@@ -746,7 +746,7 @@ def test_a_fork_copies_the_prefix_and_inherits_the_parents_genesis(store, handle
     append(store, handle, count=2, tick=2)
 
     result = store.fork_run(
-        parent_run_id=RUN, at_seq=4, child_run_id=OTHER_RUN, lease_handle=handle
+        parent_run_id=RUN, through_seq=4, child_run_id=OTHER_RUN, lease_handle=handle
     )
 
     assert result.forked
@@ -770,7 +770,7 @@ def test_a_fork_copies_the_prefix_and_inherits_the_parents_genesis(store, handle
 def test_a_forked_child_shares_sequence_values_with_its_parent(store, handle) -> None:
     """Which is why stream resume is keyed on (run, seq) and not on seq alone."""
     append(store, handle, count=3, tick=1)
-    store.fork_run(parent_run_id=RUN, at_seq=2, child_run_id=OTHER_RUN, lease_handle=handle)
+    store.fork_run(parent_run_id=RUN, through_seq=2, child_run_id=OTHER_RUN, lease_handle=handle)
 
     parent_seqs = {e.seq for e in store.read_events(RUN)}
     child_seqs = {e.seq for e in store.read_events(OTHER_RUN)}
@@ -787,7 +787,7 @@ def test_a_fork_above_the_prefix_bound_is_refused_with_a_reason(store, handle) -
 
     result = store.fork_run(
         parent_run_id=RUN,
-        at_seq=5,
+        through_seq=5,
         child_run_id=OTHER_RUN,
         lease_handle=handle,
         prefix_bound=2,
@@ -812,7 +812,7 @@ def test_a_fenced_out_kernel_cannot_fork(store) -> None:
 
     with pytest.raises(FencedOut):
         store.fork_run(
-            parent_run_id=RUN, at_seq=2, child_run_id=OTHER_RUN, lease_handle=zombie
+            parent_run_id=RUN, through_seq=2, child_run_id=OTHER_RUN, lease_handle=zombie
         )
 
     assert store.run_row(OTHER_RUN) is None
@@ -821,8 +821,347 @@ def test_a_fenced_out_kernel_cannot_fork(store) -> None:
 def test_forking_an_unknown_run_is_refused(store, handle) -> None:
     with pytest.raises(Exception, match="no such run"):
         store.fork_run(
-            parent_run_id="run-nope", at_seq=1, child_run_id=OTHER_RUN, lease_handle=handle
+            parent_run_id="run-nope", through_seq=1, child_run_id=OTHER_RUN, lease_handle=handle
         )
+
+
+# =========================================================================
+# Fork, as U16 leaves it: the tick at the fork point, the parent's lineage, one
+# transaction, and one insert
+# =========================================================================
+
+
+def test_a_child_is_born_at_its_fork_point_and_not_at_its_parents_present_tick(
+    store, handle
+) -> None:
+    """R20, and the second of the three defects U16 closes.
+
+    The child row used to inherit `current_tick`, so a child forked at day four while its
+    parent had reached day twelve came back with a row saying day twelve and a head sitting at
+    the fork sequence. Resuming it folds through `current_tick`, so the copied prefix would be
+    rolled eight sim-days forward with no inputs — a run that looks like a fork and is not the
+    fork point. The symptom is a plausible child, which is why this is asserted on the row
+    rather than left to the resume that would expose it.
+    """
+    append(store, handle, count=2, tick=100)
+    append(store, handle, count=2, tick=200)
+    append(store, handle, count=2, tick=9_000)
+
+    result = store.fork_run(
+        parent_run_id=RUN, through_seq=4, child_run_id=OTHER_RUN, lease_handle=handle
+    )
+
+    parent = store.run_row(RUN)
+    child = store.run_row(OTHER_RUN)
+    assert parent is not None and child is not None
+    assert parent["current_tick"] == 9_000, "the parent has run on"
+    assert child["current_tick"] == 200, "and the child is at the fork point"
+    assert result.child_tick == 200
+
+
+def test_a_child_joins_its_parents_lineage_rather_than_founding_one(store, handle) -> None:
+    """R21's second half, and what makes U12's response cache reachable from a fork.
+
+    The cache is keyed on `(cache_key, lineage_root_id)`, so a child whose root was its own id
+    could never read an entry its parent wrote. That half of M33 shipped with U12, written and
+    tested and inert; this is the line that switches it on.
+    """
+    append(store, handle, count=3, tick=1)
+
+    child = store.fork_run(
+        parent_run_id=RUN, through_seq=2, child_run_id=OTHER_RUN, lease_handle=handle
+    )
+    assert child.lineage_root_id == RUN
+
+    grandchild = store.fork_run(
+        parent_run_id=OTHER_RUN, through_seq=2, child_run_id="run-cccc", lease_handle=handle
+    )
+    assert grandchild.lineage_root_id == RUN, "a fork of a fork joins the same lineage"
+    assert store.run_row("run-cccc")["parent_run_id"] == OTHER_RUN, "parentage is still direct"
+
+
+def test_the_copy_carries_every_column_but_the_run_id(store, handle) -> None:
+    """The prefix moved from one insert per event to one INSERT..SELECT.
+
+    Which is a real change of mechanism, not a rewrite of the same statement — so what it has
+    to keep true is that the copied rows are the parent's rows. Metadata included: an event's
+    `command_id`, `request_id` and `ingested_at` are what a report resolves a claim through, and
+    a copy that regenerated them would leave the child's history a plausible fiction.
+    """
+    store.append_tick(
+        run_id=RUN,
+        emitted=[
+            Emitted(
+                kind=EventKind.WORK_ASSIGNED,
+                payload={"item": "wi_1", "person": "stf_ap"},
+                command_id="cmd-abc",
+                request_id="req-xyz",
+            )
+        ],
+        lease_handle=handle,
+        rules_ver=RULES_VERSION,
+        tick=7,
+    )
+    append(store, handle, count=2, tick=8)
+
+    store.fork_run(
+        parent_run_id=RUN, through_seq=3, child_run_id=OTHER_RUN, lease_handle=handle
+    )
+
+    def rows(run_id: str) -> list[dict]:
+        with store.engine.connect() as connection:
+            return [
+                dict(row)
+                for row in connection.execute(
+                    select(event_log)
+                    .where(event_log.c.run_id == run_id)
+                    .order_by(event_log.c.seq)
+                )
+                .mappings()
+                .all()
+            ]
+
+    parent_rows = rows(RUN)
+    child_rows = rows(OTHER_RUN)
+
+    assert len(child_rows) == 3
+    for original, copied in zip(parent_rows, child_rows, strict=True):
+        assert copied["run_id"] == OTHER_RUN
+        assert {key: value for key, value in copied.items() if key != "run_id"} == {
+            key: value for key, value in original.items() if key != "run_id"
+        }
+
+
+def test_the_copy_and_the_divergence_are_one_transaction(store, handle) -> None:
+    """A fork either has its different decision or it never happened.
+
+    Two transactions would leave a door open that is worse than a failure: a child carrying its
+    parent's prefix and nothing else is a *paused copy*, not a fork, and because the id is
+    minted from the caller's key the retry that should fix it finds the child row already there
+    and reports success. So the existence of a child row means a complete fork, and this is what
+    says so.
+    """
+    append(store, handle, count=3, tick=1)
+
+    result = store.fork_run(
+        parent_run_id=RUN,
+        through_seq=2,
+        child_run_id=OTHER_RUN,
+        lease_handle=handle,
+        child_tick=5,
+        emitted=events(1, payload={"item": "wi_diverged"}),
+        rules_ver=RULES_VERSION,
+    )
+
+    assert [envelope.seq for envelope in result.envelopes] == [3]
+    assert result.envelopes[0].tick == 5, "the divergence lands at the fork tick"
+
+    child = store.run_row(OTHER_RUN)
+    assert child["head_seq"] == 3, "the row's head covers the divergence, not just the copy"
+    assert child["forked_at_seq"] == 2
+    assert [e.seq for e in store.read_events(OTHER_RUN)] == [1, 2, 3]
+    assert store.read_events(OTHER_RUN)[2].decoded_payload()["item"] == "wi_diverged"
+
+    # And the parent is untouched by all of it (M48).
+    assert [e.seq for e in store.read_events(RUN)] == [1, 2, 3]
+    assert store.read_events(RUN)[2].decoded_payload()["item"] == "wi_2"
+
+
+def test_a_child_id_that_already_exists_is_returned_rather_than_raised_on(store, handle) -> None:
+    """M47's second half, at the store. The kernel mints the id from an idempotency key, so a
+    retry after a restart — which has emptied the gateway's in-memory ledger — arrives here
+    asking for a child that exists. Raising would report a duplicate-key error for correct
+    client behaviour.
+    """
+    append(store, handle, count=3, tick=1)
+    first = store.fork_run(
+        parent_run_id=RUN,
+        through_seq=2,
+        child_run_id=OTHER_RUN,
+        lease_handle=handle,
+        child_tick=5,
+        emitted=events(1),
+        rules_ver=RULES_VERSION,
+    )
+
+    again = store.fork_run(
+        parent_run_id=RUN,
+        through_seq=2,
+        child_run_id=OTHER_RUN,
+        lease_handle=handle,
+        child_tick=5,
+        emitted=events(1),
+        rules_ver=RULES_VERSION,
+    )
+
+    assert again.forked and again.existed
+    assert not first.existed
+    assert again.child_tick == first.child_tick
+    assert again.lineage_root_id == first.lineage_root_id
+    assert again.envelopes == [], "the retry publishes nothing; the first call already did"
+    assert [e.seq for e in store.read_events(OTHER_RUN)] == [1, 2, 3], "and appended nothing"
+
+
+def _a_fork_beside_a_clock(store, handle, *, through_writer: bool, appends: int = 60):
+    """Sixty appends and one fork of the same run, from two threads at once.
+
+    Returns whatever either side raised, so a caller can assert on the presence of a collision
+    as well as on its absence.
+    """
+    writer = StoreWriter(store)
+    writer.start()
+    failures: list[tuple[str, BaseException]] = []
+    forked: list = []
+
+    def tick_away() -> None:
+        try:
+            for tick in range(2, 2 + appends):
+                writer.submit(
+                    run_id=RUN,
+                    emitted=events(1),
+                    lease_handle=handle,
+                    rules_ver=RULES_VERSION,
+                    tick=tick,
+                )
+        except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
+            failures.append(("clock", exc))
+
+    def fork_once() -> None:
+        fork = writer.submit_fork if through_writer else store.fork_run
+        try:
+            forked.append(
+                fork(
+                    parent_run_id=RUN,
+                    through_seq=4,
+                    child_run_id=OTHER_RUN,
+                    lease_handle=handle,
+                    child_tick=1,
+                )
+            )
+        except BaseException as exc:  # noqa: BLE001
+            failures.append(("fork", exc))
+
+    threads = [
+        threading.Thread(target=tick_away, name="a-clock"),
+        threading.Thread(target=fork_once, name="a-fork"),
+    ]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+    finally:
+        writer.stop()
+    return failures, forked, writer
+
+
+def test_a_fork_does_not_kill_the_clock_it_runs_beside(store, handle) -> None:
+    """R22, on whichever dialect this parametrisation is running.
+
+    Sixty appends against one fork of the same run, from two threads. What is asserted is the
+    property the unit owes: nothing raised on either side, the fork completed, and the parent's
+    log is gapless and exactly as long as the number of events it appended.
+
+    **It also pins the mechanism, and it has to, because on the shipped configuration the
+    property alone does not distinguish the two designs.** Measured: an out-of-band fork
+    transaction competing with the writer for SQLite's write lock passes this same test, because
+    pysqlite's default five-second busy timeout absorbs the contention by *waiting* rather than
+    failing. So `writer.forks` is asserted as well — that the fork went through the one writer
+    rather than around it — and the collision the routing exists to prevent is demonstrated
+    directly by the test below, which removes the timeout.
+    """
+    append(store, handle, count=4, tick=1)
+
+    failures, forked, writer = _a_fork_beside_a_clock(store, handle, through_writer=True)
+
+    assert not failures, f"the fork and the clock collided: {failures}"
+    assert forked and forked[0].forked, "the fork did not complete"
+    assert (writer.forks, writer.appends) == (1, 60), (
+        "the fork must be a job in the same queue the ticks are in (R35): every append "
+        "serialises through one writer, and a fork appends"
+    )
+
+    count, highest = store.sequence_density(RUN)
+    assert count == highest == 64, "the parent's log is gapless and complete"
+    assert [e.seq for e in store.read_events(OTHER_RUN)] == [1, 2, 3, 4]
+
+
+def test_a_second_writer_loses_the_lock_rather_than_waiting_for_it(tmp_path) -> None:
+    """Why the fork is a writer job. Forced, not raced.
+
+    **The property test above cannot tell the two designs apart on the shipped configuration,
+    and it says so.** Measured: an out-of-band fork transaction competing with the writer for
+    SQLite's write lock passes it, because pysqlite's busy timeout defaults to five seconds and
+    absorbs the contention by waiting. So the hazard has to be shown somewhere, and this is it.
+
+    Remove the timeout and the collision is exact and immediate — `OperationalError: database is
+    locked` on `BEGIN IMMEDIATE`, the transaction rather than a statement inside it. Measured by
+    racing a fork against 198 appends at `?timeout=0`: it collided every time, and **the loser
+    was the fork in some runs and the tick loop in others**, because the loser is simply
+    whichever asked second. Half of that distribution is a stopped simulation with nothing wrong
+    on the store side.
+
+    That race is not what is asserted here, because asserting the outcome of a race is how a
+    test becomes the flake U13 spent a CI run finding. The interleaving is forced instead: one
+    connection holds the write lock, and *both* of the things that would have raced are then
+    shown to lose to it — the fork and the append, in that order. Which is the whole claim, with
+    the timing taken out: two writers against one SQLite store do not queue, so the queue has to
+    be somewhere else, and `StoreWriter` is where.
+
+    SQLite only. Postgres has no single database-wide write lock to lose, which is the
+    disagreement between the dialects this file exists to keep visible.
+
+    Nothing in the shipped build depends on `timeout=0`; what depends on the five-second default
+    is that the hazard stays hidden. A contributor who ever tunes it down has this test to tell
+    them what it was holding up.
+    """
+    from sqlalchemy.exc import OperationalError
+
+    engine = make_engine(f"sqlite:///{tmp_path}/impatient.sqlite3?timeout=0")
+    store = LogStore(engine)
+    store.create_all()
+    store.create_run(
+        run_id=RUN,
+        run_seed=0xC0FFEE,
+        rules_ver=RULES_VERSION,
+        quantum_sim_seconds=60,
+        grid=(31, 18),
+    )
+    with store.engine.begin() as connection:
+        handle = lease_module.acquire(connection, owner="test-kernel")
+    store.append_tick(
+        run_id=RUN, emitted=events(4), lease_handle=handle, rules_ver=RULES_VERSION, tick=1
+    )
+
+    holding = engine.connect()
+    transaction = holding.begin()  # BEGIN IMMEDIATE: this connection now holds the write lock
+    try:
+        with pytest.raises(OperationalError, match="database is locked"):
+            store.fork_run(
+                parent_run_id=RUN,
+                through_seq=4,
+                child_run_id=OTHER_RUN,
+                lease_handle=handle,
+                child_tick=1,
+            )
+
+        with pytest.raises(OperationalError, match="database is locked"):
+            store.append_tick(
+                run_id=RUN,
+                emitted=events(1),
+                lease_handle=handle,
+                rules_ver=RULES_VERSION,
+                tick=2,
+            )
+    finally:
+        transaction.rollback()
+        holding.close()
+
+    # Neither loser left anything behind: no child, and the parent still holds the four events
+    # it started with rather than the fifth the refused append was carrying.
+    assert store.run_row(OTHER_RUN) is None
+    assert store.sequence_density(RUN) == (4, 4)
+    engine.dispose()
 
 
 # =========================================================================

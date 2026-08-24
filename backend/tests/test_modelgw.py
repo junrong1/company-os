@@ -1400,7 +1400,7 @@ def test_a_fork_of_a_ceiling_exhausted_parent_has_its_own_budget(spend_store) ->
     assert ledger.read(PARENT).calls == 2
 
     forked = store.fork_run(
-        parent_run_id=PARENT, at_seq=1, child_run_id=CHILD, lease_handle=handle
+        parent_run_id=PARENT, through_seq=1, child_run_id=CHILD, lease_handle=handle
     )
     assert forked.forked, forked.refusal
 
@@ -1426,29 +1426,18 @@ def test_the_lineage_total_reads_through_the_column_rather_than_walking_parents(
 ) -> None:
     """The aggregate M28 renders beside the run's own count.
 
-    A fork's `lineage_root_id` is its own id until U16 copies the parent's, so today this
-    equals the run's own figure — which is the correct answer for an unforked run and the
-    reason the tile is testable now. Pointing the child's column at the parent's root is
-    what makes it interesting, and that is asserted here by doing it directly.
+    An unforked run's root is itself, so the aggregate is its own figure — the correct answer,
+    and the reason the tile was testable before there were forks. **U16's fork copies the
+    parent's root**, so a child now joins that aggregate by being forked rather than by a test
+    writing the column, which is what makes this a reading of the shipped path.
     """
-    from sqlalchemy import update
-
-    from logschema import runs as runs_table
-
     store, handle, _url, ledger = spend_store
 
     ledger.add(PARENT, Spend(calls=2, input_tokens=80, output_tokens=20))
     assert ledger.lineage(PARENT) == ledger.read(PARENT), "no forks: the root is the run"
 
-    store.fork_run(parent_run_id=PARENT, at_seq=1, child_run_id=CHILD, lease_handle=handle)
+    store.fork_run(parent_run_id=PARENT, through_seq=1, child_run_id=CHILD, lease_handle=handle)
     ledger.add(CHILD, Spend(calls=1, input_tokens=40, output_tokens=10))
-
-    # What U16 will do at fork, done here so the aggregate's behaviour is pinned before the
-    # unit that produces it lands.
-    with store.engine.begin() as connection:
-        connection.execute(
-            update(runs_table).where(runs_table.c.run_id == CHILD).values(lineage_root_id=PARENT)
-        )
 
     lineage = ledger.lineage(CHILD)
     assert lineage.calls == 3
@@ -1962,28 +1951,22 @@ def test_a_rules_version_change_evicts_rather_than_serving(cache_store) -> None:
         retuned.dispose()
 
 
-def test_a_fork_reaches_its_parents_entry_once_the_lineage_root_is_copied(cache_store) -> None:
-    """M33's fork half, and the one line of it that is not this unit's to write.
+def test_a_fork_reaches_its_parents_entry(cache_store) -> None:
+    """M33's fork half, live.
 
-    `fork_run` sets a child's `lineage_root_id` to its own id, so today a fork misses its
-    parent's entries — U16 owns copying the parent's root, and the assertion before the update
-    below is what that unit will change. Pinning both halves here means the behaviour is
-    specified before the unit that produces it lands, the way U9 pinned the spend aggregate.
+    U12 built and tested this while it was inert: `fork_run` set a child's `lineage_root_id` to
+    the child's own id, so a fork reached none of its parent's entries and the test reached the
+    behaviour by updating the column by hand. **U16 copies the parent's root at fork**, which is
+    the one line that was not U12's to write, so the hand-update is gone and the fork itself is
+    what makes the entry reachable.
     """
-    from sqlalchemy import update
-
-    from logschema import runs as runs_table
-
     store, handle, _url, cache = cache_store
     cache.put(keyed(run_id=PARENT), a_completion())
 
-    store.fork_run(parent_run_id=PARENT, at_seq=1, child_run_id=CHILD, lease_handle=handle)
-    assert cache.get(keyed(run_id=CHILD)) is None, "its own root until U16 copies the parent's"
-
-    with store.engine.begin() as connection:
-        connection.execute(
-            update(runs_table).where(runs_table.c.run_id == CHILD).values(lineage_root_id=PARENT)
-        )
+    forked = store.fork_run(
+        parent_run_id=PARENT, through_seq=1, child_run_id=CHILD, lease_handle=handle
+    )
+    assert forked.lineage_root_id == PARENT, "a child joins its parent's lineage"
 
     served = cache.get(keyed(run_id=CHILD))
     assert served is not None and served.text == a_completion().text
@@ -1997,23 +1980,16 @@ def test_two_siblings_at_one_tick_with_different_options_do_not_share_an_entry(
 ) -> None:
     """One lineage, two branches, two situations.
 
-    They share a root, so nothing about the scoping keeps them apart — what does is that the
+    They share a root — U16's fork copies it, so this is now the shipped arrangement rather than
+    one the test arranges — and nothing about the scoping keeps them apart. What does is that the
     option each took is in the evidence, so the assembled prompt differs, so the address does.
     """
-    from sqlalchemy import update
-
-    from logschema import runs as runs_table
-
     store, handle, _url, cache = cache_store
     sibling = "run-sibling"
-    store.fork_run(parent_run_id=PARENT, at_seq=1, child_run_id=CHILD, lease_handle=handle)
-    store.fork_run(parent_run_id=PARENT, at_seq=1, child_run_id=sibling, lease_handle=handle)
-    with store.engine.begin() as connection:
-        connection.execute(
-            update(runs_table)
-            .where(runs_table.c.run_id.in_([CHILD, sibling]))
-            .values(lineage_root_id=PARENT)
-        )
+    store.fork_run(parent_run_id=PARENT, through_seq=1, child_run_id=CHILD, lease_handle=handle)
+    store.fork_run(
+        parent_run_id=PARENT, through_seq=1, child_run_id=sibling, lease_handle=handle
+    )
 
     took_the_first = Prompt(
         system=PROMPT.system, turns=(Turn(role="user", text="The post was rewritten."),)
