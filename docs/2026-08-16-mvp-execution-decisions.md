@@ -588,6 +588,23 @@ assumes is there is not, and the fix is one call in the tick loop's termination 
 turning two dormant guards live surfaces. U16 asserted around it rather than on it, and the fork
 path deliberately does not consult either column.
 
+**`State.present_members` counts a hire who has left.** Found by U14, measured on the shipped
+company: it filters `scenario.lines` on `departed` and then appends arrived hires with no such
+check, so a line that lost a hire keeps their headcount — 3 → 3 — and the department goes on drawing
+**10,800 units a day** for somebody who is gone. It also feeds the per-day morale penalty and the
+`remaining_in_line` figure on `ATTRITION`. Not fixed by U14, because it moves a metric and a read
+surface is the wrong unit to move one from; `remembered_scope` is written so that fixing it makes a
+memory correct rather than breaking it, and `test_present_members_still_counts_a_hire_who_left` is a
+tripwire that says so when it lands.
+
+**A synchronous route now makes a provider call.** Widens the `async` entry above a third time,
+after U16 added `post_fork` beside the comparison path. `GET /runs/{id}/memory/{director}?summary=1`
+runs a bounded model call on FastAPI's threadpool, so forty concurrent panel opens against a slow
+provider occupy forty slots for as long as the provider takes — and `diagnose` is one of the routes
+that then cannot be served. Bounded in practice by the ceiling and by the response cache (a second
+open of one selection is a hit), and the panel's first call — the one every open makes — reaches no
+provider at all. Closing it is the same `async` change the register already scopes.
+
 **An `extra=` key colliding with a `LogRecord` attribute raises out of the logging call.** Found by
 U16 on `created`, and **closed in the same change** — the field is `minted`, and
 `test_no_log_call_names_an_extra_field_that_logging_reserves` now reads every `extra=` dict in the
@@ -1406,3 +1423,224 @@ and in the register below.
   and loses the quiet ticks after it. Pre-existing, visible on the compose path (a parent at 4782
   came back at 4539), and not this unit's — but a report that folds through `current_tick` inherits
   it.
+
+---
+
+## What U14 found, that U15 needs
+
+Sixteen units. A director's memory is a scoped slice of the log, and the CEO reads it as a rolling
+summary over the events that mattered.
+
+### The plan's file list was short by a wire, and the shape it needed already existed
+
+U14's stated files are `bench/memory.py`, three client files and two suites. What it actually needs
+is a *path from the kernel's folded state to a panel*, because a memory is the log read under a
+scope and R23 forbids the reader from computing one. That is five more files, and each of them is
+the same seam three other things already use:
+
+- `simcore/step.py` — `_authorized_scope` is now public `authorized_scope`, and `remembered_scope`
+  sits beside it. One module owns both derivations, so "what may this director read" has one home.
+- `kernel/loop.py` — `KernelRuntime.memory_scope` derives the scope and the as-of tick **under the
+  run lock**, because they are one fact: read a quantum apart they describe a line that never
+  existed, since a hire could arrive between the two.
+- `agents/main.py` — `read_memory` requires an `Authorized` it cannot make.
+- `gateway/main.py` — `GET /runs/{id}/memory/{director}`, plus `use_memory`, the fourth installed
+  callable beside `use_kernel`, `use_spend` and the statement producer.
+- `single_process.py` — `_publish_director_memory`, and this one is the first composition that needs
+  **both** other components rather than one. The kernel derives, the agents service reads, neither
+  may import the other, and the gateway may import neither.
+
+**There is deliberately no route for this on the agents surface.** A mounted endpoint taking a
+director id would have to derive its own scope, which is the one thing R23 exists to prevent. So the
+only way to ask for a memory is through a callable the launcher composed, and the only way to get a
+scope is from the component that holds folded state.
+
+### The two scopes return the same set today, and that is a defect over there
+
+`remembered_scope` is "everyone the scenario ever put in this line, plus every hire that ever
+arrived into it". `authorized_scope` is "the line as it stands". They should differ over a hire who
+arrived and left — and they do not, because `present_members` retains one (register entry above,
+measured). A departed *authored* member is retained by `authorized_for` itself, which starts from
+`scenario.lines`: the roster rather than the roll call, and right for a statement whose evidence
+window is three sim-days.
+
+**U15 inherits both functions and has to widen the right one.** An Authorization grant widens what a
+director may read *now*, which is `authorized_scope`. Whether a grant also widens a *memory* is a
+product question this unit did not answer and U15 owns: a granted cross-line read that stayed in the
+CEO's memory panel after the grant expired would be a standing permission arriving through a read
+surface, which is exactly what "no standing permission" is meant to prevent.
+
+### The window is the run, the cap is on what is shown, and the ranking is authored
+
+`context.LOOKBACK_TICKS` bounds a statement's evidence to three sim-days because it becomes a
+permanent logged fact. A memory is the opposite question, so it starts at genesis and
+`MAX_SELECTED = 12` decides how much of it a person reads at once. `SALIENCE` is a table in
+`bench/memory.py` — attrition above hiring above decisions above deliveries above assignment — and
+it is authored rather than modelled for a reason the summary depends on: a model deciding what
+mattered would make the *selection* non-reproducible, and then the citations under a sentence would
+point at a set nobody could recompute. `test_the_salience_table_names_every_kind_the_admission_pass_admits`
+keeps the two tables in step, because a kind admitted and unranked sorts last silently.
+
+### The admission pass is now a function, and it is the only door
+
+`context.scan` is the kind table, the person and item keys, and the default-deny that drops an event
+naming neither. `retrieve` is a three-day window onto it and `memory.select` is a whole-run window
+onto it, and neither can be called without an `Authorized`. A memory that re-implemented the filter
+would be the second place the line-scoping boundary lived, and the first divergence would be silent.
+`test_no_bench_module_can_reach_the_store` already covers the other half of that door and needed no
+change: `memory.py` takes its events as an argument, like everything else under `bench/`.
+
+### Four statuses, two calls, and the cadence is the cache
+
+The derived selection is a log read and the prose is a provider call, so the panel asks twice:
+`?summary=0` (the default) answers the selection with the summary marked `pending`, and `?summary=1`
+answers the same selection with the prose. **`pending` is only ever reported when a bench is
+actually present** — a keyless run's first read already says `absent`, so the client makes no second
+call and never renders a line that cannot resolve, which is the M38 failure that would be easiest to
+ship.
+
+Regeneration needs no timer and has none. The cache key is the assembled prompt, which holds the
+selection, so opening the panel twice on one sim-day costs one call and the summary is re-asked
+exactly when what mattered changes. The consequence is two day stamps on the panel and both are
+true: `as_of_day` is the day being read, `through_day` is the newest event the prose was written
+over. A summary written on day four and read on day seven has not gone stale — the selection it
+describes has not moved.
+
+### The summary's guard lives beside its producer, and one rule is shared
+
+A memory is never appended: not an event, not folded, not replayed, not copied by a fork. So unlike
+a statement's guard it cannot break replay, and it lives in `bench/memory.py` rather than in
+`simcore.statement`. What *is* shared is what a figure is — `stmt.figures_in` is public now — because
+"a figure is a numeral that resolves to something you were shown" must mean one thing in both
+places, and two regexes would drift the first time somebody taught one of them about a thousands
+separator.
+
+Four rules, and each exists because of what its absence would allow: a sentence with no citation is
+a sentence about nothing; a citation outside the selection is R23 arriving through the read surface;
+a figure that resolves to nothing is M19 applied to prose the CEO reads as fact; and a
+recommendation is M18 — the panel opens beside an open decision, so a summary that says what to do
+is the ranking a briefing is refused for, taking a different door.
+
+### The measured marking got a second population rather than a fifth marking
+
+The panel renders sim-days, log sequences and a count of events. None of them is authored tuning and
+all of them resolve to a row, so they carry `data-measured` — and `MEASURED.description` now says
+"counted rather than authored" instead of naming spend. A fifth marking for "counted, but not money"
+would have split the sweep without telling a reader anything they could act on.
+
+---
+
+## What U17 found, that U18, U19 and U25 need
+
+Seventeen units. The Universe is a query over three columns, a third stage, and one call that moves
+the clock.
+
+### The tree is a query, and the day on it cannot come from the row
+
+`logschema/lineage.py` reads `lineage_root_id`, `parent_run_id` and `forked_at_seq`, with one batched
+read of the log for the decision that separated each child from its parent — a child's divergence is
+at `forked_at_seq + 1` in the child and the decision it reconsidered is at the same sequence in the
+parent, which is U16's deliberate shape. No new table, no recursion, and `ticks_per_day` is a
+parameter because that package may not import `simcore`.
+
+**What a row cannot know is where a running clock has got to.** `runs.current_tick` moves only on
+append, and a tick that emits nothing appends nothing — U16 already recorded the consequence for
+U20's fold ("a parent at 4782 came back at 4539"), and it surfaces here as a tree that would draw
+"running · day 1" beside an office that had moved on. Measured on the compose path while writing
+this: **state at tick 58, row at tick 1.** So `KernelRuntime.lineage_tree` overlays the live fold's
+tick, day, rate and terminal reason for every timeline this process is holding, and leaves the row's
+values for one it is not — because nothing has folded that one, and inventing a tick for it would be
+worse than reporting the last one written. This is a mitigation for readers, not a fix for the row;
+the row still lags and the register still carries it.
+
+### A switch is a verb because it names two runs
+
+Creation and fork are not commands because they *make* a run. A switch is not a command for a
+different reason: a command is addressed to one run and dispatched against its state, and this
+belongs to neither of the two runs it touches — it belongs to the lineage.
+
+Three things make it safe, and the first is the only guarantee available:
+
+- **Pause the outgoing before resuming the incoming.** There is no transaction across two logs, so
+  the ordering *is* the guarantee: a crash in between leaves nothing ticking rather than two things
+  ticking, and the timeline the player left is recoverable at exactly the tick it stopped.
+- **It is built out of `set_rate`.** That is what makes it inherit the row write, the `RATE_CHANGED`
+  append, the publish and — through `_start_the_clock_soon` — the tick task for a run coming off
+  zero. A second implementation of any of those is how one path ends up with a run whose row says
+  rate 3 and whose clock does not move, which is the defect U16 found on the compose path.
+- **One lock per lineage, taken outside every run lock.** `set_rate` takes each run's own lock for
+  the length of a rate assignment, so no two run locks are ever held at once and there is no order
+  between them to get wrong. What the lineage lock closes is the pair-wise race: two concurrent
+  switches could otherwise both pause and both resume.
+
+`_terminal_reason_of` reads the live fold before the row, and that is not belt-and-braces: **nothing
+in the kernel calls `store.terminate_run`** (register entry, pre-existing), so a guard on the row
+alone would have refused a switch into a finished timeline only in the tests that set the row by
+hand, and accepted every one in production.
+`test_a_terminated_timeline_cannot_be_switched_into_and_can_still_be_forked` asserts the row is
+*still* null while the guard refuses, so it fails loudly when that gap is closed.
+
+### The fork cap is U16's finding, and where it is checked matters
+
+`MAX_TIMELINES_PER_LINEAGE = 16`, chosen for the surface rather than for memory: it is what a tree
+can be drawn at and still read. It is checked **after** the existing-child branch, so a retry under
+a key that already made a child keeps answering with that child in a full lineage — otherwise M47's
+idempotency stops holding exactly where a client is most likely to be retrying. Nothing is deleted
+to make room: eviction and deletion are decisions about a player's history, and refusing to make
+more is the honest half that does not need one. The tree carries `cap` so the surface says "3 of 16"
+before anybody meets a refusal.
+
+### One clock per lineage after a restart, and the client's URL is the real record
+
+`resume_all` starts the first running timeline in creation order and **pauses every other in its own
+log** — not merely declining to start it, because a run with no task whose row says rate 3 is the
+observable that lies. Verified live across a real restart: the log line names both run ids, the
+older kept the clock, and the other came back at rate 0 with a `RATE_CHANGED` in its own log.
+
+The consequence worth stating: the timeline the kernel pauses may be the one the player was in,
+because nothing server-side records where they were standing. That is fine and self-healing — the
+run id is in the address bar, so the client re-attaches to the timeline it was on, finds it paused,
+and the player presses play. A server-side "current timeline" would be a second source of truth for
+something the URL already holds.
+
+### The client's switch is subtle for one reason, and it is in the store
+
+`RunStore.apply` drops any event at or below the sequence it has already applied, which is correct
+for a resume and fatal for a switch: a new timeline's frames start at 1, so **without a reset the
+incoming timeline's whole log is dropped silently.** The reset happens in the shell, at the moment
+the backend says the switch happened, because the shell is the component the incoming stream writes
+through.
+
+Two consequences fell out of that, and both are improvements the plan asked for:
+
+- **The shell is no longer keyed on the run id.** A remount tears down the canvas, the renderer and
+  the keyboard bindings, so entering a timeline would blank the stage and rebuild every sprite
+  sheet. The shell was already built to survive a run id change — the stream effect depends on it,
+  the prediction is rebuilt at render when it moves, the renderer rebuilds when genesis lands.
+- **The HUD is gated on genesis.** With an empty store every tile renders a real-looking zero, and a
+  player cannot tell that from a company with no cash. That was true of every attach, not only of a
+  switch; the stated line replaces it in both.
+
+`TimelinePlacement` holds **pixels**, not the grid units the DAG's `Placement` holds. That is the one
+deliberate departure from the DAG's shape and it is because this tree is hit-tested: the first
+version kept grid units, drew every node 18px apart instead of 288, and its own click test caught it.
+
+### What U18, U19 and U25 inherit
+
+- **U18's separating decision is already on the tree.** Each node carries the item, the checkpoint
+  index, both option indices and **both option labels** — so the diff can name what separated two
+  timelines without a catalog lookup, and a cousin pair can walk `parent_run_id` to their nearest
+  common ancestor with no second query. The diff endpoint still belongs to the report app (R28), not
+  to the gateway.
+- **U25 can reuse the whole entry path.** `switchTimeline` and the shell's `onEnterTimeline` are what
+  "a successful fork lands the player in the child, on the Universe stage" is made of: fork, then
+  switch at rate zero, then set the stage. U16's review finding stands — **mint the fork's
+  idempotency key once per user intent, not once per HTTP attempt**, or every retry is a new
+  timeline and the cap above is what the player meets.
+- **U19's lineage-wide fold has a size bound now** and a reason to use it: sixteen timelines is what
+  `resume_all` folds at startup, which is also the shape of its own O(N × prefix) cost.
+- **Eviction is still open**, and it is the half of U16's finding this unit did not close: nothing
+  ever removes a `RunLoop` from `KernelRuntime.runs`, so a full lineage is sixteen resident folded
+  states for the life of the process. `test_switching_into_a_timeline_nobody_has_folded_yet` drops a
+  registration deliberately to prove the switch folds what it enters, which is the behaviour an
+  eviction policy would depend on.

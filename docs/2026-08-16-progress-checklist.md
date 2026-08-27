@@ -135,8 +135,10 @@ pushed the office off the screen.
 | Nothing synchronises the command path against the tick loop | residual finding 1, P1 | **M63** |
 | A comparison occupies the worker pool every run's clock depends on | residual finding 2, P1 (mitigated, not closed) | **M64** |
 | A pre-change run shows every option as costing nothing | residual finding 3, P2 | not in the PRD — still open |
-| A fork can be made without limit, and no run is ever evicted | U16 review, finding 1 | **U17** — the first unit with a surface that can show or bound a lineage |
-| Two synchronous routes now share one starved threadpool | U16 review, finding 2 (widens a U5 register item) | the `async` change the register already scopes |
+| A fork can be made without limit | U16 review, finding 1 | **closed by U17** — 16 timelines per lineage, refused with a sentence, and the surface says "3 of 16" before anybody meets it |
+| No run is ever evicted from `KernelRuntime.runs` | U16 review, finding 1 (the other half) | still open — a full lineage is 16 resident folded states for the life of the process. U17 proved the switch folds what it enters, which is what an eviction policy would rest on |
+| Three synchronous routes now share one starved threadpool, and one of them calls a provider | U16 review, finding 2, widened by U14 | the `async` change the register already scopes |
+| A departed hire still counts toward their line's headcount and draw | U14, measured | register — it moves a capacity figure, so it wants a unit that can re-baseline one |
 | A forked child's inherited bench statements are never asked | U16 review, finding 9 | **U19** — it owns the property the asymmetry threatens |
 | Three names for the fork point's sequence, and a proto that drifts from the shipped JSON | U16 review, finding 5 | open, cheap |
 | R44, the in-person claim is never validated | audit gap 4 | **closed as a decision** — an explicit PRD non-goal while the product is local |
@@ -146,10 +148,12 @@ pushed the office off the screen.
 
 ## Phase 5 — the MVP (`docs/plans/2026-08-16-001-feat-company-os-mvp-plan.md`)
 
-Twenty-five units in six phases. **Fifteen are done: Phases A, B and C are complete, and Phase E
-has started** — the repository runs, scenarios are files, the bench briefs and refuses and pays for
-a situation once, and a past decision now forks into a timeline that plays forward and survives a
-restart. The plan's open questions and everything execution resolved or found are in
+Twenty-five units in six phases. **Seventeen are done: Phases A, B and C are complete, Phase D has
+started and Phase E is half in** — the repository runs, scenarios are files, the bench briefs and
+refuses and pays for a situation once, a past decision forks into a timeline that plays forward and
+survives a restart, every director carries a memory the CEO can read, and the whole tree of
+timelines is a surface the player moves between. The plan's open questions and everything execution
+resolved or found are in
 [`docs/2026-08-16-mvp-execution-decisions.md`](2026-08-16-mvp-execution-decisions.md), which also
 carries the deferred defect register.
 
@@ -182,16 +186,24 @@ carries the deferred defect register.
 | U12. Caching on the situation | `[x]` | `modelgw/cache.py` holds the content address — the assembled prompt, the authorization scope and a purpose namespace — and `StoreResponseCache` in the agents service holds the table, scoped to a lineage and filtered on the rules version. The lookup runs in front of the ceiling because a hit is not a call; the *write* waits for `keep()`, because only the caller knows the guards passed. 37 new tests, and the DDL version did not move |
 | U13. Continuous integration for the keyless path | `[x]` | `.github/workflows/ci.yml` — four jobs, no secret of any kind: the keyless suite on both store dialects, the bench against the mock adapter, the client's four steps with the type check separated out, and `docker compose up` from a clean checkout reaching a client that creates a run. Found two live defects before it went green: a `tsc -b` failure the suites could not see, and a flaky comparison test only a shared runner loses |
 
-**Phase E — forks, timelines, the Universe.** One unit in, four to go.
+**Phase D — memory and Authorization.** One unit in, one to go.
+
+| Unit | Status | Evidence |
+|---|---|---|
+| U14. Director memory and the CEO's reading surface | `[x]` | `GET /runs/{id}/memory/{director}` — a scoped slice of the log, never a second store. `context.scan` is the one admission pass and `memory.select` is a whole-run window onto it, so a memory cannot see what a briefing could not; the selection is derived from an authored salience table, so the panel renders on the keyless path and every citation resolves to a set anybody can recompute. The prose is the only generated half, and a sentence that cites nothing, cites outside the line, invents a figure or recommends anything is refused before the CEO reads it. Two calls per open — the derived half at once, the summary behind a stated pending line — and the regeneration cadence is the content-addressed cache rather than a timer. The scope is derived in the kernel and handed across by the launcher, the fourth composed callable, so no bench module can compute one. 39 new backend tests plus 16 client ones; found a live capacity defect in `present_members` and left it in the register |
+
+**Phase E — forks, timelines, the Universe.** Two units in, three to go.
 
 | Unit | Status | Evidence |
 |---|---|---|
 | U16. Persistent forks | `[x]` | `POST /runs/{id}/fork` — a verb rather than a command kind, joining `START_RUN` as the second `CommandKind` value with no dispatch entry, because both create a run. The three defects closed: the child id is minted from the idempotency key so two forks of one decision are two timelines; the child row records the tick of the decision it reconsiders rather than the parent's present tick; and the child is registered with the runtime. The prefix copy became one `INSERT..SELECT` inside the same transaction as the divergence, routed through the single writer. `lineage_root_id` now comes from the parent, which switched U12's cache half live. 34 new backend tests, both dialects; verified on the compose path against Postgres — a three-deep lineage, four clocks, one restart |
+| U17. The Universe tree | `[x]` | `GET /runs/{id}/lineage` and `POST /runs/{id}/switch`, plus a third stage. The tree is a query over `lineage_root_id`, `parent_run_id` and `forked_at_seq` in the new `logschema/lineage.py` — no new table, no recursion, and one batched log read for the decision that separated each child from its parent, both option labels included. The switch is a verb rather than a command because it names two runs: it pauses the outgoing timeline before resuming the incoming one, takes one lock per lineage outside every run lock, and is built out of `set_rate` so it inherits the row write, the append, the publish and the clock start. `resume_all` now starts one clock per lineage and pauses the rest in their own logs. U16's missing fork cap is closed at 16 timelines, checked after the retry path so idempotency still holds at the boundary. Two live defects found: the tree's day came from a row that lags the fold (measured — state at 58, row at 1), and the terminated-timeline guard would have been dead code because nothing calls `store.terminate_run`. 20 new backend tests plus 22 client ones; verified live end to end — settle, fork, tree, switch, and one clock across a real restart |
 
-**Phases D and F.** Not started. U14 is unblocked and unlocks U15. U17, U18, U19, U20 and U25 are
-all unblocked now that U16 is in; U21, U22 and U23 sit behind them. U14's `Panels.tsx` half no
-longer collides with anything — U7 put the person's schema on the conversation rather than in the
-panel rail, and U11's bench block is its own section below the decision card.
+**Phase F.** Not started. **U15** is unblocked and is the last of Phase D — it inherits two scope
+derivations from U14 and has to widen the right one. **U18**, **U19**, **U20** and **U25** are all
+unblocked; U21, U22 and U23 sit behind them. U18's separating decision is already on U17's tree —
+both option indices and both labels — so the diff needs no catalog lookup, and U25 can reuse the
+whole entry path U17 built.
 
 **One fix outside the plan.** `a69c304` — a command's events were never published to a connected
 client. `_publish` had one caller inside the tick loop and published only what that batch returned,
@@ -323,12 +335,29 @@ Requirements this plan has moved are marked with the unit that moved them.
   id, asserted on the stored rows, so the byte-identity half is now proved. A test folds a run with
   and without the table populated and gets one hash
 
-**Memory and Authorization (M36–M43)** — [ ] none. U14 is unblocked; U15 behind it.
+**Memory and Authorization (M36–M43)**
+- [x] M36, M37, M38 — **U14**. A director's memory is the events touching their line, read through
+  the same admission pass a statement's evidence goes through, under a scope the kernel derives from
+  folded state and the agents service cannot compute. The CEO reads a rolling summary and the events
+  behind it; raw memory is not reachable, because the route answers with the *selection* and the
+  whole scoped slice never crosses the wire. With no model configured the derived half renders whole
+  and the summary reports itself absent — asserted through the published route, on the keyless path
+  the suite already runs on
+- [ ] M39–M43 — U15. It inherits two scope derivations from U14 and has to widen the right one: an
+  Authorization grants what a director may read *now*, and whether it also enters their memory is the
+  product question that unit owns
 
 **Forks, Timelines, Universe (M44–M52)**
 - [x] M51 comparison stays an in-place preview
 - [x] M44–M48 — **U16**. A fork is a run: `POST /runs/{id}/fork` takes a past decision differently and hands back a timeline the client can switch into. The child id is minted from the fork's idempotency key, so two forks of one decision are two timelines and a retry is the first one's answer, including after a restart that emptied the ledger (M47); the child is born at the tick of the decision it reconsiders rather than at the parent's present tick, and resumes there (M45, R20); a fork of a fork of a fork folds and reports its whole lineage (M46); and the parent's log is byte-identical before and after, compared on the stored rows (M48). U10's finding that `statement_request_id` is not run-scoped is **not** closed here — closing it needs a run identifier the fold reproduces, which is a `State` shape change, and **U15** is the unit that already owns one
-- [ ] M49, M50, M52 — U17, U18. Both now unblocked: `lineage_root_id` is flat across a tree and `parent_run_id` is the chain, so the Universe tree is the query the plan said it would be
+- [x] M49 — **U17**. The tree is the query the plan said it would be: `lineage_root_id` flat across a
+  tree, `parent_run_id` the chain, one batched log read for the decision that separated each child
+  from its parent. Three node states, a third stage drawn in the DAG's idiom, and one call that moves
+  the clock — pausing the outgoing timeline before resuming the incoming one, so a crash between the
+  two appends leaves nothing ticking. A restart starts one clock per lineage and pauses the rest in
+  their own logs
+- [ ] M50, M52 — U18. Unblocked, and it needs no new query: both option labels are already on each
+  node of U17's tree, so the separating decision is named without a catalog lookup
 
 **The Report (M53–M61)**
 - [~] M55 every claim resolves to its event — `services/report/fold.py`, and the report is now mounted and answering in the one process (**U24**)
@@ -356,20 +385,21 @@ U15 closed when MVP U16 minted a fork id that cannot collide. The
 simulation half of the product is built and covered by four suites plus golden vectors across two
 languages, and the daylight visual system is complete on top of it.
 
-The MVP plan is **15 of 25 units in**, with Phases A, B and C complete and Phase E started. Of the
-PRD's 67 requirements, roughly 8 were met when that plan was written and about 48 are met now — M13
-is the one U7 closed, M15 and M16 stopped being half-met, U11 closed the five the bench is made of,
-U13 closed M30 and M67's proof half, U12 built all of M33 but the one line U16 owned, and U16 closed
-that line plus the five forks are made of. The suites went from 699 backend tests to **1,249**, and
-the client from 404 to **491**.
+The MVP plan is **17 of 25 units in**, with Phases A, B and C complete, Phase D started and Phase E
+half in. Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about 52 are
+met now — M13 is the one U7 closed, M15 and M16 stopped being half-met, U11 closed the five the bench
+is made of, U13 closed M30 and M67's proof half, U12 built all of M33 but the one line U16 owned, U16
+closed that line plus the five forks are made of, U14 closed the three memory rests on, and U17
+closed M49. The suites went from 699 backend tests to **1,267**, and the client from 404 to **529**.
 
-What remains is still concentrated where the plan said it would be, but the shape has changed twice.
-The bench was the plan's single biggest risk and the unit most likely to be "estimated as an edit";
-its contract, its transport and the four directors who actually brief and object all exist, and no
-event payload, schema version or golden fixture moved to get there. **Forks were the plan's second
-risk and are now in**, on the same terms: no event kind was added, no payload changed, no shape
-version moved, and the goldens did not regenerate. What does not exist is memory, Authorization, the
-Universe surfaces, and the report.
+What remains is still concentrated where the plan said it would be, but the shape has changed three
+times. The bench was the plan's single biggest risk and the unit most likely to be "estimated as an
+edit"; its contract, its transport and the four directors who actually brief and object all exist,
+and no event payload, schema version or golden fixture moved to get there. **Forks were the plan's
+second risk and are now in**, on the same terms. **The two read surfaces on top of them are in too**,
+and on stronger terms than either: a memory and a Universe tree are both *queries* — no event kind,
+no payload field, no shape version, no fixture, and nothing appended by either of them. What does not
+exist is Authorization, the timeline diff, and the report.
 
 **CI was the thing genuinely overdue, and it is now in.** Four jobs, no secret of any kind, and it
 earned itself twice before it was ever green: a second `tsc -b` failure sitting in a tree whose suites
@@ -385,6 +415,18 @@ could not see was a forked child whose clock would not start, and every observab
 outcome, the run row, the state endpoint — reported a running clock while sim-time stood still. It
 took a `docker compose up` to find.
 
-**U14 is the other thing unblocked**, it unlocks U15, and it is now the only entrance to Phase D.
-The natural order from here is **U25 then U17** (the client can reach a fork, then see the tree),
-with **U14** in parallel since its file set is disjoint from all of it.
+**Both read surfaces earned the pattern again, and neither found its defect in the tree.** U14's was
+a *scoping* one it deliberately did not fix: `present_members` counts a hire who has left, so a line
+that lost one keeps their headcount and goes on drawing 10,800 units a day for somebody who is gone —
+measured, registered, and left to a unit that can re-baseline a metric. U17's was a *reading* one it
+did fix, and it took running the thing to see: the tree drew its day from `runs.current_tick`, which
+moves only on append, so a run at tick 58 had a row saying tick 1 and the Universe would have
+contradicted the office it sat beside. Both are the same shape as U16's: every observable agreed, and
+the disagreement was with sim-time.
+
+**Next is U25 then U18**, in that order and both cheap. U25 is the client half of a fork and can
+reuse U17's entire entry path — fork, switch at rate zero, open the Universe on the new node — and
+U18's diff needs no new query, because both option labels are already on every node of the tree.
+**U15** is the last of Phase D and the heaviest thing left before the report: it moves
+`STATE_SHAPE_VERSION`, regenerates the golden fixtures, and owns the run-scoped
+`statement_request_id` U16 left open.

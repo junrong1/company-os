@@ -154,6 +154,52 @@ Every timeline in a tree carries the same `lineage_root_id`, which is how the sp
 aggregate and the response cache span a lineage without walking a chain of parents.
 `parent_run_id` is the chain.
 
+### Move between timelines
+
+The tree one genesis produced is a read, and moving the clock inside it is one call.
+
+```bash
+# Every timeline descending from this run's genesis, with the decision that
+# separated each child from its parent. A run with no forks is a tree of one.
+curl -s http://127.0.0.1:8800/runs/demo/lineage
+
+# Leave the timeline in the path and enter the one in the body. `rate` is optional:
+# omitted, the incoming timeline resumes at the rate it was left at, which is zero
+# for a fork nobody has started.
+curl -s -X POST http://127.0.0.1:8800/runs/demo/switch \
+  -H 'content-type: application/json' \
+  -d '{"to":"<child>","rate":1}'
+```
+
+**One clock per lineage.** The switch pauses the timeline you are leaving before it
+resumes the one you are entering, so a crash between the two appends leaves nothing
+ticking rather than two things ticking — and a restart that finds two timelines in
+one lineage marked running starts the older one and pauses the other in its own log,
+naming both in the line it writes. A refusal is a `200` with a sentence: another
+lineage, the timeline you are already in, or one that has ended. An ended timeline
+cannot be entered and can still be forked.
+
+### Read a director's memory
+
+What a director carries forward about their reporting line, as a summary and the
+events behind it. It is a read: no tick, no event, no command.
+
+```bash
+# The events that mattered on that line, derived from the log. With no model
+# configured this is the whole answer, and the summary reports itself absent.
+curl -s http://127.0.0.1:8800/runs/demo/memory/dir_hr
+
+# Ask for the prose as well. The panel calls it in this order for a reason: the
+# selection is a log read and comes back at once, the summary is a provider call.
+curl -s 'http://127.0.0.1:8800/runs/demo/memory/dir_hr?summary=1'
+```
+
+Only the four directors have one — a specialist answers from an authored script, so
+they are a `404` rather than an empty memory. Every sentence of a generated summary
+carries the log sequences it was written over, and one that cites nothing, cites
+outside the line, or quotes a figure that resolves to no event is refused before the
+CEO reads it; the derived half still renders.
+
 ### Ports
 
 Only two ports reach the host, and only on loopback.
@@ -233,7 +279,7 @@ keep a prefix, so one port never means two surfaces for one path.
 
 | Surface | Status endpoint | Also serves |
 |---|---|---|
-| `gateway` | `/status` | `/runs`, `/runs/{id}/commands`, `/runs/{id}/state`, `/ws/{id}` |
+| `gateway` | `/status` | `/runs`, `/runs/{id}/commands`, `/runs/{id}/state`, `/runs/{id}/fork`, `/runs/{id}/switch`, `/runs/{id}/lineage`, `/runs/{id}/memory/{director}`, `/ws/{id}` |
 | `kernel` | `/kernel/status` | `/kernel/runs/{id}/diagnose` |
 | `domain` | `/domain/status` | — |
 | `agents` | `/agents/status` | `/agents/runs/{id}/spend` |
