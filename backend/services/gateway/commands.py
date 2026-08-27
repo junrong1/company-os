@@ -141,6 +141,30 @@ class KernelClient(Protocol):
         """
         ...
 
+    def switch_run(self, from_run_id: str, to_run_id: str, rate: int | None = None) -> dict[str, Any]:
+        """Move the clock from one timeline to another in the same lineage (M49, R11).
+
+        Not a command either, and for a reason neither of the two above has: a command names *one*
+        run, and this is one act across two. Routing it through `submit` would mean deciding which
+        of the two runs it belonged to, and the answer is neither — it belongs to the lineage.
+
+        The outgoing timeline is paused before the incoming one is resumed, so a crash between the
+        two leaves nothing ticking rather than two things ticking. A refusal — another lineage, the
+        run you are already on, an ended target — arrives as a `refusal` on the mapping; an unknown
+        run on either side raises `KeyError`.
+        """
+        ...
+
+    def lineage(self, run_id: str) -> dict[str, Any] | None:
+        """Every timeline descending from this run's genesis, as a tree (M49).
+
+        `None` for a run this kernel's store does not hold, which the gateway answers 404 with. A
+        run with no forks answers with a one-node tree rather than with nothing: the Universe stage
+        renders from the first run, so the player is not introduced to the surface by their first
+        fork.
+        """
+        ...
+
     def scenarios(self) -> list[dict[str, Any]]:
         """The companies a run could be created against, for the surface that offers the choice.
 

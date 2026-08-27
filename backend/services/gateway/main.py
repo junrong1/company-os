@@ -74,6 +74,25 @@ def use_kernel(client: KernelClient) -> None:
     _kernel = client
 
 
+#: One director's memory, as the CEO's surface reads it. Installed by the launcher, and composed
+#: there out of *two* services: the kernel derives the scope from folded state, the agents service
+#: reads the log under it. The gateway may import neither (R4), which is exactly why this is a
+#: callable handed in rather than a route that fetches.
+MemoryReader = Callable[[str, str, bool], dict[str, Any] | None]
+_memory: MemoryReader | None = None
+
+
+def use_memory(reader: MemoryReader) -> None:
+    """Install the memory reader the CEO's surface reads a director's line through (U14).
+
+    Optional, like the spend reader: with nothing installed the route answers 503 rather than
+    pretending a director has no memory, because "not composed" and "nothing happened on that line"
+    are different answers and the second one is a lie the panel would render as fact.
+    """
+    global _memory
+    _memory = reader
+
+
 def use_spend(reader: SpendReader) -> None:
     """Install the spend reader the stream publishes `MODEL_SPEND` from.
 
@@ -388,6 +407,141 @@ def post_fork(run_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]
             },
         )
     return forked
+
+
+@app.get("/runs/{run_id}/memory/{director_id}")
+def get_memory(
+    run_id: str, director_id: str, summary: bool = Query(False)
+) -> dict[str, Any]:
+    """What one director remembers about their line, as a summary and the events behind it (M37).
+
+    **A read, and only ever a read.** Nothing here changes a run: no tick, no event, no command. It
+    is on the gateway rather than on the agents surface because the scope it needs is derived in the
+    kernel from folded state, and the launcher is the only component that may see both — so a client
+    cannot reach the log through this route with a scope of its own choosing.
+
+    404 for a run this kernel is not holding, and 404 for a person who is not one of its directors:
+    only the four carry a memory, for the same reason only they brief (M14). A specialist is
+    therefore not-found rather than empty, because an empty memory would read as "nothing has
+    happened to them" rather than as "they do not have one".
+
+    503 when the reader is not installed or the log cannot be read. Both are this deployment failing
+    rather than the run being quiet, and the panel says so instead of rendering a line with no
+    history.
+
+    `summary` decides whether the prose is produced, and defaults to *off*. The derived selection is
+    a log read and the prose is a provider call, so the panel asks twice: once to open, once for the
+    note. It is not a scope: the same events come back either way, and asking for the summary buys
+    prose about them rather than more of them.
+    """
+    reader = _memory
+    if reader is None:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "no memory reader is installed, so a director's memory cannot be read. The "
+                "launcher composes it from the kernel's scope and the agents service's log read."
+            ),
+        )
+
+    try:
+        memory = reader(run_id, director_id, summary)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"no run {run_id}") from None
+    except Exception as exc:  # noqa: BLE001 - surfaced as a 503, not a stack trace
+        log.warning(
+            "could not read a director's memory",
+            extra={"run": run_id, "director": director_id[:64], "error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=503, detail=f"the memory could not be read: {exc}"
+        ) from exc
+
+    if memory is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"{director_id[:64]!r} is not a director of run {run_id}. Only the four directors "
+                "carry a memory; a specialist answers from an authored script."
+            ),
+        )
+    return memory
+
+
+@app.get("/runs/{run_id}/lineage")
+def get_lineage(run_id: str) -> dict[str, Any]:
+    """Every timeline descending from this run's genesis (M49).
+
+    A read over `runs`, with one batched read of the log for the decision that separated each
+    child from its parent. No new table, and no recursion: `lineage_root_id` is flat across a
+    whole tree, which is what U9 put it there for.
+
+    A run with no forks answers with a one-node tree. That is what lets the Universe stage render
+    from the very first run rather than appearing the first time somebody forks — a surface a
+    player meets for the first time in the same gesture that changes their world is a surface they
+    read afterwards.
+    """
+    tree = kernel().lineage(run_id)
+    if tree is None:
+        raise HTTPException(status_code=404, detail=f"no run {run_id}")
+    return tree
+
+
+@app.post("/runs/{run_id}/switch")
+def post_switch(run_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Move the clock to another timeline of the same lineage (M49, R11).
+
+    **Its own verb, like a fork, and for a different reason.** A fork is not a command because it
+    creates a run; this is not a command because it names *two*. `POST /runs/{id}/commands` is
+    addressed to one run and dispatched against its state, and a switch belongs to neither of the
+    two runs it touches — it belongs to the lineage.
+
+    `run_id` is the timeline being left, and `to` is the one being entered. That direction is
+    deliberate: the client knows which run it is attached to and is asking to leave it, so a
+    request that arrives with a stale `run_id` — the player switched in another tab — is refused
+    rather than quietly pausing whatever the server thought was current.
+
+    `rate` is optional. Omitted, the incoming timeline resumes at the rate it was left at, which is
+    zero for a fork nobody has started: switching into a paused timeline leaves it paused, and the
+    player presses play. A refusal is a 200 with a sentence, like a rejected command; an unknown
+    run on either side is a 404, and a missing or non-integer field is a 400.
+    """
+    payload = body or {}
+    client = kernel()
+
+    to_run_id = str(payload.get("to", ""))
+    if not to_run_id:
+        raise HTTPException(
+            status_code=400,
+            detail="a switch names the timeline to enter, as `to`",
+        )
+
+    rate = None if payload.get("rate") is None else _whole_number(payload, "rate")
+
+    try:
+        switched = client.switch_run(run_id, to_run_id, rate)
+    except KeyError as missing:
+        # The runtime's own sentence, which already names *which* of the two runs is missing —
+        # "no run <id>" here would be right about half the failures and wrong about the other half,
+        # and the client renders whichever one it gets.
+        raise HTTPException(status_code=404, detail=str(missing.args[0])) from None
+
+    if switched.get("refusal"):
+        log.info(
+            "switch refused",
+            extra={"run": run_id, "to": to_run_id, "reason": switched["refusal"]},
+        )
+    else:
+        log.info(
+            "timeline switched",
+            extra={
+                "run": run_id,
+                "to": to_run_id,
+                "paused_at": switched.get("paused_at_tick", 0),
+                "resumed_at": switched.get("resumed_at_tick", 0),
+            },
+        )
+    return switched
 
 
 @app.get("/scenarios")

@@ -234,6 +234,28 @@ class InProcessKernel:
             idempotency_key,
         ).to_dict()
 
+    def switch_run(
+        self, from_run_id: str, to_run_id: str, rate: int | None = None
+    ) -> dict[str, Any]:
+        """Move the clock between two timelines of one lineage.
+
+        Straight through, like `fork_run`: the ordering guarantee, the per-lineage lock and the
+        refusals all belong to the runtime, and a translation layer here would be a second place
+        for them to be almost right. An unknown run arrives as `KeyError` and travels untouched,
+        because the route turns it into a 404.
+        """
+        return self.runtime.switch_to(from_run_id, to_run_id, rate).to_dict()
+
+    def lineage(self, run_id: str) -> dict[str, Any] | None:
+        """The tree of timelines this run belongs to.
+
+        Straight through to the runtime, like `fork_run` and `switch_run`: the query belongs to
+        `logschema` — it is a read over rows, the same shape the report's fold is — and the *overlay*
+        of the live fold on top of it belongs to the component that holds the folds. A translation
+        layer here would be the second place that rule lived.
+        """
+        return self.runtime.lineage_tree(run_id)
+
     def scenarios(self) -> list[dict[str, Any]]:
         """Every company a run could be created against, for the surface that offers the choice.
 
@@ -399,6 +421,7 @@ def compose() -> tuple[KernelRuntime, InProcessKernel]:
     client = InProcessKernel(runtime)
     gateway_main.use_kernel(client)
     _publish_model_spend(gateway_main)
+    _publish_director_memory(gateway_main, runtime)
     _wire_the_bench(runtime)
     mount_surfaces(gateway_main.app)
 
@@ -473,6 +496,48 @@ def _publish_model_spend(gateway_main: Any) -> None:
 
     bench = agents_main.bench()
     gateway_main.use_spend(lambda run_id: bench.reading(run_id).to_payload())
+
+
+def _publish_director_memory(gateway_main: Any, runtime: KernelRuntime) -> None:
+    """Compose the CEO's memory surface out of the two halves that own it (U14).
+
+    The fourth of these, and the first that needs *both* other components rather than one. A
+    director's memory is the log read under a scope: the scope is derived in the kernel, because the
+    kernel is what holds folded state (R23), and the read is in the agents service, because that is
+    where the engine and the summariser live. Neither may import the other, and the gateway may
+    import neither — so the composition is here, in the one file allowed to see all three.
+
+    That shape is also the security property. The agents service has no route of its own for this,
+    so there is no way to ask it for a memory without a scope the kernel derived; and the gateway
+    holds a callable rather than a client, so it cannot ask for one it invented.
+
+    Each failure keeps its own answer. An unknown run arrives as `KeyError` from `memory_scope` and
+    travels untouched, because the route turns it into a 404. A person who is not a director is
+    `None`, which is a different 404. A log the agents service could not read is a `RuntimeError`
+    here rather than a `None`, so the route can answer 503: "we could not read it" and "they are not
+    a director" are the two answers a panel must never confuse.
+    """
+    from agents import main as agents_main
+
+    def read(run_id: str, director_id: str, with_summary: bool = True) -> dict[str, Any] | None:
+        scoped = runtime.memory_scope(run_id, director_id)
+        if scoped is None:
+            return None
+        authorized, as_of_tick = scoped
+        memory = agents_main.read_memory(
+            run_id,
+            authorized=authorized,
+            as_of_tick=as_of_tick,
+            with_summary=with_summary,
+        )
+        if memory is None:
+            raise RuntimeError(
+                f"the log for run {run_id} could not be read, so {director_id}'s memory is "
+                "unavailable; the agents service logged the reason"
+            )
+        return memory
+
+    gateway_main.use_memory(read)
 
 
 def _wire_the_bench(runtime: KernelRuntime) -> None:

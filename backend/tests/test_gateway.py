@@ -1821,3 +1821,308 @@ def test_a_three_deep_lineage_plays_forward_and_each_timeline_reports_its_own_me
     assert {rows[run_id]["lineage_root_id"] for run_id in timelines} == {RUN}
     assert rows[timelines[1]]["parent_run_id"] == RUN
     assert rows[timelines[2]]["parent_run_id"] == RUN
+
+
+# =========================================================================
+# A director's memory, read through the gateway (U14: M36, M37, M38)
+# =========================================================================
+#
+# Composed rather than stubbed, and that is the property worth having here: the route holds a
+# callable the launcher built out of *two* services — the kernel derives the scope from folded
+# state, the agents service reads the log under it — so these tests are the only place the whole
+# chain is exercised at once. A stub would have proved the route's status codes and none of that.
+
+
+def _with_history(runtime, ticks: int = 400):
+    """Advance the run far enough that its directors have something to remember."""
+    run = runtime.runs[RUN]
+    runtime._advance(run, ticks)
+    return run
+
+
+def test_a_directors_memory_is_readable_and_line_scoped(composed, api) -> None:
+    """Covers M36 and M37 through the published surface.
+
+    Two directors' memories are read and compared: each holds its own line's events and neither
+    holds the other's. That is the retrieval's disjointness, asserted where a client can see it —
+    the panel is the only place a scope leak would actually reach a person.
+    """
+    runtime, _ = composed
+    _with_history(runtime)
+
+    hr = api.get(f"/runs/{RUN}/memory/dir_hr")
+    cs = api.get(f"/runs/{RUN}/memory/dir_cs")
+    assert hr.status_code == 200 and cs.status_code == 200
+
+    mine, theirs = hr.json(), cs.json()
+    assert mine["director"] == "dir_hr" and theirs["director"] == "dir_cs"
+    assert mine["events"], "the fixture produced no history, so the disjointness below is vacuous"
+
+    people = {entry["person"] for entry in mine["events"] if entry["person"]}
+    assert people <= set(mine["line"]), f"{people - set(mine['line'])} is not dir_hr's line"
+    assert set(mine["line"]).isdisjoint(theirs["line"]), "two lines share a member"
+
+    ours = {entry["seq"] for entry in mine["events"]}
+    yours = {entry["seq"] for entry in theirs["events"]}
+    assert ours.isdisjoint(yours), f"one event is in two memories: {sorted(ours & yours)}"
+
+
+def test_the_memory_surface_answers_on_the_keyless_path(composed, api) -> None:
+    """Covers M38. No provider is configured in this suite, and the panel is still a panel.
+
+    The first read is the one the panel opens on, and on a keyless run it already says `absent`
+    rather than `pending` — so the client makes no second call and no pending line is rendered that
+    could never resolve. That is the M38 failure mode that would be easiest to ship.
+    """
+    runtime, _ = composed
+    _with_history(runtime)
+
+    payload = api.get(f"/runs/{RUN}/memory/dir_hr").json()
+    asked = api.get(f"/runs/{RUN}/memory/dir_hr?summary=1").json()
+
+    assert payload["summary"]["status"] == "absent"
+    assert asked["summary"]["status"] == "absent", "asking for prose invented a bench"
+    assert payload["summary"]["points"] == []
+    assert payload["summary"]["fallback"] == "", "a keyless run has nothing to report as failed"
+    assert payload["events"], "the derived half is what makes the keyless path whole"
+    assert payload["as_of_day"] >= payload["through_day"]
+
+
+def test_nothing_raw_crosses_the_memory_route(composed, api) -> None:
+    """M37's second half: the client can address the selection, and nothing else.
+
+    There is no query parameter that widens it, no payload on an entry, and no key nobody reads.
+    Asserted as an exact key set rather than as an absence, because a field added to this response
+    without being thought about is how a read surface grows into an export nobody reviewed.
+    """
+    runtime, _ = composed
+    _with_history(runtime)
+
+    payload = api.get(f"/runs/{RUN}/memory/dir_hr").json()
+
+    assert set(payload) == {
+        "director",
+        "line",
+        "as_of_tick",
+        "as_of_day",
+        "through_day",
+        "considered",
+        "selected",
+        "events",
+        "summary",
+    }
+    for entry in payload["events"]:
+        assert set(entry) == {"seq", "tick", "day", "kind", "person", "item", "detail"}
+
+    # A limit somebody might hope for is not honoured, because there is none to honour. The one
+    # parameter this route does read decides whether the prose is produced, and the events it comes
+    # back with are the same events either way.
+    widened = api.get(f"/runs/{RUN}/memory/dir_hr?limit=1000&raw=true").json()
+    assert widened["events"] == payload["events"]
+    with_prose = api.get(f"/runs/{RUN}/memory/dir_hr?summary=1").json()
+    assert with_prose["events"] == payload["events"]
+
+
+def test_a_specialist_has_no_memory_and_says_so(composed, api) -> None:
+    """404 rather than an empty memory (M14).
+
+    An empty payload would read as "nothing has happened to them" when the truth is that only the
+    four directors carry a memory at all — a specialist answers from an authored script.
+    """
+    runtime, _ = composed
+    _with_history(runtime)
+
+    refused = api.get(f"/runs/{RUN}/memory/stf_rec")
+    assert refused.status_code == 404
+    assert "not a director" in refused.json()["detail"]
+
+
+def test_a_memory_read_against_an_unknown_run_is_not_found(api) -> None:
+    """The same shape a fork of an unknown parent takes, for the same reason."""
+    assert api.get("/runs/run-that-does-not-exist/memory/dir_hr").status_code == 404
+
+
+def test_a_memory_read_with_no_reader_installed_is_a_503(composed, api, monkeypatch) -> None:
+    """"Not composed" and "that line has been quiet" must never render the same.
+
+    The route is what a panel calls, so an uninstalled reader has to arrive as a deployment fault
+    rather than as an empty history — which the panel would draw as fact.
+    """
+    monkeypatch.setattr(gateway_main, "_memory", None)
+    refused = api.get(f"/runs/{RUN}/memory/dir_hr")
+    assert refused.status_code == 503
+    assert "memory reader" in refused.json()["detail"]
+
+
+def test_an_unreadable_log_is_a_503_rather_than_an_empty_memory(composed, api, monkeypatch) -> None:
+    """The other half of the same rule, one layer down.
+
+    The launcher turns the agents service's `None` into a raise precisely so this can be a 503: a
+    store that could not be read and a director with nothing to remember are different answers.
+    """
+    runtime, _ = composed
+    _with_history(runtime)
+
+    monkeypatch.setattr(
+        agents_main, "read_memory", lambda *_a, **_k: None
+    )
+    refused = api.get(f"/runs/{RUN}/memory/dir_hr")
+    assert refused.status_code == 503
+    assert "could not be read" in refused.json()["detail"]
+
+
+def test_the_memory_read_advances_nothing(composed, api) -> None:
+    """A read is a read. No tick, no event, no command — asserted rather than assumed.
+
+    The surface is reached from the office while the clock is running, so a read that appended
+    anything would put a client's panel-opening into the log and into every fork of it.
+    """
+    runtime, _ = composed
+    run = _with_history(runtime)
+
+    tick_before = run.state.tick
+    head_before = runtime.store.head_seq(RUN)
+
+    assert api.get(f"/runs/{RUN}/memory/dir_hr").status_code == 200
+
+    assert run.state.tick == tick_before
+    assert runtime.store.head_seq(RUN) == head_before
+
+
+# =========================================================================
+# The Universe through the gateway (U17: M49, R11)
+# =========================================================================
+
+
+def _fork(api, at_seq: int, key: str, option_index: int = 1, run_id: str = RUN):
+    return api.post(
+        f"/runs/{run_id}/fork",
+        json={"at_seq": at_seq, "option_index": option_index, "idempotency_key": key},
+    )
+
+
+def _a_settled_decision(runtime, api) -> int:
+    """Drive a run to a checkpoint, settle it, and answer with the resolution's sequence."""
+    run = runtime.runs[RUN]
+    runtime.apply_command(
+        RUN,
+        _kind("ASSIGN_WORK"),
+        _encode({"item": "wi_ap_map", "person": "stf_ap", "via_manager": False}),
+    )
+    while run.state.items["wi_ap_map"].status != "blocked":
+        runtime._advance(run, 1)
+
+    applied = command(
+        api,
+        "resolve_checkpoint",
+        {"item": "wi_ap_map", "cp_index": 0, "option_index": 0, "in_person": True},
+        "settle-it",
+    ).json()
+    assert applied["status"] == Outcome.APPLIED, applied
+    return applied["produced_seq"][0]
+
+
+def test_a_run_with_no_forks_answers_with_a_lineage_of_one(api) -> None:
+    """The Universe stage renders from the first run, so this cannot be an empty answer."""
+    tree = api.get(f"/runs/{RUN}/lineage").json()
+
+    assert tree["root_run_id"] == RUN
+    assert tree["asked_about"] == RUN
+    assert [node["run_id"] for node in tree["nodes"]] == [RUN]
+    assert tree["cap"] > 1, "the surface is told what the limit is, rather than discovering it"
+
+
+def test_the_tree_names_the_decision_that_separated_each_timeline(composed, api) -> None:
+    """Covers M49 through the published surface, which is where a player meets it."""
+    runtime, _ = composed
+    decision_seq = _a_settled_decision(runtime, api)
+
+    forked = _fork(api, decision_seq, "u17-a").json()
+    assert not forked.get("refusal"), forked
+    child = forked["child_run_id"]
+
+    tree = api.get(f"/runs/{child}/lineage").json()
+
+    assert tree["root_run_id"] == RUN
+    assert tree["asked_about"] == child, "the tree says which node the caller is standing in"
+    by_id = {node["run_id"]: node for node in tree["nodes"]}
+    assert set(by_id) == {RUN, child}
+    assert by_id[child]["parent_run_id"] == RUN
+    assert by_id[child]["forked_at_seq"] == decision_seq - 1
+    assert by_id[child]["item"] == "wi_ap_map"
+    assert by_id[child]["option_index"] != by_id[child]["parent_option_index"]
+    assert by_id[child]["choice"] and by_id[child]["parent_choice"]
+
+    # The three node states are composed on the surface, so what crosses is what they are
+    # composed from: where the clock is, whether it is running, and whether the run has ended.
+    for node in tree["nodes"]:
+        assert set(node) == {
+            "run_id",
+            "parent_run_id",
+            "forked_at_seq",
+            "tick",
+            "day",
+            "rate",
+            "head_seq",
+            "terminal_reason",
+            "created_at",
+            "item",
+            "cp_index",
+            "option_index",
+            "parent_option_index",
+            "choice",
+            "parent_choice",
+        }
+
+
+def test_a_lineage_read_for_an_unknown_run_is_not_found(api) -> None:
+    assert api.get("/runs/run-that-does-not-exist/lineage").status_code == 404
+
+
+def test_switching_moves_the_clock_and_leaves_the_other_timeline_recoverable(composed, api) -> None:
+    """Covers R11 end to end: one command, two rate changes, one clock."""
+    runtime, _ = composed
+    decision_seq = _a_settled_decision(runtime, api)
+    child = _fork(api, decision_seq, "u17-switch").json()["child_run_id"]
+
+    command(api, "set_rate", {"rate": 2}, "run-it")
+
+    switched = api.post(f"/runs/{RUN}/switch", json={"to": child, "rate": 1}).json()
+
+    assert not switched.get("refusal"), switched
+    assert switched["from_run_id"] == RUN and switched["to_run_id"] == child
+    assert switched["rate"] == 1
+    assert api.get(f"/runs/{RUN}/state").json()["rate"] == 0
+    assert api.get(f"/runs/{child}/state").json()["rate"] == 1
+
+    # The timeline left behind is at the tick it stopped, and the tree says so.
+    nodes = {node["run_id"]: node for node in api.get(f"/runs/{child}/lineage").json()["nodes"]}
+    assert nodes[RUN]["rate"] == 0
+    assert nodes[RUN]["tick"] == switched["paused_at_tick"]
+    assert nodes[child]["rate"] == 1
+
+
+def test_a_switch_without_a_target_is_a_bad_request(api) -> None:
+    """The caller's mistake, not a refusal: there is nothing to answer "no" about."""
+    refused = api.post(f"/runs/{RUN}/switch", json={})
+    assert refused.status_code == 400
+    assert "to" in refused.json()["detail"]
+
+
+def test_a_switch_to_an_unknown_run_is_not_found_and_names_which(api) -> None:
+    """Which of the two runs is missing is the whole content of the answer."""
+    refused = api.post(f"/runs/{RUN}/switch", json={"to": "run-nowhere"})
+    assert refused.status_code == 404
+    assert "run-nowhere" in refused.json()["detail"]
+
+
+def test_a_switch_into_another_lineage_is_refused_with_a_sentence(composed, api) -> None:
+    """A 200 and a reason, like a rejected command: the request was well-formed, the answer is no."""
+    runtime, _ = composed
+    runtime.create_run("run-other-universe", 7, horizon_tick=simtime.TICKS_PER_SIM_DAY * 30)
+
+    refused = api.post(f"/runs/{RUN}/switch", json={"to": "run-other-universe"})
+
+    assert refused.status_code == 200
+    assert "same lineage" in refused.json()["refusal"]
+    assert api.get(f"/runs/{RUN}/state").json()["rate"] != 0, "a refused switch paused the run"
