@@ -1259,3 +1259,624 @@ def test_the_keyless_job_really_has_no_model_environment() -> None:
         f"a provider resolved in the keyless job: {resolved}. `resolve()` returning a config here "
         "means the suite below it exercised a bench, and M30 proved nothing."
     )
+
+
+# =========================================================================
+# U14: a director's memory, and the note the CEO reads over it (M36, M37, M38)
+# =========================================================================
+#
+# Three properties carry the weight here, and each of them is the one a shortcut would have broken:
+#
+# * the selection is *derived*, so the panel renders with no provider and two runs of one seed
+#   choose the same events — which is what makes the citations under a sentence recomputable;
+# * it goes through the same admission pass a statement's evidence does, so a memory cannot see
+#   what a briefing could not (R23);
+# * every sentence a model writes cites an event in that selection, or the summary is refused and
+#   the derived half stands alone.
+
+
+def _memory_run(with_a_second_line: bool = True) -> Any:
+    """A run with history on `DIRECTOR`'s line, and — by default — on somebody else's.
+
+    The second line is what makes the scoping assertions bite: without it, "no other line's events
+    are in this memory" is true because there are none, which is a test that cannot fail.
+    """
+    from simcore import step as sim
+    from test_pending_input import Recorder
+
+    run = Recorder()
+    if with_a_second_line:
+        run.record(sim.assign_direct(run.state, "wi_faq", "stf_cs"))
+        run.advance_until(lambda state: state.items["wi_faq"].status == sim.STATUS_BLOCKED)
+    else:
+        run.advance(200)
+    return run
+
+
+def _selection(run: Any) -> Any:
+    from simcore import step as sim
+
+    from agents.bench import memory
+
+    return memory.select(
+        run.log,
+        authorized=sim.remembered_scope(run.state, DIRECTOR),
+        as_of_tick=run.state.tick,
+    )
+
+
+def test_the_salience_table_names_every_kind_the_admission_pass_admits() -> None:
+    """A kind nobody ranked sorts last, which reads as a decision nobody made.
+
+    `context.RETRIEVABLE` is what a director may be shown at all and `memory.SALIENCE` is how much
+    of it a memory keeps. Adding to the first without the second is silent: the event is admitted,
+    ranks below everything, and falls off the end of a twelve-entry selection forever.
+    """
+    from agents.bench import memory
+
+    admitted = {kind.name for kind in retrieval.RETRIEVABLE}
+    assert set(memory.SALIENCE) == admitted, (
+        "the salience table and the admission table disagree: "
+        f"{sorted(admitted - set(memory.SALIENCE))} are admitted and unranked, "
+        f"{sorted(set(memory.SALIENCE) - admitted)} are ranked and never admitted"
+    )
+
+
+def test_a_memory_holds_this_lines_events_and_none_of_anothers() -> None:
+    """Covers M36. The same disjointness the retrieval is held to, over the whole run."""
+    from contracts.envelope import EventKind
+
+    run = _memory_run()
+    selection = _selection(run)
+
+    other_line = {
+        envelope.seq
+        for envelope in run.log
+        if envelope.kind is not EventKind.GENESIS
+        and (
+            "stf_cs" in str(envelope.decoded_payload())
+            or "wi_faq" in str(envelope.decoded_payload())
+        )
+    }
+    assert len(other_line) >= 2, "the fixture produced nothing to exclude, so this cannot fail"
+
+    assert selection.events, "the memory is empty, so the disjointness below is vacuous"
+    assert selection.citable().isdisjoint(other_line)
+    assert all(event.person != "stf_cs" for event in selection.events)
+    assert all(event.item != "wi_faq" for event in selection.events)
+
+
+def test_a_memory_reaches_further_back_than_a_statements_evidence() -> None:
+    """The one number that differs, and the reason U14 exists as more than a second panel.
+
+    A statement's evidence is three sim-days because it becomes a permanent logged fact about a
+    decision in front of the CEO. A memory is what the line has been through, so it starts at
+    genesis — and this asserts the difference against a real log rather than against the constants.
+    """
+    from simcore import step as sim
+    from simcore import time as simtime
+
+    run = _memory_run(with_a_second_line=False)
+    run.advance(retrieval.LOOKBACK_TICKS + simtime.TICKS_PER_SIM_DAY)
+
+    scope = sim.remembered_scope(run.state, DIRECTOR)
+    remembered = _selection(run)
+    shown = retrieval.retrieve(
+        run.log, authorized=scope, owning_item=ITEM, at_tick=run.state.tick
+    )
+
+    oldest_remembered = min(event.tick for event in remembered.events)
+    assert oldest_remembered < run.state.tick - retrieval.LOOKBACK_TICKS, (
+        "the memory holds nothing older than a statement's window, so the two are the same read"
+    )
+    assert not shown.events or min(event.tick for event in shown.events) >= (
+        run.state.tick - retrieval.LOOKBACK_TICKS
+    )
+
+
+def test_the_selection_is_a_function_of_the_log_rather_than_of_the_sort() -> None:
+    """Two reads of one log choose the same events, in the same order.
+
+    The ranking is salience, then recency, then sequence — and the sequence is what makes it total.
+    Without it a run with twelve equally salient events would select whichever twelve the rows
+    happened to arrive in, and the citations under a summary would point at a set nobody could
+    recompute from the log.
+    """
+    run = _memory_run()
+    first = _selection(run)
+    second = _selection(run)
+
+    assert [event.seq for event in first.events] == [event.seq for event in second.events]
+    assert [event.seq for event in first.events] == sorted(
+        event.seq for event in first.events
+    ), "a memory is read forwards; the ranking decides what is in it, not what order it reads in"
+
+
+def test_the_selection_is_capped_and_says_what_it_was_drawn_from() -> None:
+    """Covers M37's other half: the surface reads a selection, not the slice.
+
+    `considered` is on the payload so the panel can say twelve of forty rather than implying the
+    line has only ever done twelve things — which is the reading that would make a bounded panel
+    into a false claim about the run.
+    """
+    from agents.bench import memory
+
+    run = _memory_run()
+    run.advance(2_000)
+    selection = _selection(run)
+    payload = selection.to_payload()
+
+    assert len(selection.events) <= memory.MAX_SELECTED
+    assert payload["selected"] == len(selection.events)
+    assert payload["considered"] >= payload["selected"]
+    assert payload["director"] == DIRECTOR
+
+    # Nothing raw crosses: every entry is the reduced form, with no payload and no unknown key.
+    for entry in payload["events"]:
+        assert set(entry) == {"seq", "tick", "day", "kind", "person", "item", "detail"}
+        assert len(entry["detail"]) <= retrieval.MAX_DETAIL_CHARS
+
+
+def test_the_two_day_stamps_are_two_different_facts() -> None:
+    """The day the CEO is reading on, and the newest event the prose was written over.
+
+    They come apart the moment a line goes quiet, and collapsing them would have the panel claim a
+    summary is current when what it describes is a fortnight old.
+    """
+    from simcore import time as simtime
+
+    run = _memory_run()
+    selection = _selection(run)
+    payload = selection.to_payload()
+
+    assert payload["as_of_day"] == simtime.day_of(run.state.tick)
+    assert payload["through_day"] == simtime.day_of(
+        max(event.tick for event in selection.events)
+    )
+    assert payload["through_day"] <= payload["as_of_day"]
+
+
+def test_a_hire_is_remembered_from_their_arrival_and_a_departure_stays_remembered() -> None:
+    """M36 over a line that changed. Two properties, one state, and they pull opposite ways.
+
+    A memory scope is the line as it *has been*: an arrived hire joins it, and somebody who left
+    stays in it, because the events they produced happened and the director was there for them.
+    `authorized_scope` — what a director may *speak* for — excludes the departure, and the two
+    differing is the reason `remembered_scope` exists rather than being the same call.
+    """
+    from simcore import step as sim
+
+    run = _memory_run(with_a_second_line=False)
+    run.record(sim.request_hire(run.state, DIRECTOR))
+    hire = next(iter(run.state.hires.values()))
+    run.advance_until(lambda state: hire.status == "arrived")
+
+    remembered = sim.remembered_scope(run.state, DIRECTOR)
+    assert remembered.permits_person(hire.person_id), "an arrived hire is not on the line"
+    assert not sim.remembered_scope(run.state, "dir_cs").permits_person(hire.person_id), (
+        "the hire is in another director's memory, so arrival is not scoped to the line"
+    )
+
+    # And then they leave. Departure is recorded on the state rather than driven through morale,
+    # because what is being asserted is the derivation, not the attrition rule that reaches it.
+    run.state.departed.append(hire.person_id)
+    assert sim.remembered_scope(run.state, DIRECTOR).permits_person(hire.person_id), (
+        "a departure fell out of the memory, so the run rewrites itself when somebody quits"
+    )
+
+
+def test_present_members_still_counts_a_hire_who_left(run_a_departed_hire: Any) -> None:
+    """A tripwire on a defect U14 found and did not fix, so the fix lands with its consequence.
+
+    `State.present_members` says it excludes departures and it does — for an *authored* member.
+    An arrived hire is appended from `state.hires` with no `departed` check, so a line that lost a
+    hire keeps their headcount. Measured on the shipped company: headcount stays 3 and the
+    department goes on drawing 10,800 units a day for somebody who is gone. That is a capacity and
+    morale figure rather than a scoping detail, which is why it is in the deferred defect register
+    rather than in this unit.
+
+    It is also the reason `remembered_scope` and `authorized_scope` return the same set *today*.
+    When this is fixed, a statement will stop being able to speak for a departed hire and a memory
+    will keep remembering them — which is what `remembered_scope` exists for and what the test above
+    asserts. **So when this assertion fails, delete it**: the fix is correct, and the two scopes are
+    two things from that commit onwards.
+    """
+    from simcore import step as sim
+
+    state, hire = run_a_departed_hire
+    assert hire.person_id in state.present_members(DIRECTOR), (
+        "present_members now excludes a departed hire, which is the defect fixed. Delete this test "
+        "and keep the one above it: memory is meant to remember them, and now only memory does."
+    )
+    assert sim.authorized_scope(state, DIRECTOR).permits_person(hire.person_id)
+
+
+@pytest.fixture
+def run_a_departed_hire() -> Any:
+    """A run whose director hired somebody who then left. Two callers, one expensive fixture."""
+    from simcore import step as sim
+
+    run = _memory_run(with_a_second_line=False)
+    run.record(sim.request_hire(run.state, DIRECTOR))
+    hire = next(iter(run.state.hires.values()))
+    run.advance_until(lambda state: hire.status == "arrived")
+    run.state.departed.append(hire.person_id)
+    return run.state, hire
+
+
+# -------------------------------------------------------------------------
+# The summary: every sentence resolves to an event, or nothing is shown
+# -------------------------------------------------------------------------
+
+
+def _points(*lines: str) -> Any:
+    """Parse a reply built from the lines given, asserting it parsed at all."""
+    from agents.bench import memory
+
+    parsed = memory.parse("\n".join(lines))
+    assert parsed is not None, f"the fixture reply did not parse: {lines}"
+    return parsed
+
+
+def test_a_summary_sentence_carries_the_events_it_was_written_over() -> None:
+    """The property M37 rests on: you can always ask which events a sentence came from."""
+    from agents.bench import memory
+
+    run = _memory_run()
+    selection = _selection(run)
+    seq = selection.events[0].seq
+
+    points = _points(f"POINT: The search is still open on my line. [{seq}]")
+    assert points[0].citations == (seq,)
+    assert memory.refusal_of(points, selection) == ""
+
+
+def test_a_sentence_with_nothing_behind_it_is_refused() -> None:
+    """A summary that cites nothing is prose about a company that does not exist."""
+    from agents.bench import memory
+
+    run = _memory_run()
+    selection = _selection(run)
+
+    points = _points("POINT: Morale has been sliding for a while now. []")
+    assert "cites nothing" in memory.refusal_of(points, selection)
+
+
+def test_a_sentence_citing_outside_the_selection_is_refused() -> None:
+    """R23 through the read surface: a summary may only cite what it was shown.
+
+    The sequence used is a real one from the run and deliberately *not* in the selection, so the
+    refusal is about scope rather than about a number nobody has ever seen.
+    """
+    from agents.bench import memory
+
+    run = _memory_run()
+    selection = _selection(run)
+    outside = max(envelope.seq for envelope in run.log) + 1
+
+    points = _points(f"POINT: Something happened that I am not entitled to quote. [{outside}]")
+    refusal = memory.refusal_of(points, selection)
+    assert f"sequence {outside}" in refusal and "resolves to nothing" in refusal
+
+
+def test_a_summary_that_invents_a_figure_is_refused() -> None:
+    """M19's rule, applied to prose the CEO reads as fact rather than as a briefing."""
+    from agents.bench import memory
+
+    run = _memory_run()
+    selection = _selection(run)
+    seq = selection.events[0].seq
+
+    points = _points(f"POINT: My line lost 47 hours to this last week. [{seq}]")
+    assert "which resolves" in memory.refusal_of(points, selection)
+
+
+def test_a_summary_may_say_the_day_an_event_happened_on() -> None:
+    """The figure a director actually needs, and the one the prompt puts in front of them.
+
+    The day is on the evidence line precisely so this sentence is legal: a director converting a
+    tick into a day would be deriving a figure, which is what M19 refuses.
+    """
+    from simcore import time as simtime
+
+    from agents.bench import memory
+
+    run = _memory_run()
+    selection = _selection(run)
+    event = selection.events[0]
+    day = simtime.day_of(event.tick)
+
+    points = _points(f"POINT: This landed on day {day}. [{event.seq}]")
+    assert memory.refusal_of(points, selection) == ""
+
+
+def test_a_summary_that_says_what_to_do_is_refused() -> None:
+    """M18 through a different door.
+
+    The memory panel opens beside an open decision, so a summary that recommends is the ranking a
+    briefing is refused for — arriving on the surface that was not built to check it, if it did not.
+    """
+    from agents.bench import memory
+
+    run = _memory_run()
+    selection = _selection(run)
+    seq = selection.events[0].seq
+
+    points = _points(f"POINT: I recommend hiring a second recruiter now. [{seq}]")
+    assert "ranks the options" in memory.refusal_of(points, selection)
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "The search is still open.",
+        "POINT: The search is still open.",
+        "POINT: The search is still open. [nine]",
+        "",
+        "POINT: [4]",
+    ],
+)
+def test_a_reply_that_ignores_the_summary_format_does_not_parse(reply: str) -> None:
+    """Strict, for the reason `prompts.parse` is: a lenient parse is a guard that silently passed."""
+    from agents.bench import memory
+
+    assert memory.parse(reply) is None
+
+
+def test_a_summary_longer_than_it_was_asked_for_does_not_parse() -> None:
+    """The cap is on sentences, and a model that ignored it wrote something else."""
+    from agents.bench import memory
+
+    too_many = ["POINT: A thing happened. [4]"] * (memory.MAX_SUMMARY_POINTS + 1)
+    assert memory.parse("\n".join(too_many)) is None
+
+
+def test_prose_around_the_points_is_skipped_rather_than_refused() -> None:
+    """A model that answered correctly and then offered to help has not written a bad summary."""
+    from agents.bench import memory
+
+    points = _points(
+        "Here is what I have:",
+        "POINT: The search is still open. [4]",
+        "Hope that helps.",
+    )
+    assert len(points) == 1
+
+
+# -------------------------------------------------------------------------
+# The whole memory read, over a real log
+# -------------------------------------------------------------------------
+
+
+def _memory_reply(selection: Any, sentence: str = "The search is still open on my line.") -> str:
+    """A reply in the format, citing an event that is actually in this selection.
+
+    Built from the run rather than canned, for the reason `A_GOOD_REPLY_UNCITED` exists: which
+    sequences are citable is a property of the log, and a fixture that guessed one would be
+    asserting the guard's failure path while claiming to test its success path.
+    """
+    return f"POINT: {sentence} [{selection.events[0].seq}]"
+
+
+def _memory_scope(run: Any) -> Any:
+    from simcore import step as sim
+
+    return sim.remembered_scope(run.state, DIRECTOR)
+
+
+def test_a_memory_read_with_no_provider_configured_renders_its_derived_half() -> None:
+    """Covers M38. The keyless path, which is the path most players are on.
+
+    Everything except the prose is derived from the log, so this answers with the events that
+    mattered, the counts, and the two day stamps — and says the summary is absent rather than
+    standing a canned paragraph in its place. Absence is not a fallback here for the same reason it
+    is not one for a briefing (M20): there is no bench to have failed.
+    """
+    import agents.main as agents_main
+    from agents.bench import memory
+
+    run = _memory_run()
+    monkey = pytest.MonkeyPatch()
+    try:
+        monkey.setattr(agents_main, "_read_run", lambda _run_id: run.log)
+        monkey.setattr(agents_main, "bench", lambda *_a, **_k: _gateway(None))
+        payload = agents_main.read_memory(
+            "run-memory", authorized=_memory_scope(run), as_of_tick=run.state.tick
+        )
+    finally:
+        monkey.undo()
+
+    assert payload is not None
+    assert payload["events"], "the derived selection is empty on the keyless path"
+    assert payload["summary"]["status"] == memory.ABSENT
+    assert payload["summary"]["points"] == []
+    assert payload["summary"]["fallback"] == "", "an absent bench is not a failed one"
+    assert payload["summary"]["model_identity"] == ""
+
+
+def test_a_memory_read_with_a_provider_carries_the_prose_and_its_citations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The whole leg: derived selection, generated prose, guards run, citations resolvable."""
+    import agents.main as agents_main
+    from agents.bench import memory
+
+    run = _memory_run()
+    selection = _selection(run)
+    provider = answering(ok_payload("openai", _memory_reply(selection)))
+    agents_main = _answering_leg(monkeypatch, run, provider)
+
+    payload = agents_main.read_memory(
+        "run-memory", authorized=_memory_scope(run), as_of_tick=run.state.tick
+    )
+
+    assert payload is not None
+    summary = payload["summary"]
+    assert summary["status"] == memory.WRITTEN
+    assert summary["model_identity"], "a written summary names the model that wrote it"
+    assert summary["fallback"] == ""
+
+    shown = {entry["seq"] for entry in payload["events"]}
+    for point in summary["points"]:
+        assert point["citations"], "a sentence with no citation reached the surface"
+        assert set(point["citations"]) <= shown
+
+    # The prompt is built out of the same projection the surface renders, and it says what it is.
+    sent = " ".join(str(message["content"]) for message in provider.sent_body()["messages"])
+    assert "[EVENTS]" in sent and "[DIRECTOR]" in sent
+
+
+def test_a_summary_that_ranks_is_refused_and_the_selection_still_renders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R5's single exit on the read surface, and the half that must survive it.
+
+    A briefing that is refused becomes the scripted reply, because a conversation with nothing in it
+    is a worse answer. A *summary* that is refused becomes an absence with a named condition, and
+    the derived selection stands — there is no canned memory to substitute, and inventing one would
+    put a history in a director's mouth.
+    """
+    import agents.main as agents_main
+    from agents.bench import memory
+
+    run = _memory_run()
+    selection = _selection(run)
+    ranked = _memory_reply(selection, "I recommend hiring a second recruiter now.")
+    agents_main = _answering_leg(monkeypatch, run, answering(ok_payload("openai", ranked)))
+
+    payload = agents_main.read_memory(
+        "run-memory", authorized=_memory_scope(run), as_of_tick=run.state.tick
+    )
+
+    assert payload is not None
+    assert payload["summary"]["status"] == memory.REFUSED
+    assert payload["summary"]["fallback"] == stmt.FALLBACK_GUARD_REFUSED
+    assert payload["summary"]["points"] == []
+    assert payload["events"], "the derived half was lost with the prose"
+
+
+@pytest.mark.parametrize(
+    ("kind", "reason"),
+    [(FailureKind.TIMEOUT, "timeout"), (FailureKind.RATE_LIMITED, "rate_limited")],
+)
+def test_a_provider_failure_names_its_condition_on_the_memory_surface(
+    kind: FailureKind, reason: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One closed set of conditions across both surfaces, so the client needs one vocabulary."""
+    import agents.main as agents_main
+    from agents.bench import memory
+
+    run = _memory_run()
+    agents_main = _answering_leg(monkeypatch, run, answering(ok_payload("openai", "irrelevant")))
+    monkeypatch.setattr(
+        memory.guards,
+        "completed",
+        lambda *_a, **_k: modelgw.Failure(kind=kind, detail="under test"),
+    )
+
+    payload = agents_main.read_memory(
+        "run-memory", authorized=_memory_scope(run), as_of_tick=run.state.tick
+    )
+
+    assert payload is not None
+    assert payload["summary"]["status"] == memory.REFUSED
+    assert payload["summary"]["fallback"] == reason
+    assert reason in stmt.FALLBACK_REASONS, "the memory surface invented a condition"
+
+
+def test_the_second_read_of_one_memory_costs_no_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The regeneration cadence, which is the cache rather than a timer (R3).
+
+    The address is the assembled prompt, and the prompt holds the selection — so opening the panel
+    twice on one sim-day is one call, and the summary is re-asked exactly when what mattered
+    changes. A timer would have re-asked for the same six sentences on a schedule nobody chose, and
+    an as-of stamp in the key would have done it once a day for the same reason.
+    """
+    import agents.main as agents_main
+    from agents.bench import memory
+
+    run = _memory_run()
+    selection = _selection(run)
+    provider = answering(ok_payload("openai", _memory_reply(selection)))
+    agents_main, _cache, ledger = _leg_with_a_cache(monkeypatch, run, provider)
+
+    scope = _memory_scope(run)
+    first = agents_main.read_memory("run-memory", authorized=scope, as_of_tick=run.state.tick)
+    second = agents_main.read_memory("run-memory", authorized=scope, as_of_tick=run.state.tick)
+
+    assert first is not None and second is not None
+    assert first["summary"]["points"] == second["summary"]["points"]
+    assert second["summary"]["status"] == memory.WRITTEN
+    spend = ledger.read("run-memory")
+    assert spend.calls == 1, f"the second panel open reached a provider: {spend}"
+    assert spend.cache_hits == 1
+
+
+def test_a_refused_summary_is_not_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    """U12's rule, and it binds harder here than on a statement.
+
+    A summary is re-asked whenever the selection changes, so an entry written for a reply the guards
+    refused would be served back on every panel open for the rest of the lineage — with "switch to a
+    better model" as the remedy that changes nothing, because the address is the situation.
+    """
+    import agents.main as agents_main
+
+    run = _memory_run()
+    selection = _selection(run)
+    ranked = _memory_reply(selection, "The best option is to hire again.")
+    agents_main, cache, _ledger = _leg_with_a_cache(
+        monkeypatch, run, answering(ok_payload("openai", ranked))
+    )
+
+    agents_main.read_memory(
+        "run-memory", authorized=_memory_scope(run), as_of_tick=run.state.tick
+    )
+
+    assert cache.by_lineage == {}, f"a refused summary was cached: {cache.by_lineage}"
+
+
+def test_a_log_this_process_cannot_read_is_no_memory_rather_than_an_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The route answers 503 off the back of this, and a stack trace is a worse answer."""
+    import agents.main as agents_main
+
+    run = _memory_run()
+
+    def explode(_run_id: str) -> Any:
+        raise RuntimeError("the store is gone")
+
+    monkeypatch.setattr(agents_main, "_read_run", explode)
+    assert (
+        agents_main.read_memory(
+            "run-memory", authorized=_memory_scope(run), as_of_tick=run.state.tick
+        )
+        is None
+    )
+
+
+def test_the_first_read_is_derived_and_costs_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The panel opens on a log read, and the prose is a second question.
+
+    Two properties in one: the derived half comes back with a bench configured and no provider is
+    reached, and the status says the prose is still to come rather than that there is none.
+    """
+    import agents.main as agents_main
+    from agents.bench import memory
+
+    run = _memory_run()
+    selection = _selection(run)
+    provider = answering(ok_payload("openai", _memory_reply(selection)))
+    agents_main, _cache, ledger = _leg_with_a_cache(monkeypatch, run, provider)
+
+    payload = agents_main.read_memory(
+        "run-memory",
+        authorized=_memory_scope(run),
+        as_of_tick=run.state.tick,
+        with_summary=False,
+    )
+
+    assert payload is not None
+    assert payload["events"], "the first read carries nothing to render"
+    assert payload["summary"]["status"] == memory.PENDING
+    assert ledger.read("run-memory") == Spend(), "the panel's first read reached a provider"

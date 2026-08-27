@@ -85,7 +85,9 @@ def prose_from_provider(situation: Situation, gateway: BoundedGateway) -> Prose 
         checkpoint=situation.checkpoint,
         retrieved=situation.retrieved,
     )
-    answer = _completed(gateway, situation.request.run_id, prompt, cache_key_for(situation, prompt))
+    answer = completed(
+        gateway, situation.request.run_id, prompt, cache_key_for(situation, prompt)
+    )
 
     if isinstance(answer, Failure):
         if answer.kind is FailureKind.NOT_CONFIGURED:
@@ -181,7 +183,7 @@ def refusal_of(answer: dict[str, Any], situation: Situation) -> str:
     return stmt.refusal(answer, authorized=situation.request.authorized, offered=situation.offered)
 
 
-def _completed(
+def completed(
     gateway: BoundedGateway, run_id: str, prompt: Prompt, key: CacheKey | None = None
 ) -> Completion | Failure:
     """One bounded call, from a worker thread with no event loop of its own.
@@ -190,6 +192,11 @@ def _completed(
     parameter of this call rather than a step threaded through the leg: `key` addresses the
     answer, and the gateway serves it from the store before it spends anything, or writes it there
     after it does.
+
+    **Public since U14, which is what "the one place" now has to mean.** A memory summary is a
+    second kind of call and it goes through this function rather than around it, so the loop
+    discipline below, the typed-failure guarantee and the cache seam are stated once. A second
+    `asyncio.run` anywhere under `bench/` is the bug this signature exists to prevent.
 
     The kernel dispatches the producer through `asyncio.to_thread`, so this runs on a thread where
     `asyncio.run` is legal and the gateway's `httpx.AsyncClient` is created and closed inside one

@@ -114,9 +114,9 @@ def build(
     del tacit
 
     blocks = [
-        _block("DIRECTOR", _director_lines(persona)),
-        _block("CHECKPOINT", _checkpoint_lines(checkpoint)),
-        _block("EVIDENCE", _evidence_lines(retrieved)),
+        block("DIRECTOR", _director_lines(persona)),
+        block("CHECKPOINT", _checkpoint_lines(checkpoint)),
+        block("EVIDENCE", _evidence_lines(retrieved)),
     ]
     return Prompt(
         system=SYSTEM,
@@ -165,13 +165,18 @@ def parse(text: str) -> Reply | None:
 # =========================================================================
 
 
-def _block(name: str, lines: list[str]) -> str:
+def block(name: str, lines: list[str]) -> str:
     """One named, delimited block of data.
 
     The name is repository-authored and the lines are not, so every interpolated value has already
-    been through `_flat`. Written as `[NAME]` … `[/NAME]` rather than as XML tags because the
+    been through `flat`. Written as `[NAME]` … `[/NAME]` rather than as XML tags because the
     scrubbing that keeps a value from closing the block early is then a single character class rather
     than an escaping scheme, and a scheme is the kind of thing that has an exception in it.
+
+    **Public because U14 builds a second prompt.** The delimiting and the scrubbing are one rule
+    about how authored text is handed to a provider, and a memory prompt that wrote its own blocks
+    would be the second place that rule lived — with the failure mode being a scenario field that
+    can close its own block on one surface and not the other.
     """
     body = "\n".join(line for line in lines if line)
     return f"[{name}]\n{body}\n[/{name}]"
@@ -179,38 +184,38 @@ def _block(name: str, lines: list[str]) -> str:
 
 def _director_lines(persona: Persona) -> list[str]:
     lines = [
-        f"you are: {_flat(persona.name)}, {_flat(persona.title)}",
-        f"department: {_flat(persona.dept)}",
-        f"what you own: {_flat(persona.responsibility)}",
+        f"you are: {flat(persona.name)}, {flat(persona.title)}",
+        f"department: {flat(persona.dept)}",
+        f"what you own: {flat(persona.responsibility)}",
     ]
     if persona.tools:
         # Described, never invoked (M16). Said in the prompt as well as on the surface, because a
         # director told it has a tool will otherwise report having used one.
         lines.append(
             "tools you are described as having, none of which you can run: "
-            + ", ".join(_flat(tool) for tool in persona.tools)
+            + ", ".join(flat(tool) for tool in persona.tools)
         )
     return lines
 
 
 def _checkpoint_lines(checkpoint: dict[str, object]) -> list[str]:
     lines = [
-        f"the decision: {_flat(str(checkpoint.get('label', '')))}",
-        f"as put to the CEO: {_flat(str(checkpoint.get('prompt', '')))}",
+        f"the decision: {flat(str(checkpoint.get('label', '')))}",
+        f"as put to the CEO: {flat(str(checkpoint.get('prompt', '')))}",
         "options on the table, in no order:",
     ]
     options = checkpoint.get("options", [])
     for option in options if isinstance(options, list) else ():
         if not isinstance(option, dict):
             continue
-        label = _flat(str(option.get("label", "")))
-        detail = _flat(str(option.get("detail", "")))
+        label = flat(str(option.get("label", "")))
+        detail = flat(str(option.get("detail", "")))
         lines.append(f"  - {label}: {detail}" if detail else f"  - {label}")
         moves: list[str] = []
         effect = option.get("effect", {})
         if isinstance(effect, dict):
             moves.extend(
-                f"{_flat(str(key))} {value:+d}"
+                f"{flat(str(key))} {value:+d}"
                 for key, value in sorted(effect.items())
                 if isinstance(value, int) and not isinstance(value, bool)
             )
@@ -241,10 +246,10 @@ def _evidence_lines(retrieved: object) -> list[str]:
         parts = [
             f"seq {entry.get('seq')}",
             f"day {simtime.day_of(tick)}",
-            _flat(str(entry.get("kind", ""))),
+            flat(str(entry.get("kind", ""))),
         ]
         for key in ("person", "item", "detail"):
-            value = _flat(str(entry.get(key, "")))
+            value = flat(str(entry.get(key, "")))
             if value:
                 parts.append(value)
         lines.append("  " + " | ".join(parts))
@@ -258,9 +263,9 @@ def _evidence_lines(retrieved: object) -> list[str]:
     if isinstance(draw, dict) and draw:
         lines.append(
             "your department, right now: "
-            + ", ".join(f"{_flat(str(key))} {int(value)}" for key, value in sorted(draw.items()))
+            + ", ".join(f"{flat(str(key))} {int(value)}" for key, value in sorted(draw.items()))
         )
-    note = _flat(str(payload.get("unlocking_note", "")))
+    note = flat(str(payload.get("unlocking_note", "")))
     if note:
         lines.append(f"what unlocked this work: {note}")
     return lines
@@ -274,8 +279,11 @@ def _evidence_lines(retrieved: object) -> list[str]:
 _UNSAFE = re.compile(r"[\[\]\r\n\t]+")
 
 
-def _flat(text: str) -> str:
-    """One line of authored text, unable to end its own block."""
+def flat(text: str) -> str:
+    """One line of authored text, unable to end its own block.
+
+    Public for the same reason `block` is: one scrubbing rule, however many prompts.
+    """
     return _UNSAFE.sub(" ", text).strip()
 
 

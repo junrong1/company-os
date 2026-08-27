@@ -7,10 +7,13 @@ events touching its own reporting line since a bounded point, what its departmen
 doing, and the note on the deliverable that unlocked the item it is being asked about. All three are
 lookups.
 
-**Line-scoped by construction, with no reachable unscoped variant** (R23). `retrieve` is the only
-function here that returns events and it cannot be called without an `Authorized`, which it does not
-compute: the scope is derived once inside `step()` from folded state and recorded on the request, so
-this module is *told* what it may read. That is the strong form of default-deny — a reader that does
+**Line-scoped by construction, with no reachable unscoped variant** (R23). Two functions here
+return events — `scan`, the admission pass, and `retrieve`, the statement's window onto it — and
+neither can be called without an `Authorized`, which neither computes: the scope is derived once
+inside `step()` from folded state and recorded on the request, so this module is *told* what it may
+read. U14's memory is a third window onto the same `scan`, which is why that pass is a function
+rather than a loop inside `retrieve`: one filter, several windows, and nothing that reads the log
+without a scope. That is the strong form of default-deny — a reader that does
 not derive its own scope cannot widen it — and it is what gives U15's Authorization guard a
 signature to constrain rather than a call site to intercept.
 
@@ -201,7 +204,8 @@ def retrieve(
         (envelope for envelope in ordered if envelope.kind is EventKind.GENESIS), None
     )
 
-    kept: list[RetrievedEvent] = []
+    kept = list(scan(ordered, authorized=authorized, since_tick=since_tick, at_tick=at_tick))
+
     #: The authored monthly draw comes from genesis and the load it is producing from the most
     #: recent `LOAD_CHANGED` *inside the window*. Two sources because they are two facts: what the
     #: department is committed to, and how far through it is.
@@ -212,29 +216,23 @@ def retrieve(
             draw["monthly_hours"] = int(authored[authorized.director])
 
     for envelope in ordered:
+        # Its own pass rather than a branch inside `scan`, because it is not an event a director
+        # may quote: it is one company-wide payload read for one department's figure, and it
+        # carries no sequence precisely so that nothing can cite it. Keeping it out of `scan` is
+        # what lets that function be "every event this scope places" with no exceptions in it.
+        if envelope.kind is not EventKind.LOAD_CHANGED:
+            continue
         payload = envelope.decoded_payload()
         tick = int(payload.get("tick", envelope.tick))
         if not since_tick <= tick < at_tick:
             continue
-
-        if envelope.kind is EventKind.LOAD_CHANGED:
-            # Read for the department's own figure only. The payload is company-wide — one entry per
-            # director — so taking it whole would be the cross-line read this module exists to
-            # prevent, arriving through a field rather than through an event, which is the harder
-            # half to notice.
-            mine = payload.get("load", {})
-            if isinstance(mine, dict) and authorized.director in mine:
-                draw["load_permille"] = int(mine[authorized.director])
-            continue
-
-        if envelope.kind not in RETRIEVABLE:
-            continue
-
-        entry = _as_entry(envelope, payload, authorized)
-        if entry is None:
-            continue
-
-        kept.append(entry)
+        # Read for the department's own figure only. The payload is company-wide — one entry per
+        # director — so taking it whole would be the cross-line read this module exists to
+        # prevent, arriving through a field rather than through an event, which is the harder
+        # half to notice.
+        mine = payload.get("load", {})
+        if isinstance(mine, dict) and authorized.director in mine:
+            draw["load_permille"] = int(mine[authorized.director])
 
     if len(kept) > MAX_EVENTS:
         # The most recent, because a briefing is about the decision point in front of the CEO. Kept
@@ -254,6 +252,40 @@ def retrieve(
         draw=draw,
         unlocking_note=_unlocking_note(genesis, kept, owning_item, authorized),
     )
+
+
+def scan(
+    events: Iterable[Envelope],
+    *,
+    authorized: stmt.Authorized,
+    since_tick: int,
+    at_tick: int,
+) -> tuple[RetrievedEvent, ...]:
+    """Every event in `[since_tick, at_tick)` that this scope places, in sequence order.
+
+    **The one admission pass, and the reason it is public** (R23). `retrieve` bounds it to three
+    sim-days and caps it at what a statement may carry; `memory.select` runs it over the whole run
+    and then ranks what came back. Both are windows onto the same filter — the kind table, the
+    person and item keys, and the default-deny that drops an event naming neither — and that filter
+    is the whole of what keeps one line's events out of another's. A memory that re-implemented it
+    would be the second place the boundary lived, and the first divergence would be silent.
+
+    It cannot be called without an `Authorized`, and it does not compute one. That is the same
+    signature `retrieve` has and it is deliberate: a reader that cannot derive its own scope cannot
+    widen it.
+    """
+    kept: list[RetrievedEvent] = []
+    for envelope in events:
+        if envelope.kind not in RETRIEVABLE:
+            continue
+        payload = envelope.decoded_payload()
+        tick = int(payload.get("tick", envelope.tick))
+        if not since_tick <= tick < at_tick:
+            continue
+        entry = _as_entry(envelope, payload, authorized)
+        if entry is not None:
+            kept.append(entry)
+    return tuple(kept)
 
 
 def _as_entry(

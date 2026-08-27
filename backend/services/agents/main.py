@@ -606,7 +606,7 @@ def compose_statement(
     does, and the property it proves is worth more than the line it costs.
 
     The gateway is built per statement rather than held, and it is now built by the *caller* rather
-    than here. `guards._completed` explains the per-statement half: the call runs on a worker thread
+    than here. `guards.completed` explains the per-statement half: the call runs on a worker thread
     with its own event loop, and an `httpx.AsyncClient` created in the launcher's loop and awaited in
     this one is a cross-loop bug this shape cannot have. What changed is who holds it, and the reason
     is the cache — the answer's entry is written only once the guards have accepted it, so the object
@@ -735,6 +735,95 @@ def _answer_from(situation: Any, prose: tuple[str, str, tuple[int, ...], str, st
         context=situation.retrieved.to_payload(),
         fallback=fallback,
     ).to_answer()
+
+
+# =========================================================================
+# The memory read (U14)
+# =========================================================================
+
+
+def read_memory(
+    run_id: str, *, authorized: Any, as_of_tick: int, with_summary: bool = True
+) -> dict[str, Any] | None:
+    """One director's memory as the CEO reads it, or `None` if the log is unreadable.
+
+    **It cannot be called without a scope, and this service cannot make one.** `authorized` is a
+    `simcore.statement.Authorized` derived in the kernel from folded state — `step.remembered_scope`
+    — and handed here by the launcher, exactly as a statement request's scope is. That is why there
+    is no route for this on the agents surface: a mounted endpoint taking a director id would have
+    to derive its own scope, and R23's whole shape is that the reader cannot. The one door onto the
+    log is `_read_run`, and everything past it is filtered by a scope somebody else computed.
+
+    **The selection is derived and only the prose is generated** (M38). With no provider configured
+    this still answers — the events that mattered, the counts, the two day stamps — and the summary
+    says it is absent. A store this cannot read is `None` rather than an exception, because the
+    caller is a read route and a stack trace is a worse answer than a sentence.
+
+    **`with_summary=False` is what lets the panel open at once.** The derived half is a read of the
+    log and is fast; the prose is a provider call and is not. So the client asks twice — once for
+    the selection, which it renders immediately, and once for the summary, which replaces a stated
+    pending line when it lands. That is not a narrower *scope*, it is less work: the same events
+    come back either way, and a caller that omits the prose learns nothing extra by doing so.
+
+    The pending status is only ever reported when a bench is actually present. On a keyless run the
+    first read already says `absent`, so the client makes no second call and the panel never shows a
+    pending line that cannot resolve — which would be M38 failing in the one place it is most
+    visible.
+
+    A roster that does not describe the director is a summary that is absent rather than refused.
+    From the CEO's side "there is no bench" and "there is nobody to write it" are the same absence,
+    the derived selection renders either way, and the distinction that matters — whether a bench
+    answered and was not usable — is the one `REFUSED` keeps.
+    """
+    from agents.bench import memory, personas
+
+    try:
+        events = _read_run(run_id)
+    except Exception as exc:  # noqa: BLE001 - an unreadable log is a read that failed, not a crash
+        log.warning(
+            "could not read the run's log for a director's memory",
+            extra={"run": run_id, "director": authorized.director, "error": str(exc)},
+        )
+        return None
+
+    selection = memory.select(events, authorized=authorized, as_of_tick=as_of_tick)
+
+    if not with_summary:
+        gateway = bench()
+        waiting = memory.Summary.pending() if gateway.present else memory.Summary.absent()
+        return memory.Memory(selection=selection, summary=waiting).to_payload()
+
+    genesis = next(
+        (envelope for envelope in events if envelope.kind is EventKind.GENESIS), None
+    )
+    persona = (
+        personas.persona_for(genesis.decoded_payload(), authorized.director)
+        if genesis is not None
+        else None
+    )
+    if persona is None:
+        log.info(
+            "no persona for this director, so the memory renders without prose",
+            extra={"run": run_id, "director": authorized.director},
+        )
+        return memory.Memory(selection=selection, summary=memory.Summary.absent()).to_payload()
+
+    gateway = bench()
+    try:
+        summary = memory.summarise(
+            selection, persona=persona, gateway=gateway, run_id=run_id
+        )
+    except Exception as exc:  # noqa: BLE001 - the prose is optional; the selection is not
+        # The selection is derived from the log and is already in hand, so a failure in the half
+        # that needs a provider must not cost the half that does not. `guards.completed` answers
+        # with a typed failure rather than raising, so this is for this module's own mistakes.
+        log.warning(
+            "the memory summary could not be produced; the derived selection stands alone",
+            extra={"run": run_id, "director": authorized.director, "error": str(exc)},
+        )
+        summary = memory.Summary.refused(str(modelgw.FailureKind.GATEWAY_FAULT))
+
+    return memory.Memory(selection=selection, summary=summary).to_payload()
 
 
 # =========================================================================
