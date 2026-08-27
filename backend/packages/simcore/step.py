@@ -1172,7 +1172,7 @@ def _statement_refusal(
     # the item was reassigned across lines while the director was thinking — and the message names
     # both rather than asserting the one that happens to be more common. Either way the statement is
     # about work this producer does not own, which is the fact that decides it.
-    authorized = _authorized_scope(state, state.line_of_assignee(item.assignee))
+    authorized = authorized_scope(state, state.line_of_assignee(item.assignee))
     if authorized.director != producer:
         return (
             f"{producer!r} produced a statement about an item in {authorized.director!r}'s line: "
@@ -1220,24 +1220,82 @@ def _offered_at(state: State, item_id: str, assignee: str) -> stmt.Offered | Non
     return stmt.Offered.from_checkpoint(spec, person.cp_index)
 
 
-def _authorized_scope(state: State, director_id: str) -> stmt.Authorized:
-    """What this director may read, derived from folded state (R23).
+def authorized_scope(state: State, director_id: str) -> stmt.Authorized:
+    """What this director may read *now*, derived from folded state (R23).
 
-    The one derivation. `step()` records it on the request so the leg is *told* its scope, and this
-    same function re-derives it at the landing tick so the check does not trust what it recorded. A
-    second derivation in the agents service would be the second place the rule lived, and the two
-    would disagree the first time a reassignment moved an item between lines.
+    The one derivation for a statement. `step()` records it on the request so the leg is *told* its
+    scope, and this same function re-derives it at the landing tick so the check does not trust
+    what it recorded. A second derivation in the agents service would be the second place the rule
+    lived, and the two would disagree the first time a reassignment moved an item between lines.
+
+    **Public because a second reader exists now, and it is not a second derivation.** U14's memory
+    surface is a read over the same log under the same kind of scope, and the kernel is the only
+    component that holds folded state — so it derives that scope here, beside this one, and hands
+    it to the leg exactly as `step()` does. What it must not become is a scope the agents service
+    computes: `bench/` cannot call this, because `simcore` is not importable from a bench module
+    that has no state to call it with.
     """
     return stmt.authorized_for(
         state.scenario,
         director_id,
         line_members=state.present_members(director_id),
-        line_items=[
-            item_id
-            for item_id, item in state.items.items()
-            if item.assignee and state.line_of_assignee(item.assignee) == director_id
-        ],
+        line_items=_line_items(state, director_id),
     )
+
+
+def remembered_scope(state: State, director_id: str) -> stmt.Authorized:
+    """What this director may read about their line's *past* (M36).
+
+    Everyone the scenario ever put in this line, plus every hire that ever arrived into it, whether
+    or not they are still here. A memory that lost its departures would rewrite the run every time
+    somebody quit: the events those people produced happened, and the director was there for them.
+
+    **It returns the same set as `authorized_scope` today, and that is a defect over there rather
+    than a redundancy here.** Two independent reasons make the sets agree. A departed *authored*
+    member is retained by `authorized_for` itself, which starts from `scenario.lines` — the roster
+    rather than the roll call — and that is deliberate: a statement's evidence window is three days,
+    so a recent departure is this line's recent history. A departed *hire* is retained by
+    `present_members`, which filters `scenario.lines` on `departed` and then appends arrived hires
+    with no such check — so a line that lost a hire keeps their headcount, their morale
+    contribution and their share of the daily draw. That one is a live capacity defect, measured on
+    the shipped company (headcount 3 → 3, 10,800 units a day for somebody who left), recorded in the
+    deferred defect register by U14, and deliberately not fixed here: it moves a metric, and a read
+    surface is the wrong unit to move one from.
+
+    This function is what keeps a memory correct through that fix. When `present_members` stops
+    counting a departed hire, `authorized_scope` will stop admitting them and this will not —
+    without either caller changing, and without anybody having to notice that a memory needed to.
+
+    It is not wider in any other direction. The items are the ones assigned into the line now, so an
+    item reassigned to another line takes its item-keyed events with it — its *person*-keyed events
+    stay, because those name people who are still this director's. That is the honest reading of
+    "what a director carries forward about their reporting line", and the alternative — every item
+    the line ever touched — would need a history of assignment this state does not keep.
+    """
+    return stmt.authorized_for(
+        state.scenario,
+        director_id,
+        line_members=[
+            hire.person_id
+            for hire in state.hires.values()
+            if hire.status == "arrived" and hire.director_id == director_id
+        ],
+        line_items=_line_items(state, director_id),
+    )
+
+
+def _line_items(state: State, director_id: str) -> list[str]:
+    """The items assigned into this line, by the reporting line of whoever holds each one.
+
+    Shared by both scopes above so that "which work is this director's" is one expression. It was
+    written twice for one line of code and the second copy is exactly where a reassignment rule
+    would eventually be applied to one caller and not the other.
+    """
+    return [
+        item_id
+        for item_id, item in state.items.items()
+        if item.assignee and state.line_of_assignee(item.assignee) == director_id
+    ]
 
 
 def _raise_statement_requests(state: State) -> list[Emitted]:
@@ -1282,7 +1340,7 @@ def _raise_statement_requests(state: State) -> list[Emitted]:
         # scope `Authorized` refuses is unreachable from here — `director_id` comes from
         # `scenario.directors` and cannot be blank. The refusal exists for `Authorized.from_payload`,
         # which builds one from a payload nothing in this process wrote.
-        authorized = _authorized_scope(state, director_id)
+        authorized = authorized_scope(state, director_id)
 
         try:
             events.extend(

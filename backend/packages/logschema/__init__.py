@@ -13,6 +13,7 @@ to reach the code that appends them. Discovered by the import-boundary test, whi
 moment the report service tried to import `kernel.store` to read the log.
 """
 
+from logschema import lineage
 from logschema.tables import (
     APPEND_ONLY_TABLES,
     DDL_VERSION,
@@ -31,6 +32,7 @@ from logschema.tables import (
 
 __all__ = [
     "APPEND_ONLY_TABLES",
+    "lineage",
     "DDL_VERSION",
     "MUTABLE_TABLES",
     "append_only_ddl",

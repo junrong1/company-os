@@ -359,12 +359,12 @@ class Offered:
         `{hours}` is not a figure anybody was shown.
         """
         checkpoint = item.checkpoints[cp_index]
-        figures: set[int] = set(_digits_in(work.rendered_prompt(item, cp_index)))
-        figures.update(_digits_in(checkpoint.label))
+        figures: set[int] = set(figures_in(work.rendered_prompt(item, cp_index)))
+        figures.update(figures_in(checkpoint.label))
         for option in checkpoint.options:
-            figures.update(_digits_in(option.label))
-            figures.update(_digits_in(option.detail))
-            figures.update(_digits_in(option.note))
+            figures.update(figures_in(option.label))
+            figures.update(figures_in(option.detail))
+            figures.update(figures_in(option.note))
             # Zero is skipped in both adapters, and the reason is agreement rather than tidiness:
             # `catalog_to_state` splits the draw out of `effect` and writes it as `draw_delta: 0`
             # where an option does not move it, so admitting zero here would make the wire's reading
@@ -392,8 +392,8 @@ class Offered:
         if not isinstance(checkpoint, Mapping):
             return cls(labels=(), figures=frozenset())
 
-        figures: set[int] = set(_digits_in(str(checkpoint.get("prompt", ""))))
-        figures.update(_digits_in(str(checkpoint.get("label", ""))))
+        figures: set[int] = set(figures_in(str(checkpoint.get("prompt", ""))))
+        figures.update(figures_in(str(checkpoint.get("label", ""))))
         labels: list[str] = []
         options = checkpoint.get("options", [])
         for option in options if isinstance(options, list) else ():
@@ -401,7 +401,7 @@ class Offered:
                 continue
             labels.append(str(option.get("label", "")))
             for key in ("label", "detail", "note"):
-                figures.update(_digits_in(str(option.get(key, ""))))
+                figures.update(figures_in(str(option.get(key, ""))))
             effect = option.get("effect", {})
             if isinstance(effect, Mapping):
                 figures.update(
@@ -593,7 +593,7 @@ def _resolvable(context: Mapping[str, Any], offered: Offered) -> frozenset[int]:
             # `day_of` rather than a division written here: one convention, in the module that owns
             # it, so a guard cannot disagree with the surface about which day a tick is.
             figures.add(simtime.day_of(tick))
-        figures.update(_digits_in(str(entry.get("detail", ""))))
+        figures.update(figures_in(str(entry.get("detail", ""))))
 
     draw = context.get("draw", {})
     if isinstance(draw, Mapping):
@@ -601,7 +601,7 @@ def _resolvable(context: Mapping[str, Any], offered: Offered) -> frozenset[int]:
             value for value in draw.values() if isinstance(value, int) and not isinstance(value, bool)
         )
 
-    figures.update(_digits_in(str(context.get("unlocking_note", ""))))
+    figures.update(figures_in(str(context.get("unlocking_note", ""))))
     return frozenset(figures)
 
 
@@ -624,8 +624,16 @@ def _flattened(text: str) -> str:
     return f" {_NOT_WORD.sub(' ', text.lower()).strip()} "
 
 
-def _digits_in(text: str) -> set[int]:
-    """Every whole number written in digits in this text."""
+def figures_in(text: str) -> set[int]:
+    """Every whole number written in digits in this text.
+
+    **Public because U14 reads it, and one regex is the whole reason.** A director's memory
+    summary is held to the same line M19 draws — a figure is a numeral, and a numeral resolves to
+    something the director was shown — and that prose is produced in the agents service rather
+    than checked here, because it never enters the log. Two implementations of "what counts as a
+    figure" would drift the first time somebody taught one of them about a thousands separator,
+    and the symptom would be a summary refused for a number a briefing was allowed to say.
+    """
     found: set[int] = set()
     for token in _FIGURE.findall(text):
         bare = token.replace(",", "").rstrip(".")

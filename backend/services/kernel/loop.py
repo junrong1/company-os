@@ -179,6 +179,7 @@ from kernel.store import (
     StoreWriter,
     prefix_bound_refusal,
 )
+from logschema import lineage
 from servicekit import logging as svclog
 from simcore import log as folder
 from simcore import pending as pend
@@ -501,6 +502,43 @@ class ForkOutcome:
 
 
 @dataclass(slots=True)
+class SwitchOutcome:
+    """Which timeline the clock moved to, or the reason it did not (M49, R11).
+
+    A refusal rather than an exception, for the reason `ForkOutcome` is one: the request was
+    well-formed and the answer is "no", which the client renders. An unknown run is a 404 and is
+    raised.
+    """
+
+    from_run_id: str = ""
+    to_run_id: str = ""
+    lineage_root_id: str = ""
+    #: The tick each timeline was at when the clock left it and when it took it up. Two facts, and
+    #: the surface says both: leaving a timeline is meant to be recoverable *at its tick*.
+    paused_at_tick: int = 0
+    resumed_at_tick: int = 0
+    #: The rate the incoming timeline is running at, which is the rate it was left at. Zero is a
+    #: successful switch into a paused timeline — the fork the player has not started yet.
+    rate: int = 0
+    refusal: str = ""
+
+    @property
+    def switched(self) -> bool:
+        return not self.refusal
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "from_run_id": self.from_run_id,
+            "to_run_id": self.to_run_id,
+            "lineage_root_id": self.lineage_root_id,
+            "paused_at_tick": self.paused_at_tick,
+            "resumed_at_tick": self.resumed_at_tick,
+            "rate": self.rate,
+            "refusal": self.refusal,
+        }
+
+
+@dataclass(slots=True)
 class RunLoop:
     """One run's clock. Exactly one of these exists per active run."""
 
@@ -598,6 +636,21 @@ class KernelRuntime:
     def __init__(self, store: LogStore) -> None:
         self.store = store
         self.writer = StoreWriter(store)
+        #: One lock per lineage, taken by `switch_to` and by nothing else.
+        #:
+        #: **Not `run.lock`, and never held with one.** A switch is two rate changes in two runs,
+        #: and `set_rate` takes each run's own lock for the length of a rate assignment — so no two
+        #: run locks are ever held at once and there is no order between them to get wrong. What
+        #: this closes is the pair-wise race one level up: two concurrent switches in one lineage
+        #: could otherwise both pause and both resume, and leave two timelines ticking with the
+        #: player watching one of them.
+        #:
+        #: Keyed on the lineage root rather than on the process, so two players in two lineages do
+        #: not queue behind each other. Grown on demand and never pruned: one `threading.Lock` per
+        #: lineage the process has switched inside is a few hundred bytes, and pruning it would
+        #: need to know that nobody is inside it.
+        self._switch_locks: dict[str, threading.Lock] = {}
+        self._switch_locks_guard = threading.Lock()
         self.lease: lease_module.LeaseHandle | None = None
         self.runs: dict[str, RunLoop] = {}
         #: Command outcomes by idempotency key, per run. A projection of what was applied, so a
@@ -705,8 +758,20 @@ class KernelRuntime:
         problem — folding it raises, and swallowing that here would be wrong, but so would letting
         it take down every other run in the store. It is recorded against the run instead, where
         readiness reports it.
+
+        **At most one clock per lineage** (U17). A switch is two appends in two runs and there is no
+        transaction across them, so a crash in between can leave two rows in one lineage claiming a
+        non-zero rate. Resuming both would advance two timelines while the player watches one, which
+        is the state that makes a later diff a comparison of two things nobody chose. The first in
+        creation order keeps the clock — deterministic, and usually the right one, because a switch
+        pauses the outgoing timeline *before* resuming the incoming one, so the run still marked
+        running after a half-finished switch is the one the player was actually on. Every other is
+        paused, in its own log, and the reason is logged with both run ids.
         """
         started: list[str] = []
+        #: Lineages that already have a clock. See the docstring above: one per lineage, and the
+        #: first in creation order wins.
+        claimed: dict[str, str] = {}
 
         for row in self.store.list_runs():
             run_id = str(row["run_id"])
@@ -724,9 +789,33 @@ class KernelRuntime:
                 )
                 continue
 
-            if run.rate > 0:
-                self.ensure_loop(run_id)
-                started.append(run_id)
+            if run.rate <= 0:
+                continue
+
+            root = str(row["lineage_root_id"])
+            holder = claimed.get(root)
+            if holder is not None:
+                # A crash between a switch's two appends leaves two rows claiming to run. Paused
+                # rather than merely not started, and the append is the point: a run with no task
+                # whose row says rate 3 is the defect `_start_the_clock_soon` documents, where
+                # every observable says the clock is running. `set_rate` writes the row, appends
+                # `RATE_CHANGED` and publishes, so the timeline's own log says where it stopped.
+                log.warning(
+                    "a second timeline in one lineage was running; pausing it",
+                    extra={
+                        "run": run_id,
+                        "lineage": root,
+                        "clock_held_by": holder,
+                        "tick": run.state.tick,
+                        "rate": run.rate,
+                    },
+                )
+                self.set_rate(run_id, 0)
+                continue
+
+            claimed[root] = run_id
+            self.ensure_loop(run_id)
+            started.append(run_id)
 
         if started:
             log.info("resumed run clocks", extra={"runs": ",".join(started)})
@@ -939,6 +1028,33 @@ class KernelRuntime:
             with contextlib.suppress(asyncio.CancelledError):
                 await run.task
             run.task = None
+
+    def memory_scope(self, run_id: str, director_id: str) -> tuple[stmt.Authorized, int] | None:
+        """What this director may remember, and the tick to read it as of (U14).
+
+        **The kernel derives it because the kernel is what holds folded state**, and the agents
+        service must not derive one (R23). It is the same shape as a statement request's scope, made
+        by the same module — `sim.remembered_scope` — and handed across the seam by the launcher
+        rather than computed on the far side. What the far side gets is a permission; what it cannot
+        do is widen it.
+
+        `None` for a person who is not a director of this run, including a specialist and a name the
+        roster does not hold: only the four directors carry a memory, for the same reason only they
+        brief (M14). `KeyError` for a run this process is not holding, which is the shape `fork`
+        uses for the same condition and which the gateway answers 404 with.
+
+        The lock covers the derivation and the tick together (R13). They are one fact — "what this
+        line was, at this tick" — and read a quantum apart they describe a line that never existed:
+        a hire could arrive between the two, and the memory would be stamped a tick before the
+        person it names. Nothing inside it touches the store, which is the rule that keeps it from
+        being the torn read `export` still has.
+        """
+        run = self.runs[run_id]
+
+        with run.lock:
+            if director_id not in run.state.scenario.directors:
+                return None
+            return sim.remembered_scope(run.state, director_id), run.state.tick
 
     def set_rate(self, run_id: str, rate: int) -> Envelope | None:
         """Change a run's rate, and record the tick it took effect at.
@@ -1910,6 +2026,212 @@ class KernelRuntime:
 
     # --- fork and export --------------------------------------------------
 
+    def lineage_tree(self, run_id: str) -> dict[str, Any] | None:
+        """The tree of timelines this run belongs to, with the live fold laid over the rows (M49).
+
+        The query is `logschema.lineage`'s, because it is a read over rows and this module is the
+        write path. What is added here is the one thing a row cannot know: **where a running clock
+        has actually got to.**
+
+        `runs.current_tick` moves only when something is appended, and a tick that produces no
+        event appends nothing — so a quiet timeline's row lags its fold by however long it has been
+        quiet. Measured on the compose path while writing this: a run whose state was at tick 58 had
+        a row saying tick 1, which the tree would have drawn as "running · day 1" beside a HUD
+        reading day 1 and an office that had moved on. The rule is the one `_terminal_reason_of`
+        states for the same reason: the fold is the authority where there is one, and the row is a
+        projection something has not written yet.
+
+        Only the four fields that can be stale are overlaid, and every one of them is *this
+        process's* knowledge of a run it is holding. A timeline no `RunLoop` exists for keeps its
+        row values, which is correct: nothing here has folded it, so the row is the best available
+        reading of it.
+        """
+        tree = lineage.tree(self.store.engine, run_id, simtime.TICKS_PER_SIM_DAY)
+        if tree is None:
+            return None
+
+        payload = tree.to_payload()
+        for node in payload["nodes"]:
+            run = self.runs.get(str(node["run_id"]))
+            if run is None:
+                continue
+            node["tick"] = run.state.tick
+            node["day"] = simtime.day_of(run.state.tick)
+            node["rate"] = run.rate
+            if run.state.terminal_reason:
+                node["terminal_reason"] = run.state.terminal_reason
+        return payload
+
+    def switch_to(
+        self, from_run_id: str, to_run_id: str, rate: int | None = None
+    ) -> SwitchOutcome:
+        """Move the clock from one timeline to another in the same lineage (M49, R11).
+
+        **Pause the outgoing run, then resume the incoming one, in that order.** There is no
+        transaction across two runs and there cannot be one — they are two logs — so the ordering
+        is the guarantee: a crash between the two appends leaves nothing ticking rather than two
+        things ticking, and the timeline the player was on is recoverable at exactly the tick it
+        stopped. The reverse order has the opposite failure, and it is the one that corrupts a
+        comparison: two timelines advancing while the player is looking at one of them.
+
+        **It is built out of `set_rate` rather than beside it**, which is what makes it inherit the
+        parts that are easy to get wrong: the rate is written to the row *and* appended as
+        `RATE_CHANGED`, both under that run's own lock, published to whoever is attached, and the
+        tick task is started for a run coming off zero. A second implementation of any of that is
+        how one path ends up with a run whose row says rate 3 and whose clock does not move — the
+        exact defect `_start_the_clock_soon` exists because of.
+
+        **The incoming timeline resumes at the rate it was left at**, unless the caller names one.
+        Zero is therefore a successful switch: a fork arrives paused on purpose (U16), so switching
+        into one the player has not started yet leaves it paused and they press play. "The clock
+        moves" means the outgoing one stops — not that every timeline the player looks at starts
+        running.
+
+        Refusals, each with a sentence and each mutating nothing: a target in another lineage, a
+        target that is the run you are already on, and a terminated target. That last one is the
+        rule the Universe surface states — an ended timeline cannot be switched into as active, and
+        can still be forked, which is the demo's last beat.
+
+        An unknown run on either side is a `KeyError`, the shape `fork` uses, which the gateway
+        answers 404 with.
+        """
+        for label, value in (("run id", from_run_id), ("run id", to_run_id)):
+            unusable = refuse_an_unusable_identifier(label, value)
+            if unusable:
+                return SwitchOutcome(refusal=unusable)
+
+        from_row = self.store.run_row(from_run_id)
+        if from_row is None:
+            raise KeyError(f"no such run: {from_run_id}")
+        to_row = self.store.run_row(to_run_id)
+        if to_row is None:
+            raise KeyError(f"no such run: {to_run_id}")
+
+        root = str(from_row["lineage_root_id"])
+        if str(to_row["lineage_root_id"]) != root:
+            return SwitchOutcome(
+                refusal=(
+                    f"{to_run_id} is not in the same lineage as {from_run_id}. A Universe is the "
+                    "tree one genesis produced, and switching between two of them would be "
+                    "switching companies rather than timelines."
+                )
+            )
+        if from_run_id == to_run_id:
+            return SwitchOutcome(
+                refusal=f"{to_run_id} is the timeline you are already standing in."
+            )
+        ended = self._terminal_reason_of(to_run_id, to_row)
+        if ended:
+            return SwitchOutcome(
+                refusal=(
+                    f"{to_run_id} ended: {ended}. An ended timeline cannot be switched into and "
+                    "can still be forked — going back from one is the point of keeping it."
+                )
+            )
+
+        with self._lineage_lock(root):
+            paused_at = self._pause_for_switch(from_run_id, from_row)
+
+            # Registered before the rate is set, because `set_rate` reads `self.runs` and a
+            # timeline nobody has looked at since a restart is a row without a `RunLoop`. Folding
+            # it here rather than lazily inside `set_rate` keeps the failure in one place: a child
+            # whose log this build cannot fold refuses the switch instead of half-performing it,
+            # with the outgoing run already paused and nothing running.
+            if to_run_id not in self.runs:
+                try:
+                    self.resume_run(to_run_id)
+                except Exception as exc:  # noqa: BLE001 - a refusal, not a 500 on a good request
+                    log.error(
+                        "could not fold the timeline being switched into",
+                        extra={"run": to_run_id, "error": f"{type(exc).__name__}: {exc}"},
+                    )
+                    return SwitchOutcome(
+                        refusal=(
+                            f"{to_run_id} could not be rebuilt from its log ({exc}). The timeline "
+                            f"you were on is paused at tick {paused_at} and is still there."
+                        )
+                    )
+
+            incoming = self.runs[to_run_id]
+            target_rate = incoming.rate if rate is None else max(0, int(rate))
+            if target_rate != incoming.rate:
+                self.set_rate(to_run_id, target_rate)
+            elif target_rate > 0:
+                # Already running at the rate asked for — which is the crash-recovery case, not a
+                # no-op: the row says it is running and the task may not exist. Nothing is
+                # appended, because nothing changed and a `RATE_CHANGED` from N to N is a logged
+                # event that describes no event.
+                self._start_the_clock_soon(to_run_id)
+
+            resumed_at = self.runs[to_run_id].state.tick
+
+        log.info(
+            "timeline switched",
+            extra={
+                "from": from_run_id,
+                "to": to_run_id,
+                "lineage": root,
+                "paused_at": paused_at,
+                "resumed_at": resumed_at,
+                "rate": target_rate,
+            },
+        )
+        return SwitchOutcome(
+            from_run_id=from_run_id,
+            to_run_id=to_run_id,
+            lineage_root_id=root,
+            paused_at_tick=paused_at,
+            resumed_at_tick=resumed_at,
+            rate=target_rate,
+        )
+
+    def _terminal_reason_of(self, run_id: str, row: dict[str, Any]) -> str:
+        """Why this timeline has ended, from the live fold first and the row second.
+
+        **The row is not enough, and this is not belt-and-braces.** Nothing in the kernel calls
+        `store.terminate_run`, so `runs.terminal_reason` stays null for the life of the process
+        while the run's *state* has ended — a pre-existing gap in the deferred defect register, and
+        one this guard would otherwise be dead code behind. A switch into a finished timeline would
+        have been accepted in production and refused only in the tests that set the row by hand,
+        which is the shape of every "every observable said it was running" defect in this file.
+
+        The live reading wins where there is one, because it is the fold and the row is a
+        projection of it that something forgot to write.
+        """
+        run = self.runs.get(run_id)
+        if run is not None and run.state.terminal_reason:
+            return str(run.state.terminal_reason)
+        return str(row["terminal_reason"] or "")
+
+    def _pause_for_switch(self, run_id: str, row: dict[str, Any]) -> int:
+        """Stop the outgoing timeline's clock, and answer with the tick it stopped at.
+
+        A run that is already paused is left alone rather than paused again: nothing changed, and an
+        appended `RATE_CHANGED` from zero to zero would put a switch into a timeline's log as if the
+        timeline had done something. A run that is not registered is not folded just to pause it —
+        it has no task, so it is not ticking, and the row's tick is where it stands.
+        """
+        run = self.runs.get(run_id)
+        if run is None:
+            return int(row["current_tick"])
+        if run.rate != 0:
+            self.set_rate(run_id, 0)
+        return run.state.tick
+
+    def _lineage_lock(self, lineage_root_id: str) -> threading.Lock:
+        """The lock for one lineage, created on first use.
+
+        The guard around the table is what makes two threads asking for the same lineage's lock at
+        the same instant get the *same* lock — a plain `setdefault` on a dict is atomic under the
+        GIL today and is not a property worth resting a correctness argument on.
+        """
+        with self._switch_locks_guard:
+            lock = self._switch_locks.get(lineage_root_id)
+            if lock is None:
+                lock = threading.Lock()
+                self._switch_locks[lineage_root_id] = lock
+            return lock
+
     def fork(
         self,
         parent_run_id: str,
@@ -1986,6 +2308,27 @@ class KernelRuntime:
         already = self.store.run_row(child_run_id)
         if already is not None:
             return self._fork_already_taken(already, parent_run_id, at_seq)
+
+        # **The cap is checked here and not one line earlier, and the order is the requirement.**
+        # A retry under the same idempotency key must answer with the child it already made, even
+        # in a lineage that has since filled up — otherwise M47's idempotency stops holding at
+        # exactly the boundary where a client is most likely to be retrying. So the existing-child
+        # branch above runs first, and this only ever refuses a fork that would be a *new*
+        # timeline.
+        #
+        # U16's review found there was no cap at all: 25 sequential forks produced 25 children and
+        # 25 permanently resident runs. See `lineage.MAX_TIMELINES_PER_LINEAGE` for why the number
+        # is what a tree can be read at rather than what memory could hold.
+        held = lineage.size(self.store.engine, str(parent_row["lineage_root_id"]))
+        if held >= lineage.MAX_TIMELINES_PER_LINEAGE:
+            return ForkOutcome(
+                refusal=(
+                    f"this lineage already holds {held} timelines, which is the limit of "
+                    f"{lineage.MAX_TIMELINES_PER_LINEAGE}. Nothing is deleted to make room — a "
+                    "timeline is a history somebody played — so a wider Universe than this needs a "
+                    "second run rather than a longer tree."
+                )
+            )
 
         decision = self._decision_at(parent_run_id, at_seq)
         if isinstance(decision, str):

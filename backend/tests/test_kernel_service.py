@@ -2848,3 +2848,398 @@ async def test_an_identifier_carrying_a_control_character_is_refused(runtime) ->
     assert "above the bound of" in too_long.refusal
 
     assert len(runtime.store.list_runs()) == 1, "every refusal wrote nothing"
+
+
+# =========================================================================
+# The Universe tree, and moving between timelines (U17: M49, R11)
+# =========================================================================
+#
+# The tree itself is a query and is asserted as one. What needs a runtime is the *switch*, and
+# every property below is about a failure that only exists because two runs are involved: two
+# clocks in one lineage, a crash between two appends, a target in another lineage, and a target
+# nobody has folded since a restart.
+
+
+def _a_lineage_of(runtime, timelines: int = 2) -> list[str]:
+    """One parent and `timelines - 1` children, each forked from the same decision.
+
+    Different idempotency keys, so these are distinct timelines rather than one retried — which is
+    the property M47 rests on and the shape a Universe of any width has.
+    """
+    _run, decision_seq = _a_decision_to_reconsider(runtime, option=0)
+    ids = [RUN]
+    for index in range(timelines - 1):
+        outcome = runtime.fork(
+            RUN, at_seq=decision_seq, option_index=1, idempotency_key=f"branch-{index}"
+        )
+        assert outcome.forked, outcome.refusal
+        ids.append(outcome.child_run_id)
+    return ids
+
+
+def _tree(runtime, run_id: str):
+    from logschema import lineage as lineage_query
+    from simcore import time as simtime
+
+    tree = lineage_query.tree(runtime.store.engine, run_id, simtime.TICKS_PER_SIM_DAY)
+    assert tree is not None
+    return tree
+
+
+async def test_a_run_with_no_forks_is_a_lineage_of_one(runtime) -> None:
+    """The surface renders from the first run, so a lineage of one has to come back as a lineage.
+
+    Without this the Universe stage would be introduced to the player by their first fork — a
+    surface met for the first time in the same gesture that changes their world is a surface they
+    read afterwards.
+    """
+    _blocked_at_a_decision(runtime)
+
+    tree = _tree(runtime, RUN)
+    assert tree.root_run_id == RUN
+    assert [node.run_id for node in tree.nodes] == [RUN]
+    assert tree.nodes[0].parent_run_id == ""
+    assert tree.nodes[0].item == "", "the root was not separated from anything"
+
+
+async def test_a_fork_of_a_fork_renders_with_its_parentage_and_its_divergence(runtime) -> None:
+    """Covers M49. Three timelines, two divergences, and each one names the decision behind it."""
+    parent, first = _a_lineage_of(runtime, timelines=2)
+
+    # A second decision inside the child, then a fork of *that* — a depth-three lineage rather
+    # than three siblings, which is the shape a tree has to get right and a list does not.
+    child = runtime.runs[first]
+    runtime._advance(child, 1)
+    resolutions = [
+        envelope
+        for envelope in runtime.store.read_events(first)
+        if envelope.kind is EventKind.DECISION_RESOLVED
+    ]
+    grandchild = runtime.fork(
+        first, at_seq=resolutions[-1].seq, option_index=2, idempotency_key="deep"
+    )
+    assert grandchild.forked, grandchild.refusal
+
+    tree = _tree(runtime, grandchild.child_run_id)
+    assert tree.root_run_id == parent
+    by_id = {node.run_id: node for node in tree.nodes}
+    assert set(by_id) == {parent, first, grandchild.child_run_id}
+    assert by_id[first].parent_run_id == parent
+    assert by_id[grandchild.child_run_id].parent_run_id == first
+
+    # The decision that separated each child from its parent, from the log rather than from a
+    # column: the two option indices differ, and both labels are named.
+    separated = by_id[first]
+    assert separated.item == "wi_ap_map"
+    assert (separated.option_index, separated.parent_option_index) == (1, 0)
+    assert separated.choice and separated.parent_choice
+    assert separated.choice != separated.parent_choice
+
+
+async def test_adding_a_fork_does_not_reorder_the_nodes_already_in_the_tree(runtime) -> None:
+    """The drawn tree is stable under insertion, which a canvas surface needs and a list does not."""
+    _run, decision_seq = _a_decision_to_reconsider(runtime)
+
+    before: list[str] = []
+    for index in range(3):
+        outcome = runtime.fork(
+            RUN, at_seq=decision_seq, option_index=1, idempotency_key=f"stable-{index}"
+        )
+        assert outcome.forked, outcome.refusal
+        order = [node.run_id for node in _tree(runtime, RUN).nodes]
+        assert order[: len(before)] == before, f"the tree reordered on fork {index}: {order}"
+        before = order
+
+
+async def test_the_cap_refuses_a_new_timeline_and_still_answers_a_retry(runtime) -> None:
+    """U16's review finding: there was no cap at all, and 25 forks produced 25 resident runs.
+
+    Two halves, and the second is the one that would break something that already worked: a
+    *retry* under a key that already made a child has to keep answering with that child even in a
+    full lineage, or M47's idempotency stops holding exactly where a client is most likely to be
+    retrying.
+    """
+    from logschema import lineage as lineage_query
+
+    _run, decision_seq = _a_decision_to_reconsider(runtime)
+
+    minted: list[str] = []
+    for index in range(lineage_query.MAX_TIMELINES_PER_LINEAGE):
+        outcome = runtime.fork(
+            RUN, at_seq=decision_seq, option_index=1, idempotency_key=f"cap-{index}"
+        )
+        if outcome.forked:
+            minted.append(outcome.child_run_id)
+            continue
+        assert "limit" in outcome.refusal, outcome.refusal
+        break
+
+    held = lineage_query.size(runtime.store.engine, RUN)
+    assert held == lineage_query.MAX_TIMELINES_PER_LINEAGE, held
+
+    refused = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="one-more")
+    assert not refused.forked
+    assert "timelines" in refused.refusal and "deleted" in refused.refusal
+    assert lineage_query.size(runtime.store.engine, RUN) == held, "a refusal wrote a row"
+
+    retried = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="cap-0")
+    assert retried.forked, retried.refusal
+    assert retried.child_run_id == minted[0]
+    assert not retried.created, "a retry at the cap minted a second timeline"
+
+
+async def test_a_switch_pauses_the_outgoing_timeline_before_resuming_the_incoming_one(
+    runtime,
+) -> None:
+    """Covers R11. The clock moves, and the timeline left behind is recoverable at its tick.
+
+    The ordering is the guarantee — there is no transaction across two logs — so what is asserted
+    is the *observable* consequence: after a switch exactly one timeline in the lineage has a
+    non-zero rate, and both rate changes are in the two logs.
+    """
+    parent, child = _a_lineage_of(runtime, timelines=2)
+    runtime.set_rate(parent, 2)
+
+    outcome = runtime.switch_to(parent, child, rate=1)
+
+    assert outcome.switched, outcome.refusal
+    assert (outcome.from_run_id, outcome.to_run_id) == (parent, child)
+    assert outcome.rate == 1
+    assert runtime.runs[parent].rate == 0
+    assert runtime.runs[child].rate == 1
+    assert outcome.paused_at_tick == runtime.runs[parent].state.tick
+
+    # In both logs, so the record of the switch is in the timelines it happened to rather than in
+    # a process log nobody replays.
+    def rate_changes(run_id: str) -> list[int]:
+        return [
+            envelope.decoded_payload()["rate"]
+            for envelope in runtime.store.read_events(run_id)
+            if envelope.kind is EventKind.RATE_CHANGED
+        ]
+
+    assert rate_changes(parent)[-1] == 0
+    assert rate_changes(child)[-1] == 1
+
+    # And the previous timeline is still there, at the tick it stopped.
+    row = runtime.store.run_row(parent)
+    assert int(row["rate"]) == 0
+    assert int(row["current_tick"]) == outcome.paused_at_tick
+
+
+async def test_switching_into_a_paused_fork_leaves_it_paused(runtime) -> None:
+    """A fork arrives paused on purpose (U16), and switching into one is not a play button.
+
+    "The clock moves" means the outgoing timeline stops. Resuming every timeline the player looks
+    at would run a new world forward while the Universe stage was still animating into it.
+    """
+    parent, child = _a_lineage_of(runtime, timelines=2)
+    runtime.set_rate(parent, 1)
+
+    outcome = runtime.switch_to(parent, child)
+
+    assert outcome.switched, outcome.refusal
+    assert outcome.rate == 0
+    assert runtime.runs[child].rate == 0
+    assert runtime.runs[parent].rate == 0
+    assert not [
+        envelope
+        for envelope in runtime.store.read_events(child)
+        if envelope.kind is EventKind.RATE_CHANGED
+    ], "a rate change from zero to zero was appended, describing no event"
+
+
+async def test_a_switch_into_another_lineage_or_into_yourself_is_refused(runtime) -> None:
+    """Two refusals, each mutating nothing. A Universe is one genesis's tree."""
+    parent, child = _a_lineage_of(runtime, timelines=2)
+    runtime.create_run("run-elsewhere", 99, horizon_tick=SHORT_HORIZON_TICKS)
+    runtime.set_rate(parent, 1)
+
+    elsewhere = runtime.switch_to(parent, "run-elsewhere")
+    assert not elsewhere.switched
+    assert "same lineage" in elsewhere.refusal
+
+    itself = runtime.switch_to(parent, parent)
+    assert not itself.switched
+    assert "already standing in" in itself.refusal
+
+    # Neither refusal touched a clock, which is what "mutates nothing" has to mean here.
+    assert runtime.runs[parent].rate == 1
+    assert runtime.runs[child].rate == 0
+
+
+async def test_a_terminated_timeline_cannot_be_switched_into_and_can_still_be_forked(
+    runtime,
+) -> None:
+    """The Universe surface's rule, and the demo's last beat in one test.
+
+    It also pins where the guard reads from, and that is not a detail: nothing in the kernel calls
+    `store.terminate_run`, so this child's *row* still says nothing has ended while its fold has.
+    A guard on the row alone would have been refused only by a test that set the row by hand, and
+    accepted every switch into a finished timeline in production.
+    """
+    parent, child = _a_lineage_of(runtime, timelines=2)
+
+    # Run the child to its horizon so it ends for a reason the run itself produced.
+    runtime.set_rate(child, 1)
+    loop = runtime.runs[child]
+    for _ in range(400):
+        if loop.state.terminal_reason:
+            break
+        runtime._advance(loop, 64)
+    assert loop.state.terminal_reason, "the fixture never ended the timeline"
+
+    assert runtime.store.run_row(child)["terminal_reason"] is None, (
+        "the row now records the ending, so this test no longer proves what it says it does — "
+        "check `_terminal_reason_of` and the register entry it names"
+    )
+
+    refused = runtime.switch_to(parent, child)
+    assert not refused.switched
+    assert "ended" in refused.refusal and "forked" in refused.refusal
+
+    decisions = [
+        envelope
+        for envelope in runtime.store.read_events(child)
+        if envelope.kind is EventKind.DECISION_RESOLVED
+    ]
+    again = runtime.fork(
+        child, at_seq=decisions[0].seq, option_index=2, idempotency_key="from-the-end"
+    )
+    assert again.forked, again.refusal
+
+
+async def test_switching_into_a_timeline_nobody_has_folded_yet(runtime) -> None:
+    """A switch into a timeline with no `RunLoop` folds it first, or it half-performs.
+
+    The failure it prevents is the interesting one: the outgoing timeline paused and nothing
+    running, because the rate could not be set on a run this process had never rebuilt. A
+    restarted kernel normally leaves every non-terminated run registered — `resume_all` does that
+    — so this drops the registration deliberately to reach the state a future eviction would
+    produce, which is what U16's review says this surface owes.
+    """
+    parent, child = _a_lineage_of(runtime, timelines=2)
+    runtime.set_rate(parent, 1)
+
+    del runtime.runs[child]
+    assert child not in runtime.runs
+
+    outcome = runtime.switch_to(parent, child, rate=1)
+
+    assert outcome.switched, outcome.refusal
+    assert child in runtime.runs, "the switch did not rebuild the timeline it entered"
+    assert runtime.runs[child].rate == 1
+    assert runtime.runs[parent].rate == 0
+    assert runtime.runs[child].state.tick == outcome.resumed_at_tick
+
+
+async def test_a_restart_starts_one_clock_per_lineage_and_says_which_it_paused(runtime) -> None:
+    """A crash between a switch's two appends leaves two rows claiming to run.
+
+    Resuming both would advance two timelines while the player watches one, which makes a later
+    diff a comparison of two things nobody chose. The second is paused *in its own log*, so
+    `/runs/{id}/state` cannot report a run as running while nothing ticks — the shape
+    `_start_the_clock_soon` exists because of.
+    """
+    parent, child = _a_lineage_of(runtime, timelines=2)
+    # Both marked running, which is what a half-finished switch leaves behind.
+    runtime.set_rate(parent, 1)
+    runtime.set_rate(child, 1)
+
+    runtime.writer.stop()
+    with runtime.store.engine.begin() as connection:
+        lease_module.release(connection, runtime.lease)
+
+    restarted = KernelRuntime(runtime.store)
+    restarted.start()
+    try:
+        started = restarted.resume_all()
+
+        assert started == [parent], f"expected one clock in the lineage, got {started}"
+        assert restarted.runs[child].rate == 0
+        assert int(restarted.store.run_row(child)["rate"]) == 0, (
+            "the row still says the paused timeline is running, which is the observable that lies"
+        )
+        assert [
+            envelope.decoded_payload()["rate"]
+            for envelope in restarted.store.read_events(child)
+            if envelope.kind is EventKind.RATE_CHANGED
+        ][-1] == 0
+    finally:
+        restarted.writer.stop()
+
+
+async def test_switching_away_from_an_outstanding_request_and_back_loses_neither(runtime) -> None:
+    """The request outlives the switch, because a switch is two rate changes and nothing else.
+
+    Nearly free today and worth pinning anyway: the thing that would break it is eviction, which
+    U16's review leaves open and which this surface is the one to eventually offer. If a future
+    change drops a `RunLoop` on the way out, this is the test that says a briefing was lost with it
+    — `state.pending` comes back from the fold, and `statement_subjects` does not.
+
+    The lineage is built *before* the request is raised, because a fork at a sequence with an
+    outstanding request on that item is refused (U16) — and the outstanding request here is on a
+    different item than the decision being reconsidered, which is the state a real run is in when
+    the CEO forks one thread of work while standing at another.
+    """
+    parent, child = _a_lineage_of(runtime, timelines=2)
+    _walk_the_ceo_to_a_briefing(runtime, parent)
+
+    run = runtime.runs[parent]
+    assert run.state.pending, "the fixture raised no request, so this cannot fail"
+    outstanding = set(run.state.pending)
+    subjects = dict(run.statement_subjects)
+
+    assert runtime.switch_to(parent, child).switched
+    assert runtime.switch_to(child, parent).switched
+
+    back = runtime.runs[parent]
+    assert set(back.state.pending) == outstanding
+    assert dict(back.statement_subjects) == subjects
+
+
+async def test_the_tree_reports_where_a_running_clock_actually_is(runtime) -> None:
+    """`runs.current_tick` lags a running timeline, and the tree must not.
+
+    A tick that produces no event appends nothing, and the row moves only on append — so a quiet
+    timeline's row lags its fold by however long it has been quiet. **Measured on the compose path
+    while U17 was being written: a run whose state was at tick 58 had a row saying tick 1.** The
+    tree would have drawn "running · day 1" beside an office that had moved on, which is the same
+    class of defect as a row claiming rate 3 with no clock behind it.
+    """
+    from simcore import time as simtime
+
+    run = _blocked_at_a_decision(runtime)
+    runtime._advance(run, 200)
+
+    row_tick = int(runtime.store.run_row(RUN)["current_tick"])
+    assert run.state.tick > row_tick, (
+        "the row has caught up with the fold, so this test no longer proves anything — check "
+        "whether something now writes `current_tick` per tick"
+    )
+
+    tree = runtime.lineage_tree(RUN)
+    assert tree is not None
+    node = next(entry for entry in tree["nodes"] if entry["run_id"] == RUN)
+
+    assert node["tick"] == run.state.tick
+    assert node["day"] == simtime.day_of(run.state.tick)
+    assert node["rate"] == run.rate
+
+
+async def test_the_tree_keeps_the_row_for_a_timeline_this_process_has_not_folded(runtime) -> None:
+    """The other half of the same rule: no fold, no overlay.
+
+    A timeline with no `RunLoop` is one nothing here has rebuilt, so the row is the best available
+    reading of it — and inventing a tick for it would be worse than reporting the last one written.
+    """
+    parent, child = _a_lineage_of(runtime, timelines=2)
+    row = runtime.store.run_row(child)
+    del runtime.runs[child]
+
+    tree = runtime.lineage_tree(parent)
+    assert tree is not None
+    node = next(entry for entry in tree["nodes"] if entry["run_id"] == child)
+
+    assert node["tick"] == int(row["current_tick"])
+    assert node["rate"] == int(row["rate"])
