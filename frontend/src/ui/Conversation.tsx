@@ -36,6 +36,7 @@ import {
   resolvePayload,
   stoppedCard,
 } from './conversation-model'
+import { MemoryAffordance } from './Memory'
 import { posedPeople } from './stage'
 
 /**
@@ -50,11 +51,19 @@ const EMPTY_ANSWERS: AnsweredQuestion[] = []
 export interface ConversationProps {
   /** Who the CEO is standing next to, decided by the model from both parties' positions. */
   personId: string | null
+  /**
+   * Which run this conversation is in, for the memory affordance in the header (U14).
+   *
+   * Optional so every existing caller and every test that mounts this panel without a run keeps
+   * working: with no run named the header offers no memory, which is the honest state rather than
+   * a button that cannot say what it would read.
+   */
+  runId?: string
   onCommand?: CommandSender
   onCompare?: CompareSender
 }
 
-export function Conversation({ personId, onCommand, onCompare }: ConversationProps) {
+export function Conversation({ personId, runId, onCommand, onCompare }: ConversationProps) {
   const header = useRunStore(
     useShallow((state) =>
       conversationHeader(
@@ -94,6 +103,10 @@ export function Conversation({ personId, onCommand, onCompare }: ConversationPro
   // rather than subscribed to: the schema is scenario content, and a scenario is immutable for
   // the life of the run.
   const schema = useMemo(() => personSchema(personId, roster ?? {}), [personId, roster])
+
+  // Read off the roster rather than inferred from having a memory: the route answers 404 for a
+  // specialist, and finding that out by rendering a button and pressing it is not a design.
+  const isDirector = personId !== null && roster?.[personId]?.rank === 'director'
 
   const bench = useMemo(
     () => benchBlock(stopped, statements, benchPresent),
@@ -146,6 +159,13 @@ export function Conversation({ personId, onCommand, onCompare }: ConversationPro
             {header.dept} · {header.stateLabel}
           </span>
         </span>
+        {/* In the header rather than below the decision, and only for a director. It answers "what
+            do you remember", which is a question about the person you are standing in front of —
+            unlike the briefing below, which is about the decision they are stopped at. A
+            specialist has no memory to offer: they answer from an authored script (M14). */}
+        {runId !== undefined && isDirector && (
+          <MemoryAffordance runId={runId} directorId={header.id} name={header.name} />
+        )}
       </header>
 
       {schema !== null && <Schema schema={schema} name={header.name} />}

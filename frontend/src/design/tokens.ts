@@ -217,13 +217,21 @@ export function authoredTuningLabel(what: string): string {
 }
 
 /**
- * The opposite claim, for the one figure in the product that is not invented.
+ * The opposite claim, for the figures in the product that are not invented.
  *
  * Model calls and tokens are counted, not authored: they are what a run actually spent
  * against a ceiling somebody configured. Marking them `≈ authored tuning` would be a lie in
  * the one place the product has a real measurement, and leaving them unmarked would be
  * worse — the reader has learned that an unmarked number is an oversight, so silence reads
  * as a missing marking rather than as a different kind of figure.
+ *
+ * **U14 gave it a second population, and the claim covers both.** A director's memory renders
+ * sim-days, log sequences and a count of events, and every one of them resolves to a row in an
+ * append-only log — so they are the same kind of figure as a spend counter and the opposite kind
+ * from a tuned constant. The description below says "counted rather than authored" rather than
+ * naming spend, because the distinction the reader needs is which side of that line a number is
+ * on; a third marking for "counted, but not money" would split the sweep without telling anybody
+ * anything they could act on.
  *
  * Built exactly like `AUTHORED_TUNING`, for the same reason: a glyph and a short label,
  * never a hue. Amber is reserved for a person waiting on the CEO, and "this one is real"
@@ -238,7 +246,7 @@ export function authoredTuningLabel(what: string): string {
 export const MEASURED = {
   glyph: '=',
   label: 'measured',
-  description: 'This figure is measured: what this run actually spent.',
+  description: 'This figure is counted rather than authored: what this run actually did.',
 } as const
 
 /** The measured marking's accessible label for one named figure. */

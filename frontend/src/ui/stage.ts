@@ -29,7 +29,23 @@ import {
 import { type CeoView, type PersonView, type PositionEcho, runState } from '../net/store'
 
 /** Which view the stage is rendering. */
-export type Stage = 'office' | 'dag'
+export type Stage = 'office' | 'dag' | 'universe'
+
+/**
+ * The order `Tab` cycles them in, and the reason it is this order.
+ *
+ * Office and DAG are the two views of *this* timeline and they sit next to each other, so the
+ * gesture the player already has keeps working. The Universe is a view of every timeline, and it
+ * comes last because reaching it is a deliberate act — a player holding Tab to get back to the
+ * office should pass through the graph of their own work, not through the tree of their histories.
+ */
+export const STAGES: readonly Stage[] = ['office', 'dag', 'universe']
+
+/** The next stage in the cycle. Total, so the toggle cannot get stuck on an unknown value. */
+export function nextStage(current: Stage): Stage {
+  const index = STAGES.indexOf(current)
+  return STAGES[(index + 1) % STAGES.length]
+}
 
 /**
  * How far ahead of the rendered tick a CEO input is tagged, in *wall* milliseconds.

@@ -24,6 +24,7 @@ import { type MetricDef, NO_METRIC_DEFS, PAL, RESERVED_BEAM, deptColour } from '
 import { type CatalogEntry, type ItemStatus, type TrayEntry, useRunStore } from '../net/store'
 import { CompareAffordance } from './Comparison'
 import { Mark } from './Marking'
+import { MemoryAffordance } from './Memory'
 import type { CompareSender } from './comparison-model'
 import { OptionConsequence } from './Consequence'
 import { FROM_TRAY_COST, resolvePayload } from './conversation-model'
@@ -45,7 +46,18 @@ export interface CommandSender {
  * Admin, and the deliberate mismatch in the sample data is the whole reason the org chart is a
  * constraint rather than a decoration.
  */
-export function OrgPanel({ onWalkTo }: { onWalkTo?: (personId: string) => void }) {
+export function OrgPanel({
+  runId,
+  onWalkTo,
+}: {
+  /**
+   * Which run's memories the rows open. Absent means the affordance is not offered — the org
+   * chart is worth rendering without it, and a button that cannot say which run it is about
+   * would read as broken rather than as unavailable.
+   */
+  runId?: string
+  onWalkTo?: (personId: string) => void
+}) {
   const roster = useRunStore(useShallow((state) => state.genesis?.roster ?? {}))
   // Posed at the store's tick, not read raw. A walk states its own end — the path and the tick
   // it began on — so a row would otherwise read "Walking" for the rest of the run for anyone
@@ -146,6 +158,16 @@ export function OrgPanel({ onWalkTo }: { onWalkTo?: (personId: string) => void }
         .map(([director, members]) => (
           <div className="line" key={director}>
             {row(director, true)}
+            {/* Under the director rather than beside the name, because it is about the whole line
+                below it and not about them personally (M37). Only a director has one: a specialist
+                answers from an authored script, and the route says so with a 404. */}
+            {runId !== undefined && (
+              <MemoryAffordance
+                runId={runId}
+                directorId={director}
+                name={roster[director]?.name ?? director}
+              />
+            )}
             {members.sort().map((member) => row(member, false))}
           </div>
         ))}
@@ -411,10 +433,12 @@ export function OutputPanel() {
 }
 
 export function Panels({
+  runId,
   onCommand,
   onCompare,
   onWalkTo,
 }: {
+  runId?: string
   onCommand?: CommandSender
   onCompare?: CompareSender
   onWalkTo?: (personId: string) => void
@@ -422,7 +446,7 @@ export function Panels({
   return (
     <div className="panels">
       <TrayPanel onResolve={onCommand} onCompare={onCompare} />
-      <OrgPanel onWalkTo={onWalkTo} />
+      <OrgPanel runId={runId} onWalkTo={onWalkTo} />
       <WorkPanel onAssign={onCommand} />
       <OutputPanel />
     </div>

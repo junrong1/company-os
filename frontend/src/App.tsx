@@ -126,7 +126,30 @@ export default function App() {
       })
   }, [reset, chosen])
 
-  if (runId !== null) return <Shell key={runId} runId={runId} onStartRun={start} />
+  const enterTimeline = useCallback((next: string) => {
+    // The store is already cleared by the shell, which is the component the incoming stream writes
+    // through. What the app owns is the address bar and the run id: a reload has to re-attach to
+    // the timeline the player switched into rather than to the one they started, and the stream is
+    // per run, so changing this id is what re-subscribes.
+    rememberRunInLocation(next)
+    setRunId(next)
+  }, [])
+
+  if (runId !== null) {
+    // **No `key`, and its absence is the switch.** Keying the shell on the run id remounted it, and
+    // a remount tears down the canvas, the renderer and the keyboard bindings — so entering a
+    // timeline would blank the stage and rebuild the sprite sheets. The shell is already built to
+    // survive a run id change: the stream effect depends on it, the prediction is rebuilt at render
+    // when it moves, and the renderer rebuilds when genesis lands. What a switch changes is the run
+    // and the world, not the application.
+    return (
+      <Shell
+        runId={runId}
+        onStartRun={start}
+        onEnterTimeline={enterTimeline}
+      />
+    )
+  }
 
   return (
     <main className="shell">

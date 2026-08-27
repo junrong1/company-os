@@ -21,6 +21,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
+import { PAL } from '../design/tokens'
 import { ChainStrip } from '../dag/ChainStrip'
 import { Dag } from '../dag/Dag'
 import { Renderer } from '../render/index'
@@ -46,10 +47,12 @@ import {
   actorsFromStore,
   bitmaskFor,
   inputLeadTicks,
+  nextStage,
   posedPeople,
   shouldRestateHeldInput,
   typingTarget,
 } from './stage'
+import { Tree } from '../universe/Tree'
 import './shell.css'
 
 export interface ShellProps {
@@ -62,6 +65,14 @@ export interface ShellProps {
    * that gets torn down and rebuilt for it.
    */
   onStartRun?: () => void
+  /**
+   * Enter another timeline of this lineage (U17).
+   *
+   * Owned by the app for the same reason `onStartRun` is: it replaces the run the shell is
+   * attached to. The shell asks the backend, and the app moves the address bar and the run id —
+   * so the store is cleared and the stream re-subscribed by the one component that owns both.
+   */
+  onEnterTimeline?: (runId: string) => void
   /**
    * Injectable so the suite can mount the shell without a socket.
    *
@@ -80,7 +91,13 @@ export interface ShellProps {
   storage?: Pick<Storage, 'getItem' | 'setItem'> | null
 }
 
-export function Shell({ runId, makeStream, onStartRun, storage }: ShellProps) {
+export function Shell({
+  runId,
+  makeStream,
+  onStartRun,
+  onEnterTimeline,
+  storage,
+}: ShellProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
   const [stage, setStage] = useState<Stage>('office')
@@ -341,7 +358,7 @@ export function Shell({ runId, makeStream, onStartRun, storage }: ShellProps) {
 
       if (event.key === 'Tab') {
         event.preventDefault()
-        setStage((current) => (current === 'office' ? 'dag' : 'office'))
+        setStage(nextStage)
         return
       }
       if (!(event.key in KEY_BITS)) return
@@ -451,6 +468,15 @@ export function Shell({ runId, makeStream, onStartRun, storage }: ShellProps) {
           <button type="button" data-active={stage === 'dag'} onClick={() => setStage('dag')}>
             Chain
           </button>
+          {/* Third, and last in the Tab cycle: it is the view of every timeline rather than of
+              this one, so reaching it is a deliberate act. */}
+          <button
+            type="button"
+            data-active={stage === 'universe'}
+            onClick={() => setStage('universe')}
+          >
+            Universe
+          </button>
           <span className="hint">Tab</span>
         </nav>
         <div className="rates" aria-label="Clock">
@@ -490,7 +516,19 @@ export function Shell({ runId, makeStream, onStartRun, storage }: ShellProps) {
         </p>
       )}
 
-      <Hud />
+      {/* Not before there is a world. The HUD reads metrics, cash and load, and with an empty
+          store every tile renders a real-looking zero — which is what a player sees for the whole
+          of an attach, and for the moment between leaving one timeline and the next one's genesis
+          landing. A stated absence is the honest frame for both. */}
+      {hasGenesis ? (
+        <Hud />
+      ) : (
+        <p className="shell__attaching" style={{ color: PAL.textFaint }}>
+          {connection === 'lost'
+            ? 'The stream is down. Nothing below is current.'
+            : 'Attaching to the timeline.'}
+        </p>
+      )}
 
       <div className="stage" ref={stageRef}>
         {/* Both views stay mounted. Unmounting the canvas on every toggle would tear down the
@@ -500,6 +538,24 @@ export function Shell({ runId, makeStream, onStartRun, storage }: ShellProps) {
         <canvas ref={canvasRef} className="office" data-hidden={stage !== 'office'} />
         <div className="dag-host" data-hidden={stage !== 'dag'}>
           <Dag active={stage === 'dag'} />
+        </div>
+        {/* Hidden rather than unmounted, like the DAG: the tree is a read the player comes back to,
+            and re-fetching it on every trip through the stage toggle would spend a round trip to
+            show the same nodes. `active` stops the fetch and the paint while it is not on stage. */}
+        <div className="universe-host" data-hidden={stage !== 'universe'}>
+          <Tree
+            runId={runId}
+            active={stage === 'universe'}
+            onEnter={(next) => {
+              // The shell asks and the app moves. Everything run-scoped in the store is cleared
+              // here rather than in the app, because the store is what the incoming stream writes
+              // into and its sequence guard drops anything at or below the sequence it already
+              // applied — so a new timeline's frames would be dropped wholesale without this.
+              runState().reset()
+              setRejection(null)
+              onEnterTimeline?.(next)
+            }}
+          />
         </div>
 
         {/* Only over the office, for the same reason the conversation is: both hints describe
@@ -529,7 +585,12 @@ export function Shell({ runId, makeStream, onStartRun, storage }: ShellProps) {
         {/* Only over the office. On the chain view there is no floor to be standing on, and a
             conversation panel there would claim a proximity the stage is not showing. */}
         {stage === 'office' && (
-          <Conversation personId={nearby} onCommand={command} onCompare={compare} />
+          <Conversation
+            personId={nearby}
+            runId={runId}
+            onCommand={command}
+            onCompare={compare}
+          />
         )}
       </div>
 
@@ -537,7 +598,7 @@ export function Shell({ runId, makeStream, onStartRun, storage }: ShellProps) {
           the office, so you never need to open the DAG to learn that something stopped. */}
       <ChainStrip />
 
-      <Panels onCommand={command} onCompare={compare} />
+      <Panels runId={runId} onCommand={command} onCompare={compare} />
     </main>
   )
 }

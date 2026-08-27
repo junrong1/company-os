@@ -394,18 +394,23 @@
  * side of the cycle the frame fell.
  */
 .stage > canvas.office,
-.stage > .dag-host {
+.stage > .dag-host,
+.stage > .universe-host {
   position: absolute;
   inset: 0;
   width: auto;
   height: auto;
 }
 
+.stage > .universe-host { overflow: auto; }
+
 .office,
-.dag-host { image-rendering: pixelated; }
+.dag-host,
+.universe-host { image-rendering: pixelated; }
 
 .office[data-hidden='true'],
-.dag-host[data-hidden='true'] {
+.dag-host[data-hidden='true'],
+.universe-host[data-hidden='true'] {
   /* Hidden, not unmounted: unmounting the canvas would tear down the frame loop and rebuild
      it on the way back, and the office has to be rendering unchanged when you return to it. */
   display: none;
@@ -1156,4 +1161,204 @@
     box-shadow: inset 0 0 0 1px var(--beam-edge);
     padding: 14px;
   }
+}
+
+/**
+ * A director's memory (U14).
+ *
+ * **Quiet, and the same block in both places it is mounted.** It appears under a director's row in
+ * the rail and in the conversation header, and the two must read as one thing — a history the CEO
+ * can open from either side, not two panels that happen to agree.
+ *
+ * **No hue of its own.** Every figure on it resolves to a row in the log, and the marking beside
+ * each one says so in a glyph and a label. A colour would be a second channel for a claim that is
+ * already stated in words, and amber is spoken for: it means a person is waiting on the CEO.
+ *
+ * The sentences are a list rather than a paragraph, because each one carries the sequences it was
+ * written over. Running them together would put the provenance mid-sentence and lose the property
+ * the panel exists to have.
+ */
+.memory-affordance {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.memory-affordance__toggle {
+  align-self: flex-start;
+  padding: 2px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-faint);
+  font: 750 9px/1.6 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.memory-affordance__toggle:hover { color: var(--text); }
+
+.memory {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+
+.memory__heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-faint);
+  font: 750 10px/1.4 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.memory__stamp { text-transform: none; letter-spacing: 0; font-weight: 400; }
+
+.memory__because,
+.memory__loading,
+.memory__error,
+.memory__empty,
+.memory__scale {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.memory__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.memory__point {
+  font-size: 12px;
+  line-height: 1.5;
+  border-left: 2px solid var(--rule);
+  padding-left: 8px;
+}
+
+.memory__cites {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.memory__events {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.memory__event {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.memory__day,
+.memory__seq { font-family: var(--mono); font-size: 10px; white-space: nowrap; }
+
+/**
+ * The Universe stage (U17).
+ *
+ * **The tree is a canvas and the panel beside it is not.** Everything that encodes a timeline —
+ * the border form, the standing marker, the divergence line — is drawn, in the DAG's idiom, on the
+ * same lattice. What is DOM is what a player has to be able to select, copy and press: the run id,
+ * and the button that enters it.
+ *
+ * It scrolls rather than scaling. A lineage is at most sixteen timelines and a tree that shrank to
+ * fit would put a pixel face at fractional size, which is the one thing this visual system does not
+ * survive.
+ */
+.universe {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 12px;
+}
+
+.universe__tree { display: block; image-rendering: pixelated; }
+
+.universe__aside {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+  max-width: 320px;
+}
+
+.universe__scale,
+.universe__hint,
+.universe__where,
+.universe__standing,
+.universe__ended,
+.universe__refusal,
+.universe__error {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.universe__node {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  /* A card, a hair off the ground so it reads as one — the same value every panel uses. */
+  background: var(--gangqing);
+  border: 1px solid var(--rule);
+  border-radius: 4px;
+}
+
+.universe__id {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  word-break: break-all;
+}
+
+.universe__divergence {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  border-left: 2px solid var(--rule);
+  padding-left: 8px;
+}
+
+.universe__enter {
+  align-self: flex-start;
+  padding: 3px 8px;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text);
+  font: 750 10px/1.6 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.universe__enter[disabled] { color: var(--text-faint); cursor: default; }
+
+.shell__attaching {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 11px;
 }
