@@ -495,6 +495,90 @@ per-item cap becomes visible rather than merely inferable.
 
 ---
 
+## What U25 found, that U18 and the rest of Phase E need
+
+U25 is the client half of a fork: a decisions projection, a panel that lists what was settled and
+offers every option that was not, and the two calls that turn "take this instead" into a timeline
+you are standing in. No event kind, no payload field, no shape version, no golden fixture, and
+nothing appended by any of it — the third read surface in a row built entirely out of what the
+backend already answers.
+
+**Two live defects, both on the entry path U17 built and neither visible to any suite.** The
+pattern holds for the ninth unit running, and this time both were on the *landing* rather than in
+the unit's own new code — which is what the plan's rule about ending at a real run is for.
+
+- **The client posted a command the player never issued, into the timeline it had just entered,
+  and showed its refusal as a banner.** `emptyRun()` defaults `rate` to `1`, so clearing the store
+  on the way into a timeline moved the observed rate from the parent's `0` to `1` — which
+  `shouldRestateHeldInput` reads as a resume, because that is exactly what a resume looks like. It
+  re-stated the held direction into a child that arrives paused, the paused-run guard refused it,
+  and the sentence landed in the shell's banner over a Universe stage the player had reached by
+  pressing one button. Measured on the compose path: `POST /runs/<child>/commands`, 2 ms after the
+  lineage read, with no matching line in the backend log because a rejection is not an error.
+- **The clock control read ×1 over a timeline standing still.** Same root, other half: a run's
+  rate is the one field this client never learns from its log. `RATE_CHANGED` is appended when a
+  rate *moves*, and neither a run created at ×1 nor a child forked at zero has moved — the child's
+  log held ten events and not one of them was a rate. So the empty state's `1` stood in, the player
+  saw ×1 highlighted over a world that was not advancing, and the only recovery was pressing Pause
+  and then ×1.
+
+The fix for both is one line each and the second one is the interesting one. `reset` now takes the
+rate the caller was told — `SwitchOutcome.rate` is already on the wire for exactly this, and it is
+written in the *same* `set` as the clear, because two writes leave a frame in which the store
+reports the default and that frame is the one the restatement effect reads.
+
+**Comparing run ids does not work, and it is worth writing down why.** The first fix was a guard on
+the restatement effect: skip it when the run id changed. It does not fire. The store is not React
+state, so clearing it and handing the run id up do not land in one commit — the shell observes the
+new rate while still holding the old run id, and the guard sees no change. What works is stating
+the baseline at the transition: `land` writes `previousRate.current` before it touches anything, so
+the effect has nothing to read as a change and no ordering can make it read one. Any future
+component that watches a store value against a React prop has the same hazard.
+
+- **The held-key case is separately real and worse.** Entering a timeline left *running* from a
+  paused one moves the rate `0 → 1` legitimately, so carrying the real rate does not stop the
+  restatement — and the command is then *accepted*. The CEO sets off across a world the player has
+  only just arrived in, in a direction they were holding somewhere else. Pinned by its own test.
+
+**A resolution's sequence cannot be recovered from a snapshot, and the panel says so.** A fork is
+addressed by the sequence of the `DECISION_RESOLVED` it reconsiders; a snapshot is folded state and
+folded state holds no log positions. So a resync fills the list in from the snapshot's per-item
+`decisions` — the client's own records are a *suffix* of that list, so the missing ones are the
+leading `n − k` — and those entries are listed, are honest about carrying sequence zero, and offer
+no fork. Two things were deliberately not done: the list is not *dropped* the way `comparisons` is,
+because a comparison is a projection whose basis is gone while a settled decision is history; and
+the checkpoint index is not reconstructed from the snapshot's ordering, because `resolve_checkpoint`
+refuses an unreached or already-resolved checkpoint and checks nothing else — ascending resolution
+order is a property of the two routes the client offers, not a rule the kernel enforces, so the
+alignment would be quietly wrong in the one case it was built for. The refusal sentence names the
+fact and no remedy, because the remedy a reader reaches for is reloading to replay the run, which is
+the very thing that resynced — U16's finding 8 in a new place.
+
+**The fork's idempotency key is derived, and U16's review is why.** `forkIdempotencyKey(atSeq,
+optionIndex)` — once per *intent*, not once per attempt, because the child's id is minted from it.
+A random key per HTTP call makes a double-click two identical timelines and a lost response a
+third, and sixteen is what the player meets for it. Two *different* alternatives at one decision are
+two keys and therefore two timelines, which is the case U16's own id fix exists for.
+
+**One suite hazard, found by the test it corrupted.** `mount` removed the host element and never
+unmounted the React root, so every shell the file had mounted kept its `window` keydown, keyup and
+blur listeners for the rest of the run. A keyboard event in a later test reached all of them, and
+each submitted a command for the run *it* was attached to — indistinguishable from the defect the
+test was written to catch, and it failed in the full file while passing under `-t`. The same shape
+is in `universe.test.ts`'s `mount`, which nothing currently depends on.
+
+### For U18
+
+- **The Decided panel is a second entry point to the tree**, and it hands the stage a node to open
+  on. `Tree` now takes `selected`, applied as a hint rather than as a controlled value — clicking
+  another node still wins. U18's diff is entered by selecting *two* nodes, so it inherits a
+  selection that something other than a click can set.
+- **`land(runId, rate)` is the whole entry path now**, shared by the tree's switch and the fork's.
+  Anything else that moves the player between timelines should go through it rather than calling
+  `reset()` and `onEnterTimeline` itself, which is how both defects above got in.
+
+---
+
 ## The deferred defect register
 
 Pre-existing defects found while executing this plan, none of them in the PRD's M-list, each
@@ -596,6 +680,19 @@ check, so a line that lost a hire keeps their headcount — 3 → 3 — and the 
 surface is the wrong unit to move one from; `remembered_scope` is written so that fixing it makes a
 memory correct rather than breaking it, and `test_present_members_still_counts_a_hire_who_left` is a
 tripwire that says so when it lands.
+
+**`emptyRun()` defaults the client's rate to 1, and a run's rate is never on its log.** Found by
+U25, and fixed at the one call site that knows better rather than at the root. `RATE_CHANGED` is
+appended when a rate *moves*, so a run created at ×1 and a child forked at 0 both arrive with no
+rate event at all — the client's figure has always been a default that happened to be right for a
+created run. `reset(rate)` closes it for the two callers that enter a timeline, because the switch
+already reports the rate. What is left open is every *other* way a client can attach, and it is
+**measured**: attaching straight to a forked child nobody has entered — `GET /state` says rate 0 at
+tick 439, its log is `GENESIS, CHECKPOINT_RAISED, DECISION_RESOLVED` and nothing else — the clock
+control reads ×1 over a world standing still, because nothing on the attach path states the rate
+either. Closing it properly wants the rate on the stream — the frame a
+client gets when it connects — or a `rate` the store holds as "not yet told", which is a shape
+change across the HUD, the render clock and the input lead.
 
 **A synchronous route now makes a provider call.** Widens the `async` entry above a third time,
 after U16 added `post_fork` beside the comparison path. `GET /runs/{id}/memory/{director}?summary=1`
