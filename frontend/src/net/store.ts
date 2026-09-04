@@ -274,6 +274,69 @@ export interface TrayEntry {
   atSeq: bigint
 }
 
+/**
+ * One decision the CEO has already settled, and where in the log they settled it.
+ *
+ * The store held none of this before: `DECISION_RESOLVED` advanced a count and dropped the
+ * option, the tick and the sequence on the floor. A fork is addressed by the **sequence of the
+ * resolution it reconsiders** — the copy stops one short of it, so the child arrives with that
+ * checkpoint still open — so without this projection the client has no way to name a past
+ * decision to the backend, and the product's central beat has no entry point.
+ */
+export interface DecisionRecord {
+  itemId: string
+  /**
+   * Which checkpoint of the item, or `-1` for a record read off a snapshot.
+   *
+   * Deliberately not reconstructed from a snapshot's ordering. `resolve_checkpoint` refuses an
+   * unreached or already-resolved checkpoint and checks nothing else, so ascending resolution
+   * order is a property of the two routes this client offers rather than a rule the kernel
+   * enforces — and a projection that assumed the alignment would be quietly wrong in the one
+   * case it was built for rather than honestly absent.
+   */
+  cpIndex: number
+  /** Which option was taken, or `-1` when only its label is known. */
+  optionIndex: number
+  /** The authored label of the option taken. Known from either source. */
+  choice: string
+  /**
+   * The authored label of the checkpoint.
+   *
+   * Empty for an event-derived record, because `DECISION_RESOLVED` does not carry one — the
+   * checkpoint index does, and the catalog is already on the client. Populated only from a
+   * snapshot, which names the decision and not its index.
+   */
+  label: string
+  /** True when it was settled in person rather than from the tray. */
+  inPerson: boolean
+  tick: bigint
+  /**
+   * The sequence of the `DECISION_RESOLVED`, and what a fork request names.
+   *
+   * **Zero for a decision this client learned from a snapshot**, and that is a state rather
+   * than a missing value: a snapshot is folded state and folded state holds no log positions.
+   * Such a decision is listed and cannot be forked, and the surface says which of the two it
+   * is — inventing a sequence would fork a different decision than the one on the card.
+   */
+  atSeq: bigint
+}
+
+/** The key a decision read off its own event is held under. */
+export function decisionKey(itemId: string, cpIndex: number): string {
+  return `${itemId}:${cpIndex}`
+}
+
+/**
+ * The key a decision read off a snapshot is held under.
+ *
+ * Its resolution ordinal, in a namespace of its own, because it has no checkpoint index to key
+ * on. Separate rather than shared so that a resync filling in the part of the run this client
+ * never saw cannot collide with — or silently replace — a record that still carries a sequence.
+ */
+export function snapshotDecisionKey(itemId: string, ordinal: number): string {
+  return `${itemId}:@${ordinal}`
+}
+
 export interface DeliverableView {
   itemId: string
   title: string
@@ -515,6 +578,15 @@ export interface RunStore {
   /** What the run has spent on model calls (M28). Measured, not authored. */
   spend: SpendView
   tray: TrayEntry[]
+  /**
+   * Every decision already settled, keyed by `decisionKey` or `snapshotDecisionKey`.
+   *
+   * The tray holds what is still open; this holds what is closed, which is a different question
+   * and the only one a fork can be asked about. Kept as a map rather than a list so that a
+   * replayed event — a resume asks for "after N" and the window is inclusive at the edges —
+   * settles onto the record it already wrote instead of appending a second card for it.
+   */
+  decisions: Record<string, DecisionRecord>
   deliverables: DeliverableView[]
   terminal: { reason: string; tick: bigint } | null
   /**
@@ -570,7 +642,7 @@ export interface RunStore {
   applyAll(frames: Frame[]): void
   setConnection(status: ConnectionStatus, error?: string | null): void
   markDiverged(diverged: boolean): void
-  reset(): void
+  reset(rate?: number): void
 }
 
 function emptyRun(): Omit<
@@ -595,6 +667,7 @@ function emptyRun(): Omit<
     dailyCost: 0,
     spend: emptySpend(),
     tray: [],
+    decisions: {},
     deliverables: [],
     terminal: null,
     tacitLines: {},
@@ -705,8 +778,28 @@ export const useRunStore = create<RunStore>()(
       set({ diverged })
     },
 
-    reset(): void {
-      set(emptyRun())
+    /**
+     * Clear the run, optionally starting from a rate the caller already knows.
+     *
+     * **The rate argument is not a convenience.** `rate` is the one field of a run this client
+     * never learns from its log: `RATE_CHANGED` is appended when a rate *moves*, and a run that
+     * was created at 1 or forked at 0 has never moved — so the empty state's `1` is a guess that
+     * happens to be right for a run somebody just started and is wrong for every timeline
+     * somebody just entered.
+     *
+     * Measured, on the compose path: a fork lands the player in a paused child, the child's log
+     * carries no rate event, and the clock control reads ×1 over a world standing still. Worse,
+     * the reset itself looks like a resume — the store's rate goes 0 to 1 — so the shell
+     * re-states the held direction into a timeline nobody has pressed a key in, the paused-run
+     * guard refuses it, and the refusal arrives as a banner about a command the player never
+     * issued.
+     *
+     * So the caller that switched states what the backend told it, in the same `set` as the
+     * clear rather than in a second one: two writes would put a frame between them in which the
+     * store reports the default, and that frame is exactly the one the restatement effect reads.
+     */
+    reset(rate?: number): void {
+      set(rate === undefined ? emptyRun() : { ...emptyRun(), rate })
     },
   })),
 )
@@ -1053,6 +1146,29 @@ function applyEvent(set: Setter, get: Getter, frame: EventFrame, seq: bigint): v
       patch.items = withItem(patch.items ?? state.items, itemId, {
         resolvedCount: existing.resolvedCount + 1,
       })
+    }
+
+    // And the decision itself, which nothing kept before: the count went up and the option, the
+    // tick and the sequence went nowhere. `seq` is the field a fork is addressed by, so this is
+    // the one line that makes a past decision reachable at all.
+    const cpIndex = toInt(payload.cp_index, -1)
+    if (itemId !== '' && cpIndex >= 0) {
+      patch.decisions = {
+        ...(patch.decisions ?? state.decisions),
+        [decisionKey(itemId, cpIndex)]: {
+          itemId,
+          cpIndex,
+          optionIndex: toInt(payload.option_index, -1),
+          choice: toStr(payload.choice),
+          // The checkpoint's own label is not on this event and does not need to be: the
+          // catalog is on the client and `cpIndex` addresses it. Carried on the record only
+          // for the snapshot case, which has an index for neither.
+          label: '',
+          inPerson: payload.in_person === true,
+          tick,
+          atSeq: seq,
+        },
+      }
     }
   }
 
@@ -1615,6 +1731,13 @@ function readSnapshot(
   // cost of a tenth of a second.
   patch.comparisons = {}
 
+  // Decisions do the opposite, and the difference is worth stating. A comparison is a
+  // *projection* whose basis is a state this client can no longer account for; a settled
+  // decision is *history* — it happened, the snapshot carries it, and reaching back to it is
+  // the whole job of the panel that reads this. So the held records are kept and the ones this
+  // client never saw are filled in beside them.
+  if (isRecord(items)) patch.decisions = fillDecisionsFrom(current.decisions, items)
+
   // A snapshot carries no tray of its own; it is rebuilt from the items that are blocked.
   if (patch.items !== undefined) {
     patch.tray = Object.values(patch.items)
@@ -1631,6 +1754,52 @@ function readSnapshot(
   }
 
   return patch
+}
+
+/**
+ * The decisions a snapshot knows about and this client does not.
+ *
+ * **The client's records are a suffix of the snapshot's, per item.** It saw every resolution
+ * from the moment it attached and none before, and a snapshot is taken at or after the last
+ * sequence it applied — so for an item whose snapshot lists `n` decisions and whose held
+ * records number `k`, the missing ones are the leading `n - k`. Filling in exactly those is
+ * what stops a resync listing half the run's decisions twice.
+ *
+ * What comes back cannot be forked, and the record says so by carrying sequence zero rather
+ * than by omission. A snapshot is folded state; folded state holds no log positions, and a fork
+ * names one. The alternative — dropping the list, as comparisons are dropped — would report a
+ * run with no history at exactly the moment the player is furthest into one.
+ */
+function fillDecisionsFrom(
+  held: Record<string, DecisionRecord>,
+  items: Record<string, unknown>,
+): Record<string, DecisionRecord> {
+  const next = { ...held }
+
+  for (const [itemId, item] of Object.entries(items)) {
+    if (!isRecord(item)) continue
+    const recorded = Array.isArray(item.decisions) ? item.decisions.filter(isRecord) : []
+    const seen = Object.values(held).filter((decision) => decision.itemId === itemId).length
+
+    // A second resync counts the records the first one wrote, so `missing` is zero and nothing
+    // is duplicated. The keys would collide harmlessly anyway; the count is what makes it
+    // deliberate rather than lucky.
+    for (let ordinal = 0; ordinal < recorded.length - seen; ordinal += 1) {
+      const decision = recorded[ordinal]
+      next[snapshotDecisionKey(itemId, ordinal)] = {
+        itemId,
+        cpIndex: -1,
+        optionIndex: -1,
+        choice: toStr(decision.choice),
+        label: toStr(decision.label),
+        inPerson: decision.in_person === true,
+        tick: toBig(decision.at_tick),
+        atSeq: 0n,
+      }
+    }
+  }
+
+  return next
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

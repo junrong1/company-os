@@ -230,6 +230,47 @@ export function itemFrame(options: {
 }
 
 /**
+ * One settled decision, as `DECISION_RESOLVED` carries it.
+ *
+ * Every field the store's decisions projection reads is on it, and only those: the payload also
+ * carries deltas, metrics and the item's new status, which other suites drive through
+ * `itemFrame`. Two helpers rather than one flag, because a decision is the one item event whose
+ * *identity* — which checkpoint, which option — is what is being tested.
+ */
+export function resolvedFrame(options: {
+  seq: number
+  item: string
+  cpIndex?: number
+  optionIndex?: number
+  choice?: string
+  inPerson?: boolean
+  tick?: number
+}): EventFrame {
+  return {
+    kind: 'DECISION_RESOLVED',
+    seq: String(options.seq),
+    tick: String(options.tick ?? 600),
+    schema_ver: 2,
+    rules_ver: 'test',
+    run_id: 'run-1',
+    command_id: '',
+    request_id: '',
+    payload: {
+      tick: options.tick ?? 600,
+      item: options.item,
+      cp_index: options.cpIndex ?? 0,
+      option_index: options.optionIndex ?? 0,
+      choice: options.choice ?? 'PDF is the record',
+      note: 'The PDF is the record.',
+      in_person: options.inPerson ?? true,
+      item_status: 'active',
+      deltas: {},
+      metrics: {},
+    },
+  }
+}
+
+/**
  * One resolved walk, as `STAFF_MOVED` carries it (R15).
  *
  * The path is a parameter rather than derived from the floor here: the *arithmetic* is pinned by

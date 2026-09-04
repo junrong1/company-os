@@ -246,7 +246,7 @@ describe('the Universe surface', () => {
   it('reads the tree and offers the timeline you are not in', async () => {
     const reader = async () => aDeepLineage()
     const host = await mount(
-      createElement(Tree, { runId: 'run-1', reader, switcher: async () => ({ refusal: '' }) }),
+      createElement(Tree, { runId: 'run-1', reader, switcher: async () => ({ refusal: '', rate: 1 }) }),
     )
 
     expect(host.querySelector('canvas.universe__tree')).not.toBeNull()
@@ -258,7 +258,7 @@ describe('the Universe surface', () => {
   it('enters a timeline only after the backend has moved the clock', async () => {
     const asked: Array<[string, string]> = []
     const entered: string[] = []
-    let resolve: (value: { refusal: string }) => void = () => {}
+    let resolve: (value: { refusal: string; rate: number }) => void = () => {}
 
     const host = await mount(
       createElement(Tree, {
@@ -267,7 +267,7 @@ describe('the Universe surface', () => {
         onEnter: (next: string) => entered.push(next),
         switcher: (from: string, to: string) => {
           asked.push([from, to])
-          return new Promise<{ refusal: string }>((settle) => {
+          return new Promise<{ refusal: string; rate: number }>((settle) => {
             resolve = settle
           })
         },
@@ -303,7 +303,7 @@ describe('the Universe surface', () => {
     expect((host.querySelector('.universe__enter') as HTMLButtonElement).disabled).toBe(true)
 
     await act(async () => {
-      resolve({ refusal: '' })
+      resolve({ refusal: '', rate: 1 })
     })
     expect(entered).toEqual(['run-1-aaa'])
   })
@@ -315,7 +315,7 @@ describe('the Universe surface', () => {
         runId: 'run-1',
         reader: async () => aDeepLineage(),
         onEnter: (next: string) => entered.push(next),
-        switcher: async () => ({ refusal: 'run-1-aaa is not in the same lineage as run-1.' }),
+        switcher: async () => ({ refusal: 'run-1-aaa is not in the same lineage as run-1.', rate: 0 }),
       }),
     )
 
@@ -347,7 +347,7 @@ describe('the Universe surface', () => {
       createElement(Tree, {
         runId: 'run-1',
         reader: async () => aDeepLineage(),
-        switcher: async () => ({ refusal: '' }),
+        switcher: async () => ({ refusal: '', rate: 1 }),
       }),
     )
 
@@ -379,7 +379,7 @@ describe('the Universe surface', () => {
       createElement(Tree, {
         runId: 'run-0',
         reader: async () => ({ ...lineage(nodes), cap: 4 }),
-        switcher: async () => ({ refusal: '' }),
+        switcher: async () => ({ refusal: '', rate: 1 }),
       }),
     )
 
@@ -396,7 +396,7 @@ describe('the Universe surface', () => {
           reads.push(runId)
           return aDeepLineage()
         },
-        switcher: async () => ({ refusal: '' }),
+        switcher: async () => ({ refusal: '', rate: 1 }),
       }),
     )
 
@@ -410,7 +410,7 @@ describe('the Universe surface', () => {
         reader: async () => {
           throw new LineageUnavailable(404, 'no run run-1')
         },
-        switcher: async () => ({ refusal: '' }),
+        switcher: async () => ({ refusal: '', rate: 1 }),
       }),
     )
 

@@ -48,14 +48,41 @@ export interface TreeProps {
    * Called only after the backend has said the switch happened, so a client cannot end up
    * subscribed to a timeline whose clock nobody moved.
    */
-  onEnter?: (runId: string) => void
+  onEnter?: (runId: string, rate: number) => void
   /** Injectable for the suite, which mounts this without a gateway. Must be stable across renders. */
   reader?: (runId: string, signal?: AbortSignal) => Promise<LineageWire>
-  /** Injectable for the same reason, and it is the write half — a test must not need a server. */
-  switcher?: (runId: string, to: string, rate?: number) => Promise<{ refusal: string }>
+  /**
+   * Injectable for the same reason, and it is the write half — a test must not need a server.
+   *
+   * `rate` is required on the answer rather than optional, because the shell writes it into the
+   * store: a double that omitted it would make this component supply a default, and the only
+   * available default — assume paused — is wrong in the direction that matters. The route always
+   * states it, so the type says so.
+   */
+  switcher?: (
+    runId: string,
+    to: string,
+    rate?: number,
+  ) => Promise<{ refusal: string; rate: number }>
+  /**
+   * Open the aside on this node when the stage is entered (U25).
+   *
+   * A fork made somewhere else lands the player here, and landing them on the tree with nothing
+   * selected would answer "what did that do?" with a graph they then have to find themselves in.
+   * A hint rather than a controlled value: clicking another node still selects it, and this only
+   * moves the selection when it changes.
+   */
+  selected?: string | null
 }
 
-export function Tree({ runId, active = true, onEnter, reader, switcher }: TreeProps) {
+export function Tree({
+  runId,
+  active = true,
+  onEnter,
+  reader,
+  switcher,
+  selected: opened = null,
+}: TreeProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [lineage, setLineage] = useState<LineageWire | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -87,6 +114,15 @@ export function Tree({ runId, active = true, onEnter, reader, switcher }: TreePr
 
     return () => controller.abort()
   }, [active, read, runId])
+
+  // The caller's node, taken as the selection whenever it changes. Compared against what was
+  // last taken rather than against the current selection, so a player who clicks away from a
+  // forked node is not dragged back to it on the next render.
+  const takenRef = useRef<string | null>(null)
+  if (opened !== null && opened !== takenRef.current) {
+    takenRef.current = opened
+    if (opened !== selected) setSelected(opened)
+  }
 
   const model = useMemo(() => (lineage === null ? null : buildTreeModel(lineage)), [lineage])
   const size = useMemo(
@@ -136,9 +172,12 @@ export function Tree({ runId, active = true, onEnter, reader, switcher }: TreePr
             setEntering(null)
             return
           }
-          // Upwards only after the backend moved the clock. Re-reading the tree is the caller's
-          // job too: it happens when `runId` changes, which is the effect above.
-          onEnter?.(to)
+          // Upwards only after the backend moved the clock, and carrying the rate it moved to:
+          // a timeline's rate is the one thing this client never learns from its log, because
+          // `RATE_CHANGED` is appended when a rate moves and an entered timeline resumes at the
+          // rate it was left at. Re-reading the tree is the caller's job too: it happens when
+          // `runId` changes, which is the effect above.
+          onEnter?.(to, outcome.rate)
           setEntering(null)
         })
         .catch((cause: unknown) => {

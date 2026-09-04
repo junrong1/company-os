@@ -360,6 +360,109 @@ export async function fetchLineage(
   return (await response.json()) as LineageWire
 }
 
+// =========================================================================
+// Forking: taking a past decision differently (U25)
+// =========================================================================
+
+/** What a fork answers with: the timeline it made, or the reason there is not one. */
+export interface ForkedTimeline {
+  child_run_id: string
+  parent_run_id: string
+  /** The sequence of the decision being reconsidered — the one the request named. */
+  decision_seq: number
+  /** The last sequence copied, which is the one *before* the decision. */
+  forked_at_seq: number
+  forked_at_tick: number
+  lineage_root_id: string
+  item: string
+  cp_index: number
+  /** The option this timeline takes, and the one its parent took. */
+  option_index: number
+  parent_option_index: number
+  /** False when this call found the child rather than making it — a retry (M47). */
+  created: boolean
+  /** Set when the answer is no: a full lineage, a sequence that is not a decision, an option
+   *  that does not exist, a prefix above the size bound. */
+  refusal: string
+}
+
+/**
+ * The key a fork is submitted under, derived from what the player asked for.
+ *
+ * **Once per intent, not once per attempt**, and the distinction is the whole of M47 on this
+ * side of the wire. The child's id is minted from this key, so a fresh random key per HTTP call
+ * turns a double-click into two identical timelines and a lost response into a third — and the
+ * sixteen-timeline cap is what the player meets for it. Derived from the decision and the option
+ * instead, so "what if I had taken this option here" names one timeline however many times it is
+ * asked, including across a reload and across a restart that emptied the gateway's ledger.
+ *
+ * Two *different* alternatives at one decision are two keys and therefore two timelines, which is
+ * the case U16's own id fix exists for: forking one decision twice is the mechanic, not a retry.
+ */
+export function forkIdempotencyKey(atSeq: bigint, optionIndex: number): string {
+  return `fork-${atSeq}-${optionIndex}`
+}
+
+/**
+ * Take a past decision differently, and get a timeline back for it (M44).
+ *
+ * `atSeq` is the sequence of the `DECISION_RESOLVED` being reconsidered rather than the fork
+ * point: the backend stops the copy one short of it, so the child arrives with that checkpoint
+ * still open and settles it the other way.
+ *
+ * A refusal comes back on the payload rather than as an error, like a rejected command and like
+ * a switch: the request was well-formed and the answer is no, which the surface renders. Only a
+ * transport failure, an unknown parent and a malformed request throw.
+ */
+export async function forkTimeline(
+  runId: string,
+  atSeq: bigint,
+  optionIndex: number,
+  signal?: AbortSignal,
+): Promise<ForkedTimeline> {
+  // The route parses `at_seq` as a JSON *number* and refuses a string outright, so the
+  // conversion happens here — and above `Number.MAX_SAFE_INTEGER` it stops being one. Refused
+  // rather than sent, for the reason the route itself gives for refusing a non-integral one:
+  // rounding it would name a different decision than the player asked for, and nothing in the
+  // answer would say so.
+  if (atSeq > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new LineageUnavailable(
+      400,
+      `sequence ${atSeq} is above the range a JSON number carries exactly, so this fork would ` +
+        'name a different decision than the one you chose.',
+    )
+  }
+
+  let response: Response
+  try {
+    response = await fetch(`${GATEWAY_BASE}/runs/${encodeURIComponent(runId)}/fork`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        at_seq: Number(atSeq),
+        option_index: optionIndex,
+        idempotency_key: forkIdempotencyKey(atSeq, optionIndex),
+      }),
+      signal,
+    })
+  } catch (cause) {
+    throw new GatewayUnreachable(cause)
+  }
+
+  if (!response.ok) {
+    const detail = (await response.json().catch(() => ({}))) as { detail?: string }
+    // The same error the two lineage reads throw, rather than a fourth class. All three are one
+    // question with one answer for the surface: something about this lineage could not be done,
+    // and here is the status and the sentence.
+    throw new LineageUnavailable(
+      response.status,
+      detail.detail ?? `the gateway answered ${response.status} to a fork`,
+    )
+  }
+
+  return (await response.json()) as ForkedTimeline
+}
+
 /** What a switch answers with: where the clock went, or why it did not go. */
 export interface SwitchedTimeline {
   from_run_id: string

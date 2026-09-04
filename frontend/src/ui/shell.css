@@ -1362,3 +1362,82 @@
   padding: 8px 12px;
   font-size: 11px;
 }
+
+/**
+ * What you decided, and what else you could have chosen (U25).
+ *
+ * **It borrows the tray's card, not a second one.** A settled decision and an open one are the
+ * same object at two moments, and giving the closed one its own visual language would ask a
+ * player to learn twice what a decision looks like. What separates them is weight: the tray is
+ * the only warm thing in the chrome because somebody is waiting, and nobody is waiting on this.
+ *
+ * The taken option is marked rather than coloured — a check and the word, so it survives
+ * greyscale, which is the same rule the Universe tree's standing marker follows.
+ */
+.decided {
+  display: flex;
+  flex-direction: column;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 12px;
+}
+
+.decided__label {
+  margin: 5px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.decided__taken {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 7px 0 0;
+  font-size: 11px;
+}
+
+.decided__marker { color: var(--tianlan); font-weight: 700; }
+.decided__route { font-size: 10px; }
+
+.decided__unforkable,
+.decided__refusal {
+  margin: 7px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+/* An alternative is a row, not an option: it cannot be chosen, only branched from. So no radio,
+   no name group, and the affordance is a verb rather than a selection. */
+.alternative {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin-top: 8px;
+  padding-left: 9px;
+  border-left: 2px solid var(--rule);
+}
+
+.alternative__label { font-size: 11px; }
+.alternative__detail { flex: 1 1 100%; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+
+.alternative__fork {
+  align-self: flex-start;
+  padding: 3px 8px;
+  border: 1px solid var(--tianlan);
+  background: var(--ganglan);
+  color: var(--tianlan);
+  font: 750 10px/1.6 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.alternative__fork:disabled {
+  border-color: var(--rule);
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.alternative__fork:focus-visible { outline: 2px solid var(--tianlan); outline-offset: 2px; }

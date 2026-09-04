@@ -23,6 +23,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { type MetricDef, NO_METRIC_DEFS, PAL, RESERVED_BEAM, deptColour } from '../design/tokens'
 import { type CatalogEntry, type ItemStatus, type TrayEntry, useRunStore } from '../net/store'
 import { CompareAffordance } from './Comparison'
+import { DecisionsPanel } from './Decisions'
 import { Mark } from './Marking'
 import { MemoryAffordance } from './Memory'
 import type { CompareSender } from './comparison-model'
@@ -437,11 +438,19 @@ export function Panels({
   onCommand,
   onCompare,
   onWalkTo,
+  onEnteredTimeline,
 }: {
   runId?: string
   onCommand?: CommandSender
   onCompare?: CompareSender
   onWalkTo?: (personId: string) => void
+  /**
+   * Where a fork lands the player, and at what rate the backend left the clock.
+   *
+   * Owned by the shell, which holds the stage and the run id. The rate travels with it because
+   * a run's rate is the one field the client never learns from its log.
+   */
+  onEnteredTimeline?: (childRunId: string, rate: number) => void
 }) {
   return (
     <div className="panels">
@@ -449,6 +458,10 @@ export function Panels({
       <OrgPanel runId={runId} onWalkTo={onWalkTo} />
       <WorkPanel onAssign={onCommand} />
       <OutputPanel />
+      {/* Last, with the other retrospective panel: the tray is what is waiting on you and this
+          is what is behind you. It is the only panel that can change which run you are in, which
+          is a reason to sit at the end of the rail rather than at the top of it. */}
+      <DecisionsPanel runId={runId} onEntered={onEnteredTimeline} />
     </div>
   )
 }

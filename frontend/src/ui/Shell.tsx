@@ -103,6 +103,10 @@ export function Shell({
   const [stage, setStage] = useState<Stage>('office')
   const [rejection, setRejection] = useState<string | null>(null)
   const [startingRun, setStartingRun] = useState(false)
+  // Which node the Universe opens on. Set by a fork, which is the one way a player arrives at
+  // that stage without having gone there — so it is the one time the tree has to say where they
+  // have landed rather than waiting to be asked.
+  const [openTimeline, setOpenTimeline] = useState<string | null>(null)
 
   // Who the CEO is standing next to. Held as React state because a panel renders from it, but
   // *decided* in the frame loop, because it depends on the predicted position — which React
@@ -340,6 +344,14 @@ export function Shell({
   // A key held across a pause fires no keydown on resume, so without re-stating the held
   // direction the CEO stays frozen until the player lets go and presses again — which reads
   // as the resume having failed.
+  //
+  // **The baseline is a ref rather than the previous render's rate, and `land` writes it.** A
+  // rate that moved because the player entered another timeline is not a resume, and watching
+  // the number cannot tell the two apart: the store is not React state, so clearing it and
+  // handing the run id up do not land in one commit, and the shell can observe the new rate
+  // while still holding the old run id. Comparing run ids therefore does not work either —
+  // measured. Stating the baseline at the moment of the transition does, because it does not
+  // depend on any ordering at all.
   const previousRate = useRef(rate)
   useEffect(() => {
     const held = bitmaskFor(pressed.current)
@@ -437,6 +449,51 @@ export function Shell({
       command('compare_options', comparePayload(itemId, cpIndex, personId, now, inPerson))
     },
     [command],
+  )
+
+  /**
+   * Land in another timeline, after the backend has moved the clock into it.
+   *
+   * Everything run-scoped in the store is cleared *here* rather than in the app, because the
+   * store is what the incoming stream writes into and its sequence guard drops anything at or
+   * below the sequence it already applied — so a new timeline's frames would be dropped wholesale
+   * without this. What the app owns is the address bar and the run id.
+   */
+  const land = useCallback(
+    (next: string, rate: number) => {
+      // The rate being arrived at, recorded as the restatement baseline *before* the store is
+      // cleared. This is what stops the transition being read as a resume — see the restatement
+      // effect above, which compares against it. Measured on the compose path: without it, entering a paused timeline posted a
+      // held direction nobody had pressed into a run that refused it, and the refusal reached
+      // the player as a banner about a command they never issued.
+      previousRate.current = rate
+      // Cleared *with* the rate the backend reported, in one write. A run's rate is the one
+      // field this client never learns from its log — `RATE_CHANGED` is appended when a rate
+      // moves, and a timeline entered at the rate it was left at has not moved — so without
+      // this the empty state's default of 1 stands in, and the clock control reads ×1 over a
+      // paused world.
+      runState().reset(rate)
+      setRejection(null)
+      onEnterTimeline?.(next)
+    },
+    [onEnterTimeline],
+  )
+
+  /**
+   * Land in a timeline a *fork* produced, which is the same thing plus a place to stand.
+   *
+   * The stage moves and the tree opens on the new node. Without it the player presses "take this
+   * instead" and sees the same office at the same tick — the product's central beat with its
+   * outcome removed — because a fresh child is paused at the decision it reconsiders and looks
+   * exactly like the timeline they left.
+   */
+  const landInFork = useCallback(
+    (child: string, rate: number) => {
+      setOpenTimeline(child)
+      setStage('universe')
+      land(child, rate)
+    },
+    [land],
   )
 
   const hints = useMemo(() => pendingHints(dismissed), [dismissed])
@@ -546,15 +603,8 @@ export function Shell({
           <Tree
             runId={runId}
             active={stage === 'universe'}
-            onEnter={(next) => {
-              // The shell asks and the app moves. Everything run-scoped in the store is cleared
-              // here rather than in the app, because the store is what the incoming stream writes
-              // into and its sequence guard drops anything at or below the sequence it already
-              // applied — so a new timeline's frames would be dropped wholesale without this.
-              runState().reset()
-              setRejection(null)
-              onEnterTimeline?.(next)
-            }}
+            selected={openTimeline}
+            onEnter={land}
           />
         </div>
 
@@ -598,7 +648,12 @@ export function Shell({
           the office, so you never need to open the DAG to learn that something stopped. */}
       <ChainStrip />
 
-      <Panels runId={runId} onCommand={command} onCompare={compare} />
+      <Panels
+        runId={runId}
+        onCommand={command}
+        onCompare={compare}
+        onEnteredTimeline={landInFork}
+      />
     </main>
   )
 }
