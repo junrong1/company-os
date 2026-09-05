@@ -193,19 +193,22 @@ carries the deferred defect register.
 |---|---|---|
 | U14. Director memory and the CEO's reading surface | `[x]` | `GET /runs/{id}/memory/{director}` — a scoped slice of the log, never a second store. `context.scan` is the one admission pass and `memory.select` is a whole-run window onto it, so a memory cannot see what a briefing could not; the selection is derived from an authored salience table, so the panel renders on the keyless path and every citation resolves to a set anybody can recompute. The prose is the only generated half, and a sentence that cites nothing, cites outside the line, invents a figure or recommends anything is refused before the CEO reads it. Two calls per open — the derived half at once, the summary behind a stated pending line — and the regeneration cadence is the content-addressed cache rather than a timer. The scope is derived in the kernel and handed across by the launcher, the fourth composed callable, so no bench module can compute one. 39 new backend tests plus 16 client ones; found a live capacity defect in `present_members` and left it in the register |
 
-**Phase E — forks, timelines, the Universe.** Three units in, two to go.
+**Phase E — forks, timelines, the Universe.** Four units in, one to go.
 
 | Unit | Status | Evidence |
 |---|---|---|
 | U16. Persistent forks | `[x]` | `POST /runs/{id}/fork` — a verb rather than a command kind, joining `START_RUN` as the second `CommandKind` value with no dispatch entry, because both create a run. The three defects closed: the child id is minted from the idempotency key so two forks of one decision are two timelines; the child row records the tick of the decision it reconsiders rather than the parent's present tick; and the child is registered with the runtime. The prefix copy became one `INSERT..SELECT` inside the same transaction as the divergence, routed through the single writer. `lineage_root_id` now comes from the parent, which switched U12's cache half live. 34 new backend tests, both dialects; verified on the compose path against Postgres — a three-deep lineage, four clocks, one restart |
 | U17. The Universe tree | `[x]` | `GET /runs/{id}/lineage` and `POST /runs/{id}/switch`, plus a third stage. The tree is a query over `lineage_root_id`, `parent_run_id` and `forked_at_seq` in the new `logschema/lineage.py` — no new table, no recursion, and one batched log read for the decision that separated each child from its parent, both option labels included. The switch is a verb rather than a command because it names two runs: it pauses the outgoing timeline before resuming the incoming one, takes one lock per lineage outside every run lock, and is built out of `set_rate` so it inherits the row write, the append, the publish and the clock start. `resume_all` now starts one clock per lineage and pauses the rest in their own logs. U16's missing fork cap is closed at 16 timelines, checked after the retry path so idempotency still holds at the boundary. Two live defects found: the tree's day came from a row that lags the fold (measured — state at 58, row at 1), and the terminated-timeline guard would have been dead code because nothing calls `store.terminate_run`. 20 new backend tests plus 22 client ones; verified live end to end — settle, fork, tree, switch, and one clock across a real restart |
+| U18. The timeline diff | `[x]` | `GET /report/runs/{id}/diff/{other}` — a fold across two logs at one sim-day, on the report app the launcher mounts rather than on the gateway, because a diff is a fold and R4 forbids the import. **A day is its first tick**, which is what makes "at the same sim-day" decidable: `fold` advances past a log's last event by design, so folding to a day's *end* would run a paused timeline through ticks it never took and print the result beside the other side's history. A day's opening tick is reached by both or by neither — and it is the tick the kernel checkpoints its own state hash on, so R12 became a check rather than a claim: each side's reported hash is byte-identical to the `DAY_CHECKPOINT` in the log, verified against Postgres, and at a day before the fork both sides hash the same. The separating decision is named at the nearest common ancestor, so two cousins are described by the decisions they took rather than by one neither did. Entered by picking two nodes on the tree; the held node wears a second marker on the opposite edge from the standing one, so a node can be both. 35 new backend tests plus 25 client ones. **Two live defects, both on this unit's own surface and neither visible to any suite**: every figure was rendered under the *other* timeline's heading (measured — the left card at x 40–358, its own figures at 462–532), and two timelines that had ended read as "running" because `runs.terminal_reason` was NULL and neither log held a terminal event. Nothing appended, no event kind, no payload field, no shape version, no fixture |
 | U25. Forking from the client | `[x]` | The decisions projection the store never had — `DECISION_RESOLVED` advanced a count and dropped the option, the tick and the sequence, which is the field a fork is addressed by — plus a Decided panel that lists what was settled with the option taken marked and offers a fork per alternative, priced by the same `OptionConsequence` the tray and the conversation render. A fork is two calls: `POST /fork` then a switch at rate zero, and the shell opens the Universe on the new node, so the beat has a visible outcome instead of the same office at the same tick. The idempotency key is derived from the decision and the option — once per intent, not per attempt, which is U16's review finding 1 on the client side. A resync fills the list in from the snapshot's per-item `decisions` (the client's records are a suffix, so the missing ones are the leading `n − k`) and those entries are listed, honest about carrying sequence zero, and offer no fork — a snapshot is folded state and folded state holds no log positions. 32 new client tests. **Two live defects found, both on U17's entry path and neither visible to any suite**: the client posted a command nobody issued into the timeline it had just entered and showed its refusal as a banner, and the clock control read ×1 over a paused world. Nothing appended, no event kind, no payload field, no shape version, no fixture |
 
 **Phase F.** Not started. **U15** is unblocked and is the last of Phase D — it inherits two scope
-derivations from U14 and has to widen the right one. **U18**, **U19** and **U20** are all unblocked;
-U21, U22 and U23 sit behind them. U18's separating decision is already on U17's tree — both option
-indices and both labels — so the diff needs no catalog lookup, and it now also inherits a `selected`
-prop on the tree and the shared `land(runId, rate)` entry path U25 built out of U17's switch.
+derivations from U14 and has to widen the right one. **U19** and **U20** are unblocked; U21, U22 and
+U23 sit behind them. U18 is in, and it leaves both of them something: the state-hash-against-
+`DAY_CHECKPOINT` comparison U19's re-fold over a lineage generalises, already written twice and
+confirmed against Postgres; and `logschema.lineage.separating_decision`, which answers "what
+separated these two" for any pair at their nearest common ancestor, which is the naming U20's report
+over a whole tree needs.
 
 **One fix outside the plan.** `a69c304` — a command's events were never published to a connected
 client. `_publish` had one caller inside the tick loop and published only what that batch returned,
@@ -278,6 +281,20 @@ Every shipped unit but one turned up a live defect on its path. The pattern is w
   the run id up do not land in one commit, and the shell observes the new rate while still holding
   the old run id. What works is stating the baseline at the moment of the transition, which depends
   on no ordering at all. Worth keeping because the shape recurs anywhere a component watches both.
+- **Every figure in the diff was rendered under the other timeline's name.** Found by U18 in the
+  browser, and the worst thing that surface can do. The two column headings were a flex row of equal
+  cards and the figure rows were a four-column grid of their own, so nothing made them agree:
+  measured at 1568px, the *left* timeline's card spanned x 40 to 358 while its own figures sat at 462
+  to 532, entirely under the *right* timeline's card. Every client assertion passed, because they are
+  all about which figure carries which attribute rather than where it lands. jsdom computes no
+  layout, so the regression test is about what made the drift possible — one column template both
+  grids must read — and it fails when either declares its own.
+- **Two timelines that had ended read as "running".** Also U18, and the row was not merely stale:
+  `runs.terminal_reason` was **NULL** for both with rates of 1 and 3, and **neither log held a
+  terminal event**. The fact exists only in the kernel's folded state, which is why the Universe tree
+  gets it right — `lineage_tree` overlays its own fold — and why the report, which may not import the
+  kernel, cannot. It reads it from its own fold instead, where it is exact and free. Third time a
+  read surface has met U17's lesson that the row is a projection and the fold is the authority.
 - **A suite that leaks window listeners fails the test written to catch the defect it imitates.**
   U25's `mount` removed the host and never unmounted the root, so every shell the file mounted kept
   its keyboard bindings — and a `keydown` in a later test made each of them submit a command for the
@@ -378,8 +395,14 @@ Requirements this plan has moved are marked with the unit that moved them.
   the clock — pausing the outgoing timeline before resuming the incoming one, so a crash between the
   two appends leaves nothing ticking. A restart starts one clock per lineage and pauses the rest in
   their own logs
-- [ ] M50, M52 — U18. Unblocked, and it needs no new query: both option labels are already on each
-  node of U17's tree, so the separating decision is named without a catalog lookup
+- [x] M50, M52 — **U18**. `GET /report/runs/{id}/diff/{other}`, served by the report app the
+  launcher mounts rather than by the gateway, because a diff is a fold and the gateway may not
+  import one. Both sides fold through the kernel's own fold at **one tick** — a day's opening
+  tick, which either timeline has reached or has not, so a day one side never got to is a refusal
+  with the reason rather than a column of simulated ticks beside a column of history. The
+  separating decision is named at the two timelines' nearest common ancestor, so two cousins are
+  described by the decisions they actually took rather than by one neither of them did. Every
+  figure carries the marking on the wire and on the surface, swept the way the HUD's tiles are
 
 **The Report (M53–M61)**
 - [~] M55 every claim resolves to its event — `services/report/fold.py`, and the report is now mounted and answering in the one process (**U24**)
@@ -407,12 +430,13 @@ U15 closed when MVP U16 minted a fork id that cannot collide. The
 simulation half of the product is built and covered by four suites plus golden vectors across two
 languages, and the daylight visual system is complete on top of it.
 
-The MVP plan is **18 of 25 units in**, with Phases A, B and C complete, Phase D started and Phase E
-three-fifths in. Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about 52 are
+The MVP plan is **19 of 25 units in**, with Phases A, B and C complete, Phase D started and Phase E
+four-fifths in. Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about 54 are
 met now — M13 is the one U7 closed, M15 and M16 stopped being half-met, U11 closed the five the bench
 is made of, U13 closed M30 and M67's proof half, U12 built all of M33 but the one line U16 owned, U16
-closed that line plus the five forks are made of, U14 closed the three memory rests on, and U17
-closed M49. The suites went from 699 backend tests to **1,267**, and the client from 404 to **558**.
+closed that line plus the five forks are made of, U14 closed the three memory rests on, U17
+closed M49, and U18 closed M50 and M52. The suites went from 699 backend tests to **1,302**, and the
+client from 404 to **582**.
 
 What remains is still concentrated where the plan said it would be, but the shape has changed three
 times. The bench was the plan's single biggest risk and the unit most likely to be "estimated as an
@@ -420,8 +444,8 @@ edit"; its contract, its transport and the four directors who actually brief and
 and no event payload, schema version or golden fixture moved to get there. **Forks were the plan's
 second risk and are now in**, on the same terms. **The two read surfaces on top of them are in too**,
 and on stronger terms than either: a memory and a Universe tree are both *queries* — no event kind,
-no payload field, no shape version, no fixture, and nothing appended by either of them. What does not
-exist is Authorization, the timeline diff, and the report.
+no payload field, no shape version, no fixture, and nothing appended by either of them. **The diff is in on the same terms**, and it is the fourth read surface in a row that cost the log
+nothing. What does not exist is Authorization and the report.
 
 **CI was the thing genuinely overdue, and it is now in.** Four jobs, no secret of any kind, and it
 earned itself twice before it was ever green: a second `tsc -b` failure sitting in a tree whose suites
@@ -456,8 +480,19 @@ not have caused. The other made the clock control read ×1 over a world standing
 both is that a run's *rate* is the one field the client never learns from its log, and the half of
 that which is not on the entry path is now in the register with a measurement beside it.
 
-**Next is U18, then U15.** U18's diff needs no new query — both option labels are already on every
-node of the tree — and it now inherits a tree that can be opened on a chosen node and a shared entry
-path. **U15** is the last of Phase D and the heaviest thing left before the report: it moves
-`STATE_SHAPE_VERSION`, regenerates the golden fixtures, and owns the run-scoped
-`statement_request_id` U16 left open.
+**U18 is in, and it turned the plan's central claim into a check.** R12 says every fold that crosses
+timelines reads through the kernel's own fold, and until now that was enforced by an import sweep
+and a docstring. Comparing at a day's *opening* tick — chosen because it is the only tick both
+timelines have reached or neither has — put the comparison on the tick the kernel already
+checkpoints its own state hash at. So each side's reported hash is the same string the log holds
+for that tick, verified against Postgres on the compose path, and a second reconstruction anywhere
+on that path would have to reproduce the kernel's hash to pass. It also earned the pattern for the
+tenth unit running, and this time both defects were on its own new surface rather than on somebody
+else's: a column of figures rendered under the *other* timeline's heading, and two ended timelines
+described as running because the fact that they had ended is in neither the row nor the log.
+
+**Next is U15, then U19 and U20.** **U15** is the last of Phase D and the heaviest thing left before
+the report: it moves `STATE_SHAPE_VERSION`, regenerates the golden fixtures, and owns the run-scoped
+`statement_request_id` U16 left open. **U19** inherits U18's hash comparison and one defect of its
+own to close — `verify` refuses a healthy run whose CEO walked across a day boundary, measured and
+in the register.

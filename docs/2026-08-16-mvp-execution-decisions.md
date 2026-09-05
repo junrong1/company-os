@@ -579,6 +579,70 @@ is in `universe.test.ts`'s `mount`, which nothing currently depends on.
 
 ---
 
+## What U18 found, that U19 and U20 need
+
+U18 is the timeline diff: a fold across two logs at one sim-day, served by the report app the
+launcher mounts, entered by picking two nodes on the Universe tree. One new route, one new query
+helper, one new client surface. No event kind, no payload field, no shape version, no golden
+fixture, and nothing appended — the fourth read surface in a row built entirely out of what the
+backend already holds.
+
+**A day is its first tick, and that decided the whole shape.** The plan says the diff defaults to
+the lesser of the two timelines' current sim-days and refuses a day one side has not reached. What
+makes that a *decidable* rule rather than a judgement call is which tick "at day N" means. Folding
+to a day's **last** tick would mean folding a timeline whose clock is standing still somewhere
+inside that day forward through ticks it never ran — `fold` advances past the log's final event by
+design, which is what lets the report cover a quiet office, and here it would print an invention
+beside the other side's history. A day's **first** tick is reached by both timelines or by neither.
+It is also the tick the kernel checkpoints its own state hash on, which turned R12 from a claim into
+a check: **the hash the diff reports for each side is byte-identical to the `DAY_CHECKPOINT` the
+kernel wrote at that tick**, verified against Postgres on the compose path, and at a day before the
+fork both sides hash the same.
+
+**Two live defects, both on this unit's own surface, and neither visible to any suite.** The pattern
+holds for the tenth unit running.
+
+- **Every figure was read under the other timeline's name.** The two column headings were a flex row
+  of equal cards and the figure rows were a four-column grid of their own, so nothing made the two
+  agree. Measured in the browser at 1568px: the *left* timeline's card spanned x 40 to 358 while its
+  own figures sat at 462 to 532 — entirely underneath the *right* timeline's card. It is the worst
+  thing this surface can do, and every client assertion passed, because they are all about which
+  figure carries which attribute rather than where it lands. Fixed by one `--diff-columns` template
+  that the heading row and every figure row both read; the regression test asserts that neither rule
+  declares columns of its own, and fails when one does.
+- **Two timelines that had ended read as "running".** `runs.terminal_reason` was **NULL** for both,
+  with rates of 1 and 3, and **neither log held a terminal event** — the fact exists only in the
+  kernel's folded state, and the Universe tree shows it correctly only because
+  `KernelRuntime.lineage_tree` overlays its own fold on the rows. The report cannot do that (R4). So
+  the diff reads it from *its own* fold, where it is exact and free, and the column now answers the
+  better question: whether that timeline had ended **by the day being compared at**. The row's
+  `rate` was dropped from the payload in the same change — a running-or-paused claim is about *now*,
+  now is the tree's to report, and a field the surface cannot read honestly is worse than an absent
+  one.
+
+**A run row is a projection and the log is a floor under it.** U17's lag turns up again here, and
+the report has no live fold to overlay — so `TimelineLog.reached_tick` takes the larger of the row's
+tick and the newest tick the log actually *proves*, using the envelope's own tick rather than its
+payload's (a `CEO_INPUT` names a tick the run may not have got to). The bound stays conservative in
+the direction that matters: a day this diff offers is a day both timelines really reached, and the
+surface says where the bound came from rather than leaving a refusal unaccountable.
+
+### For U19 and U20
+
+- **The state-hash-against-`DAY_CHECKPOINT` check is the cheap version of what U19 wants**, and it
+  is already written twice — in `test_diff.py` against a driven log, and confirmed live against
+  Postgres. U19's re-fold over a lineage is the same comparison at every boundary of every timeline.
+- **`verify` has a defect on that exact path**, registered below with its measurement. U19 owns it.
+- **`logschema.lineage.separating_decision` answers "what separated these two" for any pair**, at
+  their nearest common ancestor rather than at the root — U20's report over a lineage needs the same
+  naming, and it is a walk over rows with no fold in it.
+- **`report.fold.state_at_day` is the one place that decides where a fold starts.** Every day step
+  of the control is a fresh pair of folds from zero — measured at about 250 ms a step over a
+  21-day lineage of 88 events a side. Persisted snapshots are the lever if that binds, and the
+  shape does not have to change for them.
+
+---
+
 ## The deferred defect register
 
 Pre-existing defects found while executing this plan, none of them in the PRD's M-list, each
@@ -595,6 +659,20 @@ could not close it: closing it needs table creation to happen behind the lease, 
 `KernelRuntime.start`'s own docstring explains it cannot have. Recorded in
 `refuse_a_store_this_build_cannot_read`'s docstring. This is a data-integrity window, not a
 tidiness point, and it wants its own unit.
+
+**`simcore.verify` calls a healthy run unhealthy when the CEO walked across a day boundary.** Found
+by U18. `verify` folds a *sequence* prefix ending at each `DAY_CHECKPOINT` and passes that
+boundary's tick as `through_tick`; `fold` compares `through_tick` against the largest tick any event
+in the prefix **names**, and a `CEO_INPUT` names the tick it *applies* at, deliberately a few ticks
+ahead of the one it was submitted on. So a player holding a direction across a boundary leaves an
+event the prefix keeps and the fold refuses. **Measured on this build:** an otherwise identical run
+verifies healthy with the office quiet and comes back `healthy=False` with `asked to fold through
+tick 540, but the log holds an event at tick 542` once one `submit_ceo_input` straddles the
+boundary — a sentence about a run row lagging its log, describing something else entirely. It
+reaches the player through `POST /runs/{id}/diagnose`, which is the call an operator makes when
+things look wrong. U18 sidestepped it (`state_at_day` filters by the fold's own tick rule instead of
+cutting by sequence, and says so) rather than fixing it, because `verify` is **U19**'s — the unit
+that already owns the determinism suites over a lineage and would have to re-baseline them.
 
 **`achieved_multiplier_permille` truncates a fraction of a tick at every wake and never accumulates
 it.** Found by U4, confirmed and deepened by U5. At rate 1 the clock runs at roughly 55% of nominal
