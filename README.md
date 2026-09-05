@@ -179,6 +179,40 @@ naming both in the line it writes. A refusal is a `200` with a sentence: another
 lineage, the timeline you are already in, or one that has ended. An ended timeline
 cannot be entered and can still be forked.
 
+### Diff two timelines
+
+Two futures at one sim-day, metric by metric, with the decision that separated them
+named. It is a read over two logs: no tick, no event, no command, nothing appended.
+
+```bash
+# Omit `day` and it answers at the furthest day *both* timelines have reached, and
+# says where that bound is. The client sends no day on the first ask for that reason.
+curl -s http://127.0.0.1:8800/report/runs/demo/diff/<child>
+
+# Or name one. Days are 1-based and the day is the tick it opens on, so both sides
+# are folded to exactly the same tick or neither is.
+curl -s 'http://127.0.0.1:8800/report/runs/demo/diff/<child>?day=6'
+```
+
+It is on `/report` rather than on the gateway because it is a fold, the fold lives in
+the report service, and the gateway may not import it — the same rule that puts the
+run report there. The client reaches it at `/api/report/...` through the same proxy.
+
+**A day is its first tick, and that is what makes the comparison honest.** Folding a
+timeline to the *end* of a day it is standing still inside would run its simulation
+through ticks it never took and print the result beside the other side's history. A
+day's opening tick is reached by both timelines or by neither, so asking for a day
+one side has not got to is a refusal with the reason rather than a column of
+invention. Refusals are a `200` with a sentence, like a fork's and a switch's: a
+timeline against itself, a run from another Universe, or a day beyond the shorter
+side. A run this store has never heard of is a `404`.
+
+Every figure carries the authored-tuning marking, and each side names the run and the
+sequence it was folded through. At a day boundary the log holds the kernel's own
+`DAY_CHECKPOINT` hash for that tick, and the hash the diff reports is the same
+value — so "these are the kernel's numbers" is checkable against the log rather than
+asserted.
+
 ### Read a director's memory
 
 What a director carries forward about their reporting line, as a summary and the
@@ -283,7 +317,7 @@ keep a prefix, so one port never means two surfaces for one path.
 | `kernel` | `/kernel/status` | `/kernel/runs/{id}/diagnose` |
 | `domain` | `/domain/status` | — |
 | `agents` | `/agents/status` | `/agents/runs/{id}/spend` |
-| `report` | `/report/status` | `/report/runs/{id}/report` |
+| `report` | `/report/status` | `/report/runs/{id}/report`, `/report/runs/{id}/diff/{other}` |
 
 The report is mounted by the launcher rather than reached through the gateway, and
 that is a rule rather than a preference: no service may import another's internals,

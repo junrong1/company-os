@@ -15,24 +15,34 @@
  * **The tree is read on demand, not streamed.** A lineage changes when somebody forks or switches,
  * both of which this client is the one doing — so it is re-read after each, and there is no second
  * subscription to keep in step with the event stream.
+ *
+ * **It is also where the diff is entered, by picking two nodes (U18).** The first pick is held —
+ * marked on the node's own plate, on the opposite edge from the standing marker — and the second
+ * opens the diff full-bleed over the tree. Two picks rather than a menu because a diff is *of*
+ * two timelines and the tree is the only place both of them are visible; the alternative, a list
+ * of run ids in a dropdown, would ask the player to identify a history by its identifier.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PAL } from '../design/tokens'
 import {
+  type DiffWire,
   GatewayUnreachable,
   type LineageWire,
   LineageUnavailable,
   fetchLineage,
   switchTimeline,
 } from '../net/gateway'
+import { Diff } from './Diff'
+import { type DiffPair, diffable } from './diff-model'
 import {
   buildTreeModel,
   canvasSize,
   describeDivergence,
   describeTimeline,
   drawTree,
+  shortId,
   timelineAt,
   timelineState,
 } from './model'
@@ -73,6 +83,19 @@ export interface TreeProps {
    * moves the selection when it changes.
    */
   selected?: string | null
+  /**
+   * The diff's own reader, injectable for the same reason the other two are (U18).
+   *
+   * Threaded through rather than let `Diff` reach for the module default, because the tree is
+   * where the diff is entered and a suite that mounts the tree must be able to answer the call
+   * the tree causes.
+   */
+  diffReader?: (
+    runId: string,
+    against: string,
+    day?: number,
+    signal?: AbortSignal,
+  ) => Promise<DiffWire>
 }
 
 export function Tree({
@@ -82,6 +105,7 @@ export function Tree({
   reader,
   switcher,
   selected: opened = null,
+  diffReader,
 }: TreeProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [lineage, setLineage] = useState<LineageWire | null>(null)
@@ -89,6 +113,10 @@ export function Tree({
   const [selected, setSelected] = useState<string | null>(null)
   const [refusal, setRefusal] = useState<string | null>(null)
   const [entering, setEntering] = useState<string | null>(null)
+  // A diff is entered by picking *two* nodes, so one of them has to be held while the tree waits
+  // for the other. `pinned` is that hold; `pair` is what the second pick produces.
+  const [pinned, setPinned] = useState<string | null>(null)
+  const [pair, setPair] = useState<DiffPair | null>(null)
 
   const read = reader ?? fetchLineage
   const write = switcher ?? switchTimeline
@@ -124,7 +152,10 @@ export function Tree({
     if (opened !== selected) setSelected(opened)
   }
 
-  const model = useMemo(() => (lineage === null ? null : buildTreeModel(lineage)), [lineage])
+  const model = useMemo(
+    () => (lineage === null ? null : buildTreeModel(lineage, pinned ?? '')),
+    [lineage, pinned],
+  )
   const size = useMemo(
     () => (model === null ? { width: 0, height: 0 } : canvasSize(model.placements)),
     [model],
@@ -153,12 +184,22 @@ export function Tree({
       const x = ((event.clientX - box.left) * canvas.width) / box.width
       const y = ((event.clientY - box.top) * canvas.height) / box.height
       const hit = timelineAt(model.placements, x, y)
-      if (hit !== null) {
-        setSelected(hit)
-        setRefusal(null)
+      if (hit === null) return
+
+      setSelected(hit)
+      setRefusal(null)
+
+      // The second pick of a diff. Held on this side rather than sent as a request the route
+      // would refuse: two picks of one node is not a pair, and the tree knows that without
+      // asking.
+      if (diffable(pinned, hit)) {
+        setPair({ left: pinned as string, right: hit })
+        // Released on the way in. Closing the diff returns the player to a tree with nothing
+        // armed, so the next pair is picked deliberately rather than by the next stray click.
+        setPinned(null)
       }
     },
-    [model],
+    [model, pinned],
   )
 
   const enter = useCallback(
@@ -253,6 +294,35 @@ export function Tree({
                 keeping it.
               </p>
             )}
+
+            {/* The diff's first pick (U18). An ended timeline is offered here where it is refused
+                above, and deliberately: a history you can no longer play is exactly the one worth
+                reading against another. */}
+            {pinned === node.run_id ? (
+              <p className="universe__pinned">
+                Held for a diff. Pick the timeline to read it against.
+                <button
+                  type="button"
+                  className="universe__unpin"
+                  onClick={() => setPinned(null)}
+                >
+                  Cancel
+                </button>
+              </p>
+            ) : (
+              <button
+                type="button"
+                className="universe__diff"
+                // One timeline is not a pair, and saying so on the button is better than
+                // offering a pick whose second half does not exist.
+                disabled={lineage === null || lineage.nodes.length < 2}
+                onClick={() => setPinned(node.run_id)}
+              >
+                {lineage !== null && lineage.nodes.length < 2
+                  ? 'Nothing to diff it against yet'
+                  : `Diff ${shortId(node.run_id)} against…`}
+              </button>
+            )}
           </article>
         )}
 
@@ -262,6 +332,15 @@ export function Tree({
           </p>
         )}
       </div>
+
+      {/* Full-bleed over the tree rather than beside it. Two columns of figures and a tree of
+          nodes both want the width, and the tree stays mounted underneath so closing the diff
+          returns the player to the two nodes they picked it from. */}
+      {pair !== null && (
+        <div className="universe__diff-host">
+          <Diff pair={pair} onClose={() => setPair(null)} reader={diffReader} />
+        </div>
+      )}
     </section>
   )
 }

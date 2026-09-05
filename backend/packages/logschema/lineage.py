@@ -17,6 +17,12 @@ same sequence in the parent — U16's deliberate shape, and the reason both are 
 join through anything mutable. One batched select covers every node in the tree, so a nine-timeline
 lineage is two round trips rather than eighteen.
 
+**Which decision separated *two chosen* timelines is the same question, one step further, and it
+lives here too (U18).** The diff names it, but naming it is a walk over `parent_run_id` and the
+divergence records this module already reads — no fold, no state, no metric. `separating_decision`
+answers it at the nearest common ancestor rather than at the root, which is what keeps two cousins
+from being described by a decision neither of them took.
+
 **Nothing here decides what a node looks like.** A row's rate, tick and terminal reason travel as
 they are, and "active at day 4" or "ended: insolvent" is composed on the surface that draws it. A
 query that returned a rendered state would be the second place the three states were defined, and
@@ -272,3 +278,162 @@ def _divergences(connection: Any, rows: Any) -> dict[str, dict[str, Any]]:
             "parent_choice": str((theirs or {}).get("choice", "")),
         }
     return divergences
+
+
+# =========================================================================
+# What separated two timelines (U18)
+# =========================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class Parting:
+    """One side's turn away from the timeline both sides shared.
+
+    A fork is the only way a timeline leaves another, so a parting is a fork's own divergence
+    record read from the far end: the item and checkpoint, the option this side took, and the
+    option the timeline it left took at the same checkpoint.
+    """
+
+    #: "left" or "right", naming which of the two runs the caller asked about this belongs to.
+    side: str
+    #: The timeline that was forked into — the first node on this side's path below the ancestor.
+    run_id: str
+    item: str
+    cp_index: int
+    #: The sequence of the `DECISION_RESOLVED` being reconsidered, which is one past the last
+    #: sequence the two shared. The same address a fork is submitted at.
+    at_seq: int
+    option_index: int
+    choice: str
+    parent_option_index: int
+    parent_choice: str
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "side": self.side,
+            "run_id": self.run_id,
+            "item": self.item,
+            "cp_index": self.cp_index,
+            "at_seq": self.at_seq,
+            "option_index": self.option_index,
+            "choice": self.choice,
+            "parent_option_index": self.parent_option_index,
+            "parent_choice": self.parent_choice,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Separation:
+    """The decision that separated two timelines, named where they actually parted.
+
+    `shared` is the case M50 is written for: one decision, taken two ways. It holds when one
+    timeline is an ancestor of the other — there is a single turn, and the ancestor's option is
+    the parting's `parent_choice` — and when two siblings forked from the same decision of the
+    same parent.
+
+    It does *not* hold for two cousins that left their common ancestor at **different**
+    decisions. There is no single decision either of them took, so naming one would be naming a
+    decision that is not what separated them. Both partings travel instead, and the surface says
+    so in two lines rather than one.
+    """
+
+    #: The nearest timeline both sides descend from, and the last one they agreed in.
+    at_run_id: str
+    shared: bool
+    partings: tuple[Parting, ...] = field(default_factory=tuple)
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "at_run_id": self.at_run_id,
+            "shared": self.shared,
+            "partings": [parting.to_payload() for parting in self.partings],
+        }
+
+
+def ancestry(nodes: dict[str, Node], run_id: str) -> list[str]:
+    """The chain from the lineage root down to this timeline, root first.
+
+    Iterative and guarded for the same reason the drawn tree's depth walk is: a `parent_run_id`
+    pointing at a row this tree does not hold — trimmed by a store this build did not write — must
+    end the walk rather than raise, and a cycle must end it too.
+    """
+    chain: list[str] = []
+    seen: set[str] = set()
+    cursor = run_id
+    while cursor and cursor not in seen and cursor in nodes:
+        seen.add(cursor)
+        chain.append(cursor)
+        cursor = nodes[cursor].parent_run_id
+    chain.reverse()
+    return chain
+
+
+def separating_decision(tree: Tree, left_run_id: str, right_run_id: str) -> Separation | None:
+    """What separated these two timelines, or `None` if nothing here can name it.
+
+    `None` for a run this tree does not hold, for a timeline against itself — which has nothing
+    separating it — and for two nodes whose ancestries never meet, which a whole tree cannot
+    produce and a trimmed one can.
+
+    The nearest common ancestor is where the naming happens, and that is the whole of the rule.
+    Two cousins share the root, but the root is not where they parted: each left the *ancestor*
+    at a decision of its own, and it is those two decisions the diff has to name. Walking to the
+    root instead would name the first fork in the lineage — a decision that may be on neither
+    side's path — and walking only the child's own divergence would name a decision the other
+    side never reached.
+    """
+    nodes = {node.run_id: node for node in tree.nodes}
+    if left_run_id == right_run_id:
+        return None
+    if left_run_id not in nodes or right_run_id not in nodes:
+        return None
+
+    left_path = ancestry(nodes, left_run_id)
+    right_path = ancestry(nodes, right_run_id)
+
+    shared_depth = 0
+    while (
+        shared_depth < len(left_path)
+        and shared_depth < len(right_path)
+        and left_path[shared_depth] == right_path[shared_depth]
+    ):
+        shared_depth += 1
+
+    if shared_depth == 0:
+        return None
+
+    partings: list[Parting] = []
+    for side, path in (("left", left_path), ("right", right_path)):
+        if shared_depth >= len(path):
+            # This side *is* the ancestor. It made no turn: the other side left it.
+            continue
+        node = nodes[path[shared_depth]]
+        if node.item == "":
+            # The divergence event has been trimmed. Nothing to name, and a tree that draws is
+            # still better than a refusal.
+            continue
+        partings.append(
+            Parting(
+                side=side,
+                run_id=node.run_id,
+                item=node.item,
+                cp_index=node.cp_index,
+                at_seq=node.forked_at_seq + 1,
+                option_index=node.option_index,
+                choice=node.choice,
+                parent_option_index=node.parent_option_index,
+                parent_choice=node.parent_choice,
+            )
+        )
+
+    if not partings:
+        return None
+
+    shared = len(partings) == 1 or (
+        partings[0].at_seq == partings[1].at_seq
+        and partings[0].item == partings[1].item
+        and partings[0].cp_index == partings[1].cp_index
+    )
+    return Separation(
+        at_run_id=left_path[shared_depth - 1], shared=shared, partings=tuple(partings)
+    )

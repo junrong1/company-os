@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from contracts.envelope import Envelope, EventKind
+from simcore import compare as comparing
+from simcore import effects
 from simcore import hashing
 from simcore import lifecycle
 from simcore import log as folder
@@ -320,3 +322,336 @@ def _claims(report: Report, state: sim.State, head_seq: int) -> list[Claim]:
     )
 
     return claims
+
+
+# =========================================================================
+# The timeline diff (U18)
+# =========================================================================
+#
+# Two futures at one sim-day, metric by metric, with the decision that separated them named.
+#
+# **Both sides fold through the fold above** (R12). Nothing here reconstructs state: a diff
+# whose figures came from a second reading would let the Universe and the report disagree about
+# a run while each passed its own tests — the same failure the module docstring opens with, and
+# worse here, because the diff is the surface the product's central claim is demonstrated on.
+#
+# **Both sides fold from zero, on every ask, including every step of the day control.** The
+# report already folds from zero on every build and the plan accepts that at MVP scale; this adds
+# a multiplier the report does not have, because moving the day one step is a fresh pair of
+# folds. Measured on the compose path over a twenty-one-day lineage of 88 events a side: about
+# 250 ms per step, which is a control that feels immediate. Persisted snapshots are the lever if
+# it ever binds, and the shape here does not need to change for them: `state_at_day` is the one
+# place that decides where a fold starts.
+#
+# **The comparison point is a day's *first* tick, and that choice is load-bearing.** Folding to
+# a day's *last* tick would mean folding a timeline whose clock is standing still somewhere
+# inside that day forward through ticks it never ran — inventing a future for it and reporting
+# the invention beside the other side's history. A day's first tick is reached by both sides or
+# by neither, so "at the same sim-day" is one tick, on both sides, or it is a refusal. It is
+# also the tick the kernel checkpoints its own state hash on, which is what makes the fold here
+# checkable against the log rather than merely trusted.
+
+#: Attached to the runway figure in place of a favourable direction.
+#:
+#: Runway is not a metric and has no `good` on the wire, so the diff states that it has none
+#: rather than choosing one. The comparison surface renders it neutral for exactly this reason;
+#: a diff that decided rising runway were favourable would be the second answer to a question
+#: the kernel deliberately does not answer.
+NO_DIRECTION = 0
+
+
+@dataclass(frozen=True, slots=True)
+class TimelineLog:
+    """One side of a diff: its log, and the store's reading of where its clock got to.
+
+    **The row is a projection, and the log is a floor under it.** `runs.current_tick` moves only
+    on append, so a timeline that has been quiet has a row behind its own clock — U17 measured a
+    run whose state was at tick 58 with a row saying tick 1. The report cannot overlay the live
+    fold the way the kernel's own tree read does, because that would mean importing the kernel
+    (R4). What it can do is take the larger of the row and the newest tick the log actually
+    proves, and bound the diff by that — which leaves the bound conservative and never
+    optimistic, so a day this diff offers is a day both timelines really reached.
+
+    **What the row says about a run being over is not carried at all**, and that is a deliberate
+    omission rather than a gap. Measured live on the compose path: two timelines that had both
+    reached their horizon had `terminal_reason` NULL and rates of 1 and 3 in `runs`, and no
+    terminal event in either log — the fact lives only in the kernel's folded state. So the diff
+    reads it from *its own* fold, where it is exact and free, and the column says whether the
+    timeline had ended **by the day being compared at**, which is the question a column at that
+    day is answering anyway.
+    """
+
+    run_id: str
+    events: list[Envelope]
+    #: `runs.current_tick`, as read.
+    current_tick: int
+
+    @property
+    def reached_tick(self) -> int:
+        """The newest tick this timeline is *known* to have reached.
+
+        The envelope's own tick rather than its payload's: a `CEO_INPUT` names the tick it
+        applies at, which the run may not have got to yet, and a floor built from that would
+        claim reach the log does not prove.
+        """
+        return max(self.current_tick, max((event.tick for event in self.events), default=0))
+
+    @property
+    def current_day(self) -> int:
+        return simtime.day_of(self.reached_tick)
+
+
+@dataclass(frozen=True, slots=True)
+class Side:
+    """Where one timeline was when its clock reached the day being compared at."""
+
+    run_id: str
+    #: The last sequence folded, which together with the run id is where every figure came from.
+    through_seq: int
+    #: The kernel's own hash of the state these figures were read off. At a day boundary the log
+    #: holds a DAY_CHECKPOINT carrying the same value, so "the diff folds what the kernel folded"
+    #: is checkable rather than asserted.
+    state_hash: str
+    #: Whether this timeline had already ended **by the day being compared at**, and why. Read
+    #: from the fold rather than from the run row — see `TimelineLog`, and the measurement in it.
+    terminal_reason: str
+    #: The newest tick this timeline is known to have reached, and its day. The bound on the day
+    #: control comes from the lesser of the two sides'.
+    reached_tick: int
+    current_day: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "through_seq": self.through_seq,
+            "state_hash": self.state_hash,
+            "terminal_reason": self.terminal_reason,
+            "reached_tick": self.reached_tick,
+            "current_day": self.current_day,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class Row:
+    """One figure, on both sides, with the definition needed to read the difference.
+
+    The metric's own `good` travels with it, because whether a movement is an improvement is the
+    kernel's to state and the surface's to read — cash rising and manual hours falling are both
+    wins, and a uniform rule renders the automation gain as a regression. `None` on a side is a
+    figure that side could not know, which is not the same as zero and must not render as one.
+    """
+
+    key: str
+    label: str
+    unit: str
+    good: int
+    left: int | None
+    right: int | None
+    basis: str = AUTHORED
+
+    @property
+    def delta(self) -> int | None:
+        if self.left is None or self.right is None:
+            return None
+        return self.right - self.left
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "key": self.key,
+            "label": self.label,
+            "unit": self.unit,
+            "good": self.good,
+            "left": self.left,
+            "right": self.right,
+            "delta": self.delta,
+            "basis": self.basis,
+        }
+
+
+@dataclass(slots=True)
+class Diff:
+    """Two timelines at one sim-day, and what separated them."""
+
+    day: int
+    #: The tick both sides were folded to. One tick, not two — see the section note above.
+    at_tick: int
+    #: The furthest day both sides have reached, and therefore the bound on the day control.
+    max_day: int
+    left: Side | None = None
+    right: Side | None = None
+    rows: list[Row] = field(default_factory=list)
+    separation: dict[str, Any] | None = None
+    #: Set when the answer is no. The request was well-formed; the diff would have misled.
+    refusal: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "day": self.day,
+            "at_tick": self.at_tick,
+            "max_day": self.max_day,
+            "every_number_is": AUTHORED,
+            "state_shape_ver": hashing.STATE_SHAPE_VERSION,
+            "left": None if self.left is None else self.left.to_dict(),
+            "right": None if self.right is None else self.right.to_dict(),
+            "rows": [row.to_dict() for row in self.rows],
+            "separation": self.separation,
+            "refusal": self.refusal,
+        }
+
+
+def fold_tick_of(envelope: Envelope) -> int:
+    """The tick the fold places an event at.
+
+    The fold's own expression, named rather than copied, because the truncation below has to
+    agree with it exactly: the fold refuses a `through_tick` below the largest tick any event
+    names, so a prefix built by a different rule would refuse on a log the fold would have
+    accepted.
+    """
+    return int(envelope.decoded_payload().get("tick", envelope.tick))
+
+
+def state_at_day(events: list[Envelope], day: int) -> tuple[sim.State, int]:
+    """Fold a timeline to the first tick of `day`. Returns the state and the sequence reached.
+
+    **The prefix is a filter, not a sequence cut, and the difference is one event wide.** A
+    `CEO_INPUT` carries the tick it *applies* at, deliberately a few ticks ahead of the tick it
+    was submitted on — so a player holding a direction across a day boundary leaves an event
+    naming a tick past it. `fold` compares `through_tick` against the largest tick any event
+    names, so a sequence cut at the boundary keeps that event and the fold refuses with a
+    sentence about a run row lagging its log, which is not what happened. Filtering by the
+    fold's own rule drops it instead.
+
+    Nothing this diff reports depends on the difference: an input scheduled for after the tick
+    being compared at moves nobody before it. What it does cost is the state hash, which covers
+    the CEO's scheduled inputs — so the hash of a state folded across a straddling input is this
+    fold's, not the kernel's. `simcore.verify` cuts by sequence and therefore does refuse such a
+    log; that is a defect in the diagnosis path, registered rather than fixed here.
+    """
+    at_tick = simtime.tick_of_day_start(day)
+    prefix = [envelope for envelope in events if fold_tick_of(envelope) <= at_tick]
+    result = folder.fold(prefix, at_live_head=False, strict=False, through_tick=at_tick)
+    return result.state, result.through_seq
+
+
+def _side(timeline: TimelineLog, day: int) -> tuple[Side, sim.State]:
+    """One side folded, and the state it was folded to — which the rows still need."""
+    state, through_seq = state_at_day(timeline.events, day)
+    return Side(
+        run_id=timeline.run_id,
+        through_seq=through_seq,
+        state_hash=hashing.state_hash(sim.snapshot(state)).overall,
+        terminal_reason=state.terminal_reason,
+        reached_tick=timeline.reached_tick,
+        current_day=timeline.current_day,
+    ), state
+
+
+def _rows(left: sim.State, right: sim.State) -> list[Row]:
+    """Every figure the two sides are compared on, in the order the HUD names them.
+
+    The metric table comes from the kernel rather than from a list here, so the diff's columns
+    are the run's columns and a metric added to one is added to the other. Runway follows them,
+    computed by `simcore.compare.runway_days` off `day_cost_terms` — the same two calls a
+    comparison branch makes, so a runway in the Universe and a runway at a checkpoint are one
+    rule rather than two that agree today.
+    """
+    rows: list[Row] = []
+    for definition in effects.metric_defs_to_state():
+        key = str(definition["key"])
+        rows.append(
+            Row(
+                key=key,
+                label=str(definition["label"]),
+                unit=str(definition["unit"]),
+                good=int(definition["good"]),
+                left=left.metrics.get(key),
+                right=right.metrics.get(key),
+            )
+        )
+
+    rows.append(
+        Row(
+            key="runway",
+            label="Runway",
+            unit="days",
+            good=NO_DIRECTION,
+            left=_runway(left),
+            right=_runway(right),
+        )
+    )
+    return rows
+
+
+def _runway(state: sim.State) -> int | None:
+    fixed, draw_cost, salaries = sim.day_cost_terms(state)
+    return comparing.runway_days(state.metrics["cash"], fixed + draw_cost + salaries)
+
+
+def diff(
+    left: TimelineLog,
+    right: TimelineLog,
+    *,
+    day: int | None = None,
+    separation: dict[str, Any] | None = None,
+) -> Diff:
+    """Two timelines at one sim-day (M50, M52).
+
+    `day` defaults to the furthest day *both* sides have reached, which is the newest point the
+    two can honestly be compared at. A day past that is refused with the reason rather than
+    folded, because the only way to produce figures for a day a timeline has not reached is to
+    run it there — and a column of invented ticks beside a column of history is the one output
+    this surface must never produce.
+
+    Whether the two are timelines of one Universe is not decidable from two logs, so it is not
+    decided here: the caller holds the tree and refuses before calling. What *is* decidable is
+    that a timeline diffed against itself has nothing to separate it, and that is refused here.
+    """
+    max_day = min(left.current_day, right.current_day)
+    chosen = max_day if day is None else day
+
+    if left.run_id == right.run_id:
+        return Diff(
+            day=chosen,
+            at_tick=simtime.tick_of_day_start(max(chosen, 1)),
+            max_day=max_day,
+            separation=separation,
+            refusal=(
+                f"{left.run_id} is one timeline. A diff needs two, and a timeline against "
+                "itself has no decision separating it."
+            ),
+        )
+
+    if chosen < 1:
+        return Diff(
+            day=chosen,
+            at_tick=0,
+            max_day=max_day,
+            separation=separation,
+            refusal=f"day {chosen} is before the run began; days are numbered from 1.",
+        )
+
+    if chosen > max_day:
+        behind = left if left.current_day < right.current_day else right
+        return Diff(
+            day=chosen,
+            at_tick=simtime.tick_of_day_start(chosen),
+            max_day=max_day,
+            separation=separation,
+            refusal=(
+                f"{behind.run_id} has reached day {behind.current_day}, so there is no day "
+                f"{chosen} in it to compare. This diff goes to day {max_day}."
+            ),
+        )
+
+    left_side, left_state = _side(left, chosen)
+    right_side, right_state = _side(right, chosen)
+
+    return Diff(
+        day=chosen,
+        at_tick=simtime.tick_of_day_start(chosen),
+        max_day=max_day,
+        left=left_side,
+        right=right_side,
+        rows=_rows(left_state, right_state),
+        separation=separation,
+    )

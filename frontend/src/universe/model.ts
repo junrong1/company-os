@@ -91,8 +91,21 @@ export function describeTimeline(node: TimelineWire): string {
  */
 export function describeDivergence(node: TimelineWire): string {
   if (node.parent_run_id === '' || node.item === '') return ''
-  if (node.choice === '' && node.parent_choice === '') return node.item
-  return `${node.item}: ${node.choice} instead of ${node.parent_choice}`
+  return describeChoice(node.item, node.choice, node.parent_choice)
+}
+
+/**
+ * One option taken where another was available, in the shape both surfaces say it in.
+ *
+ * Shared with the diff rather than written twice: the tree names what separated a node from its
+ * parent and the diff names what separated two chosen timelines, and those are the same sentence
+ * about the same fact. Two copies would drift on the first rewording, and the drift would read
+ * as the two surfaces disagreeing about a decision.
+ */
+export function describeChoice(item: string, choice: string, instead: string): string {
+  if (item === '') return ''
+  if (choice === '' && instead === '') return item
+  return `${item}: ${choice} instead of ${instead}`
 }
 
 // =========================================================================
@@ -229,13 +242,23 @@ export interface TreeModel {
   nodes: Record<string, TimelineWire>
   /** Where the player is standing. Marked rather than merely coloured. */
   standingIn: string
+  /**
+   * The timeline held as one side of a diff, while the tree waits for the other (U18).
+   *
+   * A second marker rather than a second selection colour, and on the *opposite* edge: where you
+   * are standing and what you are about to compare are two different facts about one node, and a
+   * player has to be able to see that one node is both. Position carries it, so it survives
+   * greyscale like the standing marker does.
+   */
+  pinned: string
 }
 
-export function buildTreeModel(lineage: LineageWire): TreeModel {
+export function buildTreeModel(lineage: LineageWire, pinned: string = ''): TreeModel {
   return {
     placements: layoutTimelines(lineage.nodes),
     nodes: Object.fromEntries(lineage.nodes.map((node) => [node.run_id, node])),
     standingIn: lineage.asked_about,
+    pinned,
   }
 }
 
@@ -270,7 +293,13 @@ export function drawTree(
   for (const place of model.placements) {
     const node = model.nodes[place.runId]
     if (node === undefined) continue
-    drawTimeline(context, node, place, place.runId === model.standingIn)
+    drawTimeline(
+      context,
+      node,
+      place,
+      place.runId === model.standingIn,
+      place.runId === model.pinned,
+    )
   }
 }
 
@@ -286,6 +315,7 @@ export function drawTimeline(
   node: TimelineWire,
   place: TimelinePlacement,
   standingIn: boolean,
+  pinned: boolean = false,
 ): void {
   const encoding = STATES[timelineState(node)]
   const x = place.x
@@ -322,8 +352,17 @@ export function drawTimeline(
     context.fillRect(x + 2, y + 2, 4, height - 4)
   }
 
+  if (pinned) {
+    // Held as one side of a diff. The *right* edge, so a node that is both where you are standing
+    // and what you are comparing from wears both marks and neither hides the other. Violet,
+    // because a diff is about the decision that separated two timelines — the same slot this
+    // surface already spends on the divergence line under a node.
+    context.fillStyle = TACIT
+    context.fillRect(x + width - 6, y + 2, 4, height - 4)
+  }
+
   const inset = x + (standingIn ? 10 : 6)
-  const room = width - (inset - x) - 6
+  const room = width - (inset - x) - (pinned ? 10 : 6)
   paintText(context, fitText(shortId(node.run_id), room), inset, y + 6, 1, PAL.text)
   paintText(context, fitText(describeTimeline(node), room), inset, y + 18, 1, PAL.textFaint)
 

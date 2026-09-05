@@ -1288,10 +1288,17 @@
  * survive.
  */
 .universe {
+  /* Positioned, because the diff opens full-bleed *inside* this box rather than beside it. */
+  position: relative;
   display: flex;
   gap: 16px;
   align-items: flex-start;
   padding: 12px;
+  /* At least the width of the host it scrolls in, so the diff's overlay covers the whole of
+     what a player can scroll to rather than only the part the tree happens to occupy. */
+  min-width: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
 }
 
 .universe__tree { display: block; image-rendering: pixelated; }
@@ -1356,6 +1363,49 @@
 }
 
 .universe__enter[disabled] { color: var(--text-faint); cursor: default; }
+
+/* The diff's first pick. Violet, like the divergence line above it and like the pinned marker
+   on the node itself: on this surface that hue means "a decision separated these". */
+.universe__diff {
+  align-self: flex-start;
+  padding: 3px 8px;
+  border: 1px solid var(--tacit);
+  background: var(--ganglan);
+  color: var(--tacit);
+  font: 750 10px/1.6 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.universe__diff:disabled {
+  border-color: var(--rule);
+  color: var(--text-faint);
+  cursor: default;
+}
+
+.universe__pinned {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  border-left: 2px solid var(--tacit);
+  padding-left: 8px;
+}
+
+.universe__unpin {
+  border: none;
+  padding: 0;
+  background: none;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+}
 
 .shell__attaching {
   margin: 0;
@@ -1441,3 +1491,178 @@
 }
 
 .alternative__fork:focus-visible { outline: 2px solid var(--tianlan); outline-offset: 2px; }
+
+/**
+ * The timeline diff: two futures at one sim-day (U18).
+ *
+ * **It borrows the branch comparison's layout, not a second one.** The product already has a
+ * place where two futures are read against each other, and a second visual language for the
+ * same act would make the player learn twice. What is different is what it opens *over*: a
+ * branch comparison sits inside a panel beside the office, and this is full-bleed across the
+ * Universe stage, because two columns of figures and a tree of nodes both want the width.
+ *
+ * **The overlay is opaque.** A tree read through a column of numbers is two readings of one
+ * region, and the figures are the ones that must not be ambiguous.
+ */
+.universe__diff-host {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 12px;
+  background: var(--ganglan);
+}
+
+.diff {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 46rem;
+
+  /*
+   * One template, two grids, and it has to be one.
+   *
+   * The heading row and the figure rows are separate elements, so the only thing keeping a
+   * column of numbers underneath the timeline it belongs to is that neither may declare its own
+   * columns. The first version let them: the headings were a flex row of two equal cards and
+   * the rows were `1fr 5rem 5rem 5rem`. Measured live at 1568px — the *left* timeline's card
+   * spanned x 40 to 358 while its figures sat at 462 to 532, entirely underneath the *right*
+   * timeline's card. Every number was read under the other timeline's name, and no test could
+   * see it: the suite asserts which figure carries which attribute, not where it lands.
+   */
+  --diff-columns: minmax(7rem, 1fr) minmax(9rem, 1fr) minmax(9rem, 1fr) 5rem;
+}
+
+.diff__head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 10px;
+}
+
+.diff__title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  font: 750 11px/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* The decision, in the slot this surface already spends on a divergence. */
+.diff__separated {
+  margin: 0;
+  border-left: 2px solid var(--tacit);
+  padding-left: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.diff__turn { display: block; color: var(--text-muted); }
+.diff__ancestor { font-size: 0.95em; }
+
+.diff__close {
+  align-self: flex-start;
+  padding: 3px 8px;
+  border: 1px solid var(--rule);
+  background: transparent;
+  color: var(--text);
+  font: 750 10px/1.6 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+/* The day control. The stated day is the reading; the slider is how it moves. */
+.diff__day {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.diff__slider { display: flex; align-items: center; gap: 8px; }
+.diff__day-label { font: 750 10px/1.6 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.diff__slider input { accent-color: var(--tianlan); }
+
+.diff__step {
+  border: 1px solid var(--rule);
+  padding: 2px 7px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.diff__step:disabled { color: var(--text-faint); cursor: default; }
+
+.diff__columns {
+  display: grid;
+  grid-template-columns: var(--diff-columns);
+  align-items: end;
+  gap: 6px;
+}
+
+.diff__side {
+  background: var(--yuebai);
+  border: 1px solid var(--rule);
+  padding: 8px;
+}
+
+.diff__heading {
+  margin: 0;
+  text-align: right;
+  color: var(--text-faint);
+  font: 750 10px/1.6 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.diff__id { margin: 0; font-family: var(--mono); font-size: 11px; word-break: break-all; }
+.diff__where,
+.diff__through { margin: 3px 0 0; font-size: 11px; }
+
+.diff__basis,
+.diff__lag,
+.diff__pending,
+.diff__error { margin: 0; font-size: 11px; line-height: 1.5; }
+
+/* A refusal renders where the figures would have been, at the weight of the thing it replaces. */
+.diff__refusal {
+  margin: 0;
+  border-left: 2px solid var(--zhuhong);
+  padding-left: 8px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.diff__rows { margin: 0; padding: 0; list-style: none; }
+
+/*
+ * Four columns: the name, both sides, and the difference. A grid rather than flex, because the
+ * whole value of the layout is scanning one column down — which only works if every row's
+ * figures land on the same x.
+ */
+.diff__row {
+  display: grid;
+  grid-template-columns: var(--diff-columns);
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--rule);
+  font-size: 11px;
+}
+
+.diff__name { color: var(--text-faint); }
+.diff__unit { font-size: 0.9em; }
+
+.diff__figure,
+.diff__delta {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: flex-end;
+  gap: 0.2rem;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}

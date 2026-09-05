@@ -517,3 +517,138 @@ export async function switchTimeline(
 
   return (await response.json()) as SwitchedTimeline
 }
+
+// =========================================================================
+// The timeline diff: two futures at one sim-day (U18)
+// =========================================================================
+//
+// **Answered by the report rather than by the gateway**, which is why this is the one call in
+// this file with a prefix inside the path. The diff is a fold across two logs, the fold lives in
+// the report service, and the gateway may not import it — so the launcher mounts the report at
+// `/report` in the one process and the client reaches it through the same `/api` proxy as
+// everything else. Nothing about that is visible to a caller here beyond the path.
+
+/** One figure, on both sides, with the definition needed to read the difference. */
+export interface DiffRowWire {
+  key: string
+  label: string
+  unit: string
+  /**
+   * +1 if rising is an improvement, -1 if falling is, and **0 for a figure the kernel states no
+   * direction for**. Runway is the one that carries zero: it is not a metric and has no
+   * favourable direction on the wire, so the diff says it has none rather than choosing one.
+   */
+  good: number
+  /** `null` for a figure that side could not know. Not the same as zero, and not rendered as one. */
+  left: number | null
+  right: number | null
+  delta: number | null
+  basis: string
+}
+
+/** Where one timeline was when its clock reached the day being compared at. */
+export interface DiffSideWire {
+  run_id: string
+  /** The last sequence folded. With the run id, this is where every figure on this side came from. */
+  through_seq: number
+  /** The kernel's own hash of the state these figures were read off. */
+  state_hash: string
+  /**
+   * Why this timeline had ended **by the day being compared at**, or empty.
+   *
+   * A statement about that day rather than about now, and read from the diff's own fold rather
+   * than from a run row — the rows carry no terminal reason at all for a run the kernel has
+   * ended, so a column built from one would say "running" over a finished history.
+   */
+  terminal_reason: string
+  /** The newest tick each side is known to have reached, and its day. Bounds the day control. */
+  reached_tick: number
+  current_day: number
+}
+
+/** One side's turn away from the timeline both sides shared. */
+export interface PartingWire {
+  side: 'left' | 'right'
+  run_id: string
+  item: string
+  cp_index: number
+  at_seq: number
+  option_index: number
+  choice: string
+  parent_option_index: number
+  parent_choice: string
+}
+
+/**
+ * The decision that separated two timelines, named where they actually parted.
+ *
+ * `shared` is the case the product is built around — one decision, taken two ways. It is false
+ * for two cousins that left their common ancestor at *different* decisions, where there is no
+ * single decision either of them took and both partings travel instead.
+ */
+export interface SeparationWire {
+  at_run_id: string
+  shared: boolean
+  partings: PartingWire[]
+}
+
+/** Two timelines at one sim-day, as the route answers it. */
+export interface DiffWire {
+  day: number
+  /** The tick both sides were folded to. One tick, not two. */
+  at_tick: number
+  /** The furthest day both sides have reached, and therefore the bound on the day control. */
+  max_day: number
+  every_number_is: string
+  state_shape_ver: number
+  left: DiffSideWire | null
+  right: DiffSideWire | null
+  rows: DiffRowWire[]
+  separation: SeparationWire | null
+  /** Set when the answer is no: one timeline, another Universe, a day one side has not reached. */
+  refusal: string
+}
+
+/**
+ * Diff two timelines of one lineage.
+ *
+ * **`day` is omitted on the first ask, and that is deliberate.** The bound depends on how far
+ * each timeline got, which is what the route reads — so it defaults the day to the furthest both
+ * sides have reached and hands the bound back. A client that guessed would sometimes ask for a
+ * day one side has not reached and take a refusal it could have avoided.
+ *
+ * A refusal comes back on the payload rather than as an error, like a rejected command and like a
+ * switch: the request was well-formed and the answer is no. Only a transport failure and a run
+ * this store has never heard of throw.
+ */
+export async function fetchDiff(
+  runId: string,
+  against: string,
+  day?: number,
+  signal?: AbortSignal,
+): Promise<DiffWire> {
+  const query = day === undefined ? '' : `?day=${encodeURIComponent(String(day))}`
+  const path =
+    `${GATEWAY_BASE}/report/runs/${encodeURIComponent(runId)}/diff/` +
+    `${encodeURIComponent(against)}${query}`
+
+  let response: Response
+  try {
+    response = await fetch(path, { signal })
+  } catch (cause) {
+    throw new GatewayUnreachable(cause)
+  }
+
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as { detail?: string }
+    // The same error the lineage reads and the fork throw, rather than a fifth class. All of
+    // them are one question with one answer for the surface: something about this lineage could
+    // not be done, and here is the status and the sentence.
+    throw new LineageUnavailable(
+      response.status,
+      body.detail ?? `the report answered ${response.status} to a diff`,
+    )
+  }
+
+  return (await response.json()) as DiffWire
+}
