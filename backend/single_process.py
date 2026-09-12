@@ -102,6 +102,7 @@ COMMAND_KINDS = {
     "request_hire": "REQUEST_HIRE",
     "ask_person": "ASK_PERSON",
     "compare_options": "COMPARE_OPTIONS",
+    "decide_authorization": "DECIDE_AUTHORIZATION",
 }
 
 

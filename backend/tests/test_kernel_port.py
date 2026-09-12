@@ -933,7 +933,11 @@ def test_the_snapshot_covers_every_declared_subsystem(run: sim.State) -> None:
     assert set(snapshot["capacity"]) == {"dir_admin", "dir_sales", "dir_cs", "dir_hr"}
     assert len(snapshot["morale"]) == len(SHIPPED.people)
     assert snapshot["hiring"] == {}, "no hire has been requested"
-    assert hashing.STATE_SHAPE_VERSION == 1, "the subsystem list did not change, so nor does this"
+    # **Changed again by the MVP's U15**, which is the other half of the same distinction: U7 filled
+    # two declared subsystems and moved nothing, and U15 *declared* one — what the CEO was asked to
+    # allow — so the version moves even though a run that never asks carries an empty table.
+    assert snapshot["authorization"] == {}, "nobody has asked to read another line"
+    assert hashing.STATE_SHAPE_VERSION == 2, "the subsystem list changed at U15, so this moved"
 
 
 def test_the_snapshot_is_canonical_and_free_of_floats(run: sim.State) -> None:

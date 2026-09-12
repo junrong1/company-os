@@ -1584,7 +1584,17 @@ def _seats_of(company: sc.Scenario) -> dict[str, tuple[int, int]]:
 #:
 #: The genesis *payload* digest moved in the same change, deliberately and exactly once, and
 #: `tests/fixtures/golden/genesis.json` is where that is recorded.
-DAY_ZERO_STATE_HASH = "4e43a9d06f9d5559e906db2765cdf98b"
+#:
+#: **It moved once since, at U15, and the reason is the one thing this constant exists to
+#: distinguish.** The day-zero *world* is unchanged — the same seats, the same work, the same
+#: metrics, and `test_the_authorization_subsystem_is_empty_at_day_zero` in `test_authorization.py`
+#: pins the new subsystem as empty. What moved is the shape of the hash: `STATE_SHAPE_VERSION` is
+#: inside the overall digest by construction, so a declared subsystem arriving moves every hash in
+#: the tree whether or not it holds anything. That is exactly the visibility R27 asks for, and the
+#: old value is kept below so the move is a recorded fact rather than an edit.
+#:
+#: Before U15 (state shape 1): 4e43a9d06f9d5559e906db2765cdf98b
+DAY_ZERO_STATE_HASH = "834247e7c52dc361e5bcbd454ba8cd3e"
 
 SEED = 0xC0FFEE
 
@@ -2178,9 +2188,23 @@ def test_a_run_created_inside_the_container_resolves_the_default_scenario() -> N
 
 
 def _a_hire_arrives(state: sim.State, director: str = "dir_cs") -> str:
-    """Request a hire and run until they are seated. Returns their person id."""
+    """Request a hire, grant the Authorization it raises, and run until they are seated.
+
+    The grant is U15's: a hiring item is People's work about another line, so the step asks the CEO
+    whether People may read it and stops the item until they answer (M40, M41). These tests are
+    about what an arrived hire *is*, so they answer it the way a player would — one tick to let the
+    step raise the request, then yes.
+    """
     sim.request_hire(state, director)
     hire = next(h for h in state.hires.values() if h.director_id == director)
+    sim.step(state)
+    for request_id in [
+        request_id
+        for request_id, request in state.pending.items()
+        if request.is_authorization
+    ]:
+        sim.decide_authorization(state, request_id, granted=True)
+
     for _ in range(40_000):
         if hire.status != "requested":
             break

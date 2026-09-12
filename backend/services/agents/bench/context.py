@@ -14,8 +14,16 @@ inside `step()` from folded state and recorded on the request, so this module is
 read. U14's memory is a third window onto the same `scan`, which is why that pass is a function
 rather than a loop inside `retrieve`: one filter, several windows, and nothing that reads the log
 without a scope. That is the strong form of default-deny — a reader that does
-not derive its own scope cannot widen it — and it is what gives U15's Authorization guard a
-signature to constrain rather than a call site to intercept.
+not derive its own scope cannot widen it.
+
+**U15's Authorization is that signature being used, and nothing in this file changed for it**
+(M39). A granted Authorization widens the `Authorized` the kernel derives — `step.authorized_scope`
+adds the other line's people and items for the item the grant was about — and it arrives here as a
+scope like any other. So "a director cannot read another line without Authorization" is enforced by
+the same two lines that enforce line scoping at all: `permits_person` and `permits_item`, over a
+set this module cannot compute and cannot extend. There is no branch here for an authorized read,
+which is the property worth keeping: a second code path for the permitted case would be a second
+place the boundary lived.
 
 Three further things keep the door shut rather than merely closed:
 

@@ -100,6 +100,12 @@ INPUT_KINDS = frozenset(
         # the Visibility trajectory is reproduced by the rule that priced it and not by the
         # number the log happens to carry.
         EventKind.QUESTION_ANSWERED,
+        # The MVP's U15. The CEO's answer to a cross-line read is an input by the only test that
+        # matters here: nothing in the run derives it, so the fold has to re-issue it. Re-issuing
+        # the *command* rather than folding the payload also means the stall it lifts, the tick it
+        # lifted at and the scope it widened are all reproduced by the rules that produced them —
+        # so a replay of a granted Authorization is a replay of the grant, not of its description.
+        EventKind.AUTHORIZATION_DECIDED,
     }
 )
 
@@ -191,7 +197,11 @@ def is_output(kind: EventKind, payload: dict) -> bool:
     predicate, used by both.
     """
     if kind is EventKind.WORK_ASSIGNED:
-        return bool(payload.get("handoff_completed"))
+        # Two ways this event is *derived* rather than issued: a director arriving with the work,
+        # and a hire being routed to the recruiter by `request_hire`. Both are produced by
+        # re-issuing something else, so both must be regenerated and compared rather than applied —
+        # and the second one was missing, which made a run that hired unfoldable.
+        return bool(payload.get("handoff_completed") or payload.get("for_hire"))
     return kind in OUTPUT_KINDS
 
 
@@ -469,6 +479,11 @@ def _apply_input(state: sim.State, envelope: Envelope) -> list[sim.Emitted]:
         # let a log disagree with the roster it was produced from; replaying the *question*
         # reproduces the Visibility trajectory from the same rule that priced it originally.
         return sim.ask_person(state, payload["person"], str(payload["asked"]))
+
+    if kind is EventKind.AUTHORIZATION_DECIDED:
+        return sim.decide_authorization(
+            state, str(payload["request"]), granted=bool(payload["granted"])
+        )
 
     if kind is EventKind.RATE_CHANGED:
         # Rate is run state, not simulation state: the replay multiplier is deliberately

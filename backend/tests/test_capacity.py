@@ -51,6 +51,39 @@ def run_until(state: sim.State, predicate, limit: int = 40_000) -> list[sim.Emit
     raise AssertionError(f"condition never held within {limit} ticks")
 
 
+def hire_for(state: sim.State, director: str) -> hiring.Hire:
+    """Request a hire into another line, and grant People the Authorization it then asks for.
+
+    **Changed by U15, and the change is the mechanic rather than a test detail.** A hiring item is
+    People's work about somebody else's line — who left, what is queued, how far over the ceiling
+    they are — so the step raises an Authorization against it and the item is stopped until the CEO
+    answers (M40, M41). These tests are about what a hire *costs and produces*, so they answer it
+    the way a player would and then measure; `test_authorization.py` is where the refusal is
+    measured against them.
+
+    One tick first, because the request is raised inside `step()` and there is nothing to grant
+    before the run has taken one.
+    """
+    sim.request_hire(state, director)
+    hire = next(h for h in state.hires.values() if h.director_id == director)
+    sim.step(state)
+    grant_outstanding_authorizations(state)
+    return hire
+
+
+def grant_outstanding_authorizations(state: sim.State) -> int:
+    """Answer yes to everything the CEO has been asked. Returns how many were granted."""
+    granted = 0
+    for request_id in [
+        request_id
+        for request_id, request in state.pending.items()
+        if request.is_authorization
+    ]:
+        sim.decide_authorization(state, request_id, granted=True)
+        granted += 1
+    return granted
+
+
 # =========================================================================
 # Baseline load exists without the CEO
 # =========================================================================
@@ -423,8 +456,7 @@ def test_a_hire_is_a_work_item_routed_through_people(run: sim.State) -> None:
 
 
 def test_a_hire_consumes_sim_time_before_arriving(run: sim.State) -> None:
-    sim.request_hire(run, "dir_cs")
-    hire = next(iter(run.hires.values()))
+    hire = hire_for(run, "dir_cs")
 
     advance(run, 50)
     assert hire.status == "requested", "the hire arrived instantly"
@@ -434,8 +466,7 @@ def test_a_hire_consumes_sim_time_before_arriving(run: sim.State) -> None:
 
 
 def test_a_hire_arrives_seated_inside_its_own_department(run: sim.State) -> None:
-    sim.request_hire(run, "dir_cs")
-    hire = next(iter(run.hires.values()))
+    hire = hire_for(run, "dir_cs")
     run_until(run, lambda s: hire.status == "arrived")
 
     room = run.floor.room("support")
@@ -446,8 +477,7 @@ def test_a_hire_arrives_seated_inside_its_own_department(run: sim.State) -> None
 
 
 def test_a_hire_costs_cash_on_arrival_and_raises_the_daily_cost(run: sim.State) -> None:
-    sim.request_hire(run, "dir_cs")
-    hire = next(iter(run.hires.values()))
+    hire = hire_for(run, "dir_cs")
 
     cost_before = _daily_cost(run)
     run_until(run, lambda s: hire.status == "arrived")
@@ -475,8 +505,7 @@ def test_a_hire_is_refused_with_a_reason_when_the_room_cannot_fit_a_desk(
 
 
 def test_the_new_hire_joins_the_departments_draw_allocation(run: sim.State) -> None:
-    sim.request_hire(run, "dir_cs")
-    hire = next(iter(run.hires.values()))
+    hire = hire_for(run, "dir_cs")
     before = len(run.present_members("dir_cs"))
 
     run_until(run, lambda s: hire.status == "arrived")

@@ -53,6 +53,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from contracts.envelope import EventKind
+from simcore import authorization as authz
 from simcore import capacity as cap
 from simcore import effects
 from simcore import hiring
@@ -393,6 +394,13 @@ class State:
     terminal_tick: int = 0
     #: Raised-but-unanswered requests, keyed by request id. A projection of the log (R23).
     pending: dict[str, pend.PendingRequest] = field(default_factory=dict)
+    #: What each item has asked the CEO for permission to read, keyed by item (U15, M39-M42).
+    #:
+    #: Keyed by item rather than by request id, and that is what makes M42 structural: a grant lives
+    #: on the item that asked for it, so nothing carries it to a second item and "no standing
+    #: permission" is a property of the table rather than a check somebody has to remember. The
+    #: request id is a field on the record, empty once the question has been answered.
+    authorizations: dict[str, authz.Authorization] = field(default_factory=dict)
     #: The last period the domain service was consulted for, so one period asks once.
     last_period_consulted: int = 0
     #: Answers that arrived and are waiting for the tick they apply at.
@@ -709,6 +717,10 @@ def step(state: State) -> list[Emitted]:
     events.extend(_apply_queued_answers(state))
     events.extend(_raise_period_consult(state))
     events.extend(_raise_statement_requests(state))
+    # After the statement requests, because an item stalled on an Authorization never reaches a
+    # checkpoint and so never has a briefing to raise — the order says which of the two can
+    # suppress the other, and it is this one.
+    events.extend(_raise_authorization_requests(state))
     events.extend(_abandon_overdue_requests(state))
 
     # Phase 7 — has the run ended? Evaluated here, at the boundary of the quantum that just
@@ -738,12 +750,18 @@ def raise_request(
     No network call happens here (R2). The kernel records that it asked; the transport is the
     caller's business, and on replay the caller never runs.
 
-    **This does not stall the item, and the docstring used to say it did.** It records the request
-    in `state.pending` and emits `REQUEST_RAISED`, and nothing in `_advance_work` or the burn path
-    reads `state.pending` — so the claim was true only by accident of its two callers, one of which
-    attaches to a synthetic item and the other of which acts on an item that was *already* blocked
-    at its checkpoint. Building the stall is U15's, together with the state-shape move that comes
-    with it (R24); correcting the sentence is whichever unit touches this function first.
+    **This does not stall the item by itself, and for three of the four legs nothing else does
+    either.** It records the request in `state.pending` and emits `REQUEST_RAISED`; nothing in
+    `_advance_work` reads `state.pending`, so a period consult, a resolution and a statement all
+    leave their item burning exactly as before — which is right for each of them, because the
+    period consult owns a synthetic item, the resolver's item is already blocked at its checkpoint,
+    and a briefing is not something work waits for.
+
+    **The Authorization leg is the one that stalls, and it stalls on its own record rather than on
+    this one** (U15, R24). `_raise_authorization_requests` writes `state.authorizations[item]`
+    beside the request, and `_advance_work` reads *that* — so the stall is a fact about the item
+    that survives the request being answered, abandoned or asked again, which a projection of
+    outstanding questions cannot express.
 
     `subject` is the leg-specific half of the payload and is absent entirely for a leg that has
     none. Merged rather than nested, because the sequence diagram this implements names `person` on
@@ -1172,7 +1190,9 @@ def _statement_refusal(
     # the item was reassigned across lines while the director was thinking — and the message names
     # both rather than asserting the one that happens to be more common. Either way the statement is
     # about work this producer does not own, which is the fact that decides it.
-    authorized = authorized_scope(state, state.line_of_assignee(item.assignee))
+    authorized = authorized_scope(
+        state, state.line_of_assignee(item.assignee), for_item=request.owning_item
+    )
     if authorized.director != producer:
         return (
             f"{producer!r} produced a statement about an item in {authorized.director!r}'s line: "
@@ -1220,7 +1240,7 @@ def _offered_at(state: State, item_id: str, assignee: str) -> stmt.Offered | Non
     return stmt.Offered.from_checkpoint(spec, person.cp_index)
 
 
-def authorized_scope(state: State, director_id: str) -> stmt.Authorized:
+def authorized_scope(state: State, director_id: str, *, for_item: str = "") -> stmt.Authorized:
     """What this director may read *now*, derived from folded state (R23).
 
     The one derivation for a statement. `step()` records it on the request so the leg is *told* its
@@ -1234,12 +1254,37 @@ def authorized_scope(state: State, director_id: str) -> stmt.Authorized:
     it to the leg exactly as `step()` does. What it must not become is a scope the agents service
     computes: `bench/` cannot call this, because `simcore` is not importable from a bench module
     that has no state to call it with.
+
+    **`for_item` is the whole of what a granted Authorization buys** (U15, M39). Given an item whose
+    record is `granted`, the scope widens to hold the other line's present members and the items
+    assigned into it — so the same `scan` that refuses a cross-line event before the grant admits it
+    after, with nothing about the filter changing. Two properties follow from it being a parameter
+    rather than a field on the scope:
+
+    * the widening is per item, so a grant on one item is not a permission on another (M42). The
+      caller has to name the item it is reading *for*, which is the question an Authorization
+      answers and not one a director id can answer on its own;
+    * the default is the unwidened line, so every existing caller — and every caller somebody adds
+      without knowing this mechanic exists — gets default-deny. R23 asks for no reachable unscoped
+      variant, and an omitted argument producing a wider scope would be exactly that.
+
+    A grant belonging to a *different* director widens nothing: the record names who asked, and an
+    item reassigned across lines after a grant is read by whoever holds it now under their own
+    scope. That is the same rule `_statement_refusal` applies to attribution, one layer down.
     """
+    people = list(state.present_members(director_id))
+    items = _line_items(state, director_id)
+
+    granted = state.authorizations.get(for_item) if for_item else None
+    if granted is not None and granted.granted and granted.asking == director_id:
+        people.extend(state.present_members(granted.needs))
+        items.extend(_line_items(state, granted.needs))
+
     return stmt.authorized_for(
         state.scenario,
         director_id,
-        line_members=state.present_members(director_id),
-        line_items=_line_items(state, director_id),
+        line_members=people,
+        line_items=items,
     )
 
 
@@ -1340,7 +1385,13 @@ def _raise_statement_requests(state: State) -> list[Emitted]:
         # scope `Authorized` refuses is unreachable from here — `director_id` comes from
         # `scenario.directors` and cannot be blank. The refusal exists for `Authorized.from_payload`,
         # which builds one from a payload nothing in this process wrote.
-        authorized = authorized_scope(state, director_id)
+        #
+        # Widened by a granted Authorization on this item, and recorded widened (U15, M39). The leg
+        # is told what it may read and the landing-tick check re-derives the same thing, so a grant
+        # that arrived between the two is the one case where the recorded scope is narrower than the
+        # one the statement is judged against — never wider, which is the direction that would
+        # matter.
+        authorized = authorized_scope(state, director_id, for_item=item_id)
 
         try:
             events.extend(
@@ -1446,6 +1497,182 @@ def _open_checkpoint_in_line(state: State, director_id: str) -> tuple[str, int] 
     return None
 
 
+def needed_line(state: State, item_id: str) -> str:
+    """The reporting line whose knowledge this item's work depends on, or the empty string (M40).
+
+    **Derived from folded state and authored content, never asked for.** A request the CEO answers
+    has to be something `step()` reproduces, because `REQUEST_RAISED` is an output the fold
+    regenerates and compares byte-for-byte — so "who needs whose knowledge" is a function of the
+    run, not a claim a service or a client makes. Nothing outside this file can cause an
+    Authorization to be raised.
+
+    Two ways an item ends up being about another line, both of them ordinary:
+
+    **A hire is always about the line it hires into.** `request_hire` routes recruitment through
+    People — the item is the recruiter's work — while what it is *for* is another director's line:
+    who left, what is queued, how far over the ceiling they are. That is the shape of the mechanic
+    at its plainest, and it is reachable from the shipped client in two clicks.
+
+    **Work handed to somebody outside its authored line takes its history with it.** An item's
+    authored `want` says whose work this is; when the CEO hands it to a specialist in another line,
+    the director now holding it has none of what was learned about it. `assign_direct` accepts any
+    person, so this is the kernel's own reading of the org chart rather than a rule the client
+    enforces.
+
+    Neither source needs a scenario to author anything, which is deliberate: a mechanic that only
+    fired on content somebody remembered to write would be a mechanic that never fired. The empty
+    string means "this item needs nobody else", which is the common case and costs one dictionary
+    lookup and one comparison per in-flight item per tick.
+    """
+    item = state.items.get(item_id)
+    if item is None or not item.assignee or item.status not in IN_FLIGHT:
+        return ""
+
+    holder = state.line_of_assignee(item.assignee)
+    if not holder:
+        return ""
+
+    about = _line_the_work_is_about(state, item_id)
+    # Not another line, not a line at all, or a director this company does not have: all three are
+    # "nobody to ask", and answering them the same way is what keeps this from raising a request
+    # naming a person no surface can render.
+    if not about or about == holder or about not in state.scenario.directors:
+        return ""
+    return about
+
+
+def _line_the_work_is_about(state: State, item_id: str) -> str:
+    """Whose line this item's work concerns, regardless of who is holding it.
+
+    The hire lookup comes first because a hiring item's authored `want` is the *recruiter*, whose
+    line is the one already holding it — so reading the spec first would answer "its own line" for
+    the one case this mechanic exists for most plainly.
+    """
+    for hire in state.hires.values():
+        if hire.item_id == item_id:
+            return hire.director_id
+
+    spec = state.spec_of(item_id)
+    if not spec.want or spec.want not in state.people:
+        return ""
+    return state.line_of_assignee(spec.want)
+
+
+def _raise_authorization_requests(state: State) -> list[Emitted]:
+    """Ask the CEO whether a line may read another's, for every item that needs it (M40).
+
+    **Inside the step, for the reason every other request is** (R2, R17). `REQUEST_RAISED` is in the
+    fold's output set and is compared byte-for-byte against what the step reproduces, so a request
+    raised from a command handler would fail strict replay — and an Authorization raised by a
+    *client* would be the mechanic asking itself for permission.
+
+    Four conditions decide it, each of which the fold reproduces: the item is in flight and needs
+    another line (`needed_line`), nothing is already outstanding or granted for it, enough of the
+    run has passed since a refusal for the director to ask again, and the caps allow the request.
+
+    **The cap is avoided rather than caught**, exactly as `_raise_statement_requests` does it:
+    `RequestCapExceeded` escaping `step()` is not a refused request, it is a dead clock. An item at
+    its limit is skipped and asks on a later tick — and the item is stopped meanwhile, so the player
+    sees a stalled item rather than a request that silently disappeared.
+
+    Iterated in `state.items` order — the authored catalog followed by anything created at runtime —
+    so two runs of one seed raise the same requests in the same order, which is what the strict
+    comparison is comparing.
+    """
+    events: list[Emitted] = []
+
+    for item_id in list(state.items):
+        needs = needed_line(state, item_id)
+        if not needs:
+            continue
+
+        item = state.items[item_id]
+        asking = state.line_of_assignee(item.assignee)
+        # A director who has left cannot ask, and one this run never seated cannot either. The item
+        # keeps whatever record it has: a stall is not lifted by the asker departing, because the
+        # knowledge is still missing and the work is still the line's.
+        if asking in state.departed or asking not in state.people:
+            continue
+
+        standing = state.authorizations.get(item_id)
+        if standing is not None:
+            if standing.status != authz.REFUSED:
+                continue
+            if not standing.ready_to_ask_again(
+                state.tick, after=pend.AUTHORIZATION_REASK_TICKS
+            ):
+                continue
+            if standing.needs != needs:
+                # The work changed lines while it was stopped. The old refusal answered a question
+                # about a line this item is no longer about, so it does not carry: this is a fresh
+                # ask with its own count, not the second ask of the old one.
+                standing = None
+
+        if pend.outstanding_for_item(state.pending, item_id) >= pend.MAX_OUTSTANDING_PER_ITEM:
+            continue
+
+        request_id = authorization_request_id(item_id, needs, state.tick)
+        try:
+            events.extend(
+                raise_request(
+                    state,
+                    service=pend.CEO,
+                    owning_item=item_id,
+                    request_id=request_id,
+                    subject={
+                        # Everything the tray card names, so the CEO can answer it from across the
+                        # floor (M40): who is asking, whose knowledge they want, and which item
+                        # stops until it is answered. Recorded on the event rather than looked up
+                        # by a surface, because a client that derived it would be a second opinion
+                        # about the org chart.
+                        "person": asking,
+                        "needs": needs,
+                        "asks": 1 if standing is None else standing.asks + 1,
+                        # The work's name, because the surface has no other way to get it for the
+                        # commonest case. A hiring item is created at runtime and is in no catalog,
+                        # so a client rendering the card from the genesis payload showed the CEO
+                        # `wi_hire-hire_sales_1` and asked them to decide about it. Found by opening
+                        # the page rather than by any suite: every test named an authored item.
+                        "title": state.spec_of(item_id).title,
+                    },
+                    deadline_ticks=pend.AUTHORIZATION_DEADLINE_TICKS,
+                )
+            )
+        except pend.RequestCapExceeded:
+            # The run-wide cap, which can bind on an item that is under its own. Deterministic, so
+            # this is a run that has genuinely stopped being answered; the item stays stopped and
+            # `diagnose()` reports what is outstanding.
+            continue
+
+        state.authorizations[item_id] = authz.Authorization(
+            item_id=item_id,
+            asking=asking,
+            needs=needs,
+            request_id=request_id,
+            status=authz.OUTSTANDING,
+            raised_at_tick=state.tick,
+            asks=1 if standing is None else standing.asks + 1,
+        )
+
+    return events
+
+
+def authorization_request_id(item_id: str, needs: str, tick: int) -> str:
+    """The id of the Authorization request for this item, this line and this tick.
+
+    Derived from state the fold reproduces, because the request is (R17): `step()` raises it and has
+    no sequence number to hand, so the three facts that identify *which* question this is stand in
+    for one. The tick is what separates a second ask from the first, which is why it is in here and
+    why two asks are two rows in the report rather than one row asked twice.
+
+    It carries `statement_request_id`'s limitation unchanged and for the same reason — `State` holds
+    no run id, so a parent and a fork standing in the same state mint the same id — and the same
+    thing keeps it safe: an answer names the run it is for, and `decide_authorization` looks the
+    request up in *that* run's `pending`.
+    """
+    return pend.request_id_for(f"authorization:{item_id}:{needs}", tick)
+
+
 def _raise_period_consult(state: State) -> list[Emitted]:
     """Ask the domain service for this period's metric effects.
 
@@ -1496,11 +1723,25 @@ def _abandon_overdue_requests(state: State) -> list[Emitted]:
         if request.overdue(state.tick)
     ]:
         request = state.pending.pop(request_id)
+
+        # An abandoned Authorization is a refusal, not a third state (U15, M41). The CEO was asked,
+        # the run waited a window, and the item stays stopped — which is the same consequence a
+        # refusal has and is the reason silence is not allowed to mean something else here. The
+        # record keeps which of the two it was, because the report prints it and because "I said no"
+        # and "I never looked" read differently to a person.
+        standing = state.authorizations.get(request.owning_item)
+        if request.is_authorization and standing is not None and standing.request_id == request_id:
+            authz.refuse(standing, state.tick, abandoned=True)
+
         # A statement is never escalated, because a briefing is not a decision: the checkpoint the
         # director was going to talk about is already the CEO's to settle, and flagging it would put
-        # a second claim on the tray for something that was never off it.
+        # a second claim on the tray for something that was never off it. An Authorization is not
+        # escalated either, and for the stronger reason: it was the CEO's question from the moment
+        # it was raised, so escalating it to them would be the tray pointing at itself.
         escalated = (
-            not request.is_statement and request.owning_item != pend.SYNTHETIC_PERIOD_ITEM
+            not request.is_statement
+            and not request.is_authorization
+            and request.owning_item != pend.SYNTHETIC_PERIOD_ITEM
         )
         events.append(
             Emitted(
@@ -1669,6 +1910,7 @@ def _depart(state: State, person_id: str, director_id: str) -> list[Emitted]:
     person = state.people.get(person_id)
 
     returned = ""
+    released: list[Emitted] = []
     if person is not None and person.item_id:
         item = state.items[person.item_id]
         item.status = STATUS_BACKLOG
@@ -1676,8 +1918,14 @@ def _depart(state: State, person_id: str, director_id: str) -> list[Emitted]:
         returned = item.id
         person.item_id = ""
         person.state = STATE_IDLE
+        released = _drop_authorization(
+            state,
+            returned,
+            "the person holding the item left, so there is no work left for an Authorization "
+            "to unblock",
+        )
 
-    return [
+    return released + [
         Emitted(
             kind=EventKind.ATTRITION,
             payload={
@@ -1729,6 +1977,19 @@ def _advance_work(state: State, person: PersonRuntime) -> list[Emitted]:
     item = state.items[person.item_id]
     spec = state.spec_of(person.item_id)
     if item.status == STATUS_BLOCKED:
+        return []
+
+    # **The stall U15 built, and the whole consequence of a refusal** (M41, R24). An item whose
+    # Authorization is outstanding or refused burns nothing: no effort, no checkpoint, no meeting
+    # and no delivery. It is read off the item's own record rather than off `state.pending`, so a
+    # refusal keeps stalling after the question has left the outstanding table — which is the
+    # difference between "we are waiting for an answer" and "the answer was no".
+    #
+    # The item's *status* is deliberately left alone. `blocked` means stopped at a checkpoint and
+    # the tray renders exactly that set; an Authorization is its own card with its own actions, and
+    # borrowing the status would put a decision in the tray that has no options on it.
+    standing = state.authorizations.get(item.id)
+    if standing is not None and standing.stalls:
         return []
 
     item.done_units += _burn_this_tick(state, person, item)
@@ -1891,6 +2152,15 @@ def _complete(state: State, person: PersonRuntime, item: ItemRuntime) -> list[Em
             },
         )
     ]
+
+    # What it asked the CEO for, which finished work no longer needs. A granted Authorization is
+    # spent here rather than kept: M42 gives permission to a request, and the request ends with the
+    # work it was about.
+    events.extend(
+        _drop_authorization(
+            state, item.id, "the work finished before the CEO answered"
+        )
+    )
 
     # A finished hiring item seats the arrival, or refuses with a reason (R25).
     events.extend(_complete_hire(state, item.id))
@@ -2472,7 +2742,16 @@ def return_to_backlog(state: State, item_id: str) -> list[Emitted]:
     item.assignee = ""
     _refresh_load(state)
 
-    return [
+    # Before the event, so the log reads in the order the state changed: the item goes back, and
+    # what it had asked the CEO for goes with it.
+    released = _drop_authorization(
+        state,
+        item_id,
+        "the item went back to the backlog, so there is no work left for an Authorization to "
+        "unblock",
+    )
+
+    return released + [
         Emitted(
             kind=EventKind.WORK_RETURNED_TO_BACKLOG,
             payload={
@@ -2551,7 +2830,22 @@ def request_hire(state: State, director_id: str) -> list[Emitted]:
             },
         )
     ]
-    events.extend(assign_direct(state, item_id, recruiter))
+    assigned = assign_direct(state, item_id, recruiter)
+    for event in assigned:
+        if event.kind is EventKind.WORK_ASSIGNED:
+            # **The mark that stops this assignment being applied twice**, and it closes a defect
+            # that made any run which ever hired unfoldable. `HIRE_REQUESTED` is an input the fold
+            # re-issues, and re-issuing it calls `assign_direct` — which produces this very event.
+            # Without a mark the fold *also* classified this `WORK_ASSIGNED` as an input and applied
+            # it a second time, where it found the item already active and raised `CommandRejected`
+            # out of the fold. Measured before the fix: a run that requested one hire could not be
+            # replayed, reported or forked, and the report answered 500.
+            #
+            # The same shape as `handoff_completed` and for the same reason: `is_output` asks "did
+            # another input derive this?", and one command deriving an event another command also
+            # produces is exactly the case that predicate exists for.
+            event.payload["for_hire"] = True
+    events.extend(assigned)
     return events
 
 
@@ -2610,6 +2904,124 @@ def _complete_hire(state: State, item_id: str) -> list[Emitted]:
                 "deltas": effective,
                 "metrics": dict(state.metrics),
             },
+        )
+    ]
+
+
+def decide_authorization(state: State, request_id: str, *, granted: bool) -> list[Emitted]:
+    """Grant or refuse one director's request to read another line (M40, M42).
+
+    **A command rather than an answer on the pending-input contract's delivery path**, and the
+    difference is the answerer. A statement is delivered by a leg on a thread and lands at a derived
+    tick two sim-days later; this is a person pressing a button, so it carries an idempotency key,
+    it is applied at the tick it is issued at, and a retry is answered with the original outcome
+    rather than applied twice (R30). It is also why a duplicate is a rejection here rather than a
+    logged `ANSWER_REJECTED`: the deferred defect that makes a duplicate answer unreplayable is
+    reached through `receive_answer`'s `request is None` branch, and a player double-clicking Grant
+    is a far likelier duplicate than a service answering twice.
+
+    **The verdict is applied to the record, not to the request.** The request leaves `state.pending`
+    because it has been answered; the record stays, because it is what `_advance_work` reads and
+    what the next ask counts from. That split is what lets a refusal go on stalling an item after
+    the question is gone, and what keeps `pending` meaning exactly "asked and unanswered".
+
+    Rejected, mutating nothing, in three cases, and each is a sentence a client shows:
+
+    * the request is not outstanding — answered already, abandoned at its deadline, or never raised;
+    * the item is no longer somebody's to do, so there is nothing left for the answer to unblock.
+      **This is the "granted after the item completed" case** (M41's neighbour): an item that
+      finishes clears its record, so a grant arriving afterwards finds no request and is refused
+      with the reason rather than recorded as a permission over finished work;
+    * the record and the request disagree about which question is open, which means the state was
+      edited by something other than this module.
+    """
+    request = state.pending.get(request_id)
+    if request is None or not request.is_authorization:
+        raise CommandRejected(
+            f"no outstanding Authorization request {request_id!r}: it was already answered, "
+            "abandoned at its deadline, or never raised. Nothing was changed."
+        )
+
+    record = state.authorizations.get(request.owning_item)
+    if record is None or record.request_id != request_id:
+        raise CommandRejected(
+            f"the Authorization record for {request.owning_item} does not name request "
+            f"{request_id!r}, so there is no question here to answer"
+        )
+
+    item = state.items.get(request.owning_item)
+    if item is None or item.status not in IN_FLIGHT or not item.assignee:
+        raise CommandRejected(
+            f'"{state.spec_of(request.owning_item).title}" is no longer in flight, so there is '
+            "nothing left for an Authorization to unblock. The request is closed."
+        )
+
+    del state.pending[request_id]
+    if granted:
+        authz.grant(record, state.tick)
+    else:
+        authz.refuse(record, state.tick)
+
+    return [
+        Emitted(
+            kind=EventKind.AUTHORIZATION_DECIDED,
+            payload={
+                "tick": state.tick,
+                "request": request_id,
+                "item": record.item_id,
+                # Named `person` for the asking director because every other event that names a
+                # person spells it this way, and a surface reading the six-kind convention should
+                # not have to learn a fifth word for "who this is about".
+                "person": record.asking,
+                "needs": record.needs,
+                "granted": granted,
+                "asks": record.asks,
+                "raised_at_tick": record.raised_at_tick,
+                # What the answer did to the work, stated by the kernel rather than inferred by a
+                # client from the verdict. The two are the same today and a surface that derived one
+                # from the other would be a second copy of `Authorization.stalls`.
+                "item_stalled": record.stalls,
+                "item_status": item.status,
+            },
+        )
+    ]
+
+
+def _drop_authorization(state: State, item_id: str, reason: str) -> list[Emitted]:
+    """Forget what this item asked for, because there is no work left for the answer to unblock.
+
+    Called where an item stops being somebody's — it delivered, it went back to the backlog, or
+    attrition took its assignee. Three consequences, and the third is the one worth stating:
+
+    * the record goes, so a later assignment starts from no answer rather than from an old one. A
+      refusal is about work in flight, and work that went back to the backlog and came out again is
+      a different situation the CEO may answer differently;
+    * any outstanding request goes with it, because nothing is waiting on it any more;
+    * and that removal is **announced**. `ANSWER_REJECTED` is an output the fold regenerates, so a
+      request that vanished from `state.pending` with nothing in the log to say why would leave the
+      log's own projection of what is outstanding disagreeing with the state it folds to.
+    """
+    record = state.authorizations.pop(item_id, None)
+    if record is None:
+        return []
+
+    request = state.pending.pop(record.request_id, None) if record.request_id else None
+    if request is None:
+        return []
+
+    return [
+        Emitted(
+            kind=EventKind.ANSWER_REJECTED,
+            payload={
+                "tick": state.tick,
+                "reason": reason,
+                "owning_item": item_id,
+                "service": request.service,
+                "abandoned": False,
+                "escalated_to_ceo": False,
+                "deferred_period": request.period_index,
+            },
+            request_id=record.request_id,
         )
     ]
 
@@ -2907,6 +3319,11 @@ def snapshot(state: State) -> dict[str, Any]:
             "inputs": {str(tick): mask for tick, mask in sorted(state.ceo_inputs.items())},
         },
         "pending": pend.to_state(state.pending),
+        # U15. Its own subsystem rather than a field on each item, because it is a record of what
+        # the CEO was asked and answered rather than a property of the work — and because a
+        # divergence in *who may read what* localises to its own subtree at the next day boundary
+        # instead of arriving as "items changed".
+        "authorization": authz.to_state(state.authorizations),
         "capacity": cap.to_state(state.capacity),
         "morale": mor.to_state(state.morale),
         "hiring": hiring.to_state(state.hires),

@@ -26,11 +26,21 @@ owns no real item, so it attaches to a synthetic one — which means a late, rej
 answer defers only that period's metric application, rather than either advancing the day without
 it or stalling the clock.
 
-**Three legs share this transport, and `service` is what tells them apart** (R1). A period consult
+**Four legs share this transport, and `service` is what tells them apart** (R1). A period consult
 asks the domain service for metric effects; a resolution asks for a *choice*; a statement asks a
-director for prose and citations. They take different answers, different validation and different
-application paths, so the fold's answer dispatch has to know which one it is holding — a statement
-that fell through to the resolver would resolve or escalate a checkpoint.
+director for prose and citations; an Authorization asks the **CEO** whether one line may read
+another's (U15). They take different answers, different validation and different application paths,
+so the fold's answer dispatch has to know which one it is holding — a statement that fell through to
+the resolver would resolve or escalate a checkpoint.
+
+**The fourth leg is answered by a person, and that changes two things and nothing else.** Its answer
+arrives as a *command* rather than on a service stream, because the CEO's grant is a player input
+and player inputs carry idempotency keys — so `decide_authorization` applies it at the tick it is
+issued at instead of queueing it for a landing tick. And its window is sized against somebody
+noticing a card and deciding, which is two orders of magnitude slower than a loopback and one slower
+than a provider; see `AUTHORIZATION_DEADLINE_TICKS`. Everything else it shares: the caps, the
+deadline, the abandonment, and the projection that makes a restarted kernel remember what it
+asked.
 
 The discriminator is the `service` field rather than a new `kind` field beside it, and that is a
 decision with a price attached. `PendingRequest.to_state()` is inside the `pending` subsystem of
@@ -53,6 +63,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from simcore import time as simtime
+from simcore.rates import TUNING
 
 #: The synthetic item a company-scoped consult attaches to. Not a work item anybody can see: its
 #: only job is to be the thing that stalls when the domain service does not answer.
@@ -76,6 +87,9 @@ MAX_OUTSTANDING_PER_RUN = 32
 DOMAIN = "domain"
 AGENTS = "agents"
 BENCH = "bench"
+#: The CEO. Not a service and not a process — the *leg* is what this field names (see above), and
+#: the leg that answers an Authorization is a person at a keyboard.
+CEO = "ceo"
 
 # =========================================================================
 # The statement window (R17, R18)
@@ -140,6 +154,49 @@ STATEMENT_OFFSET_TICKS = (
 #: option label are both two orders of magnitude under it.
 MAX_ANSWER_PAYLOAD_BYTES = 16 * 1024
 
+# =========================================================================
+# The Authorization window (U15)
+# =========================================================================
+
+#: Wall-seconds the CEO gets to answer an Authorization, measured at the fastest clock rate.
+#:
+#: Twenty, derived the same way the bench's ten is and for the same reason: what is being sized is
+#: a wall-clock quantity — somebody noticing a card on the rail, reading who is asking and what for,
+#: and deciding — so the conversion happens here and the fastest rate is what binds.
+#:
+#: Twice the bench's, because a person is slower than a provider and because the cost of being wrong
+#: is asymmetric: a statement that misses its window is one briefing, while an Authorization that
+#: misses its window is a stalled item and a refusal the CEO did not make. At the shipped clock this
+#: is a minute of wall time at rate 1 and twenty seconds at rate 3, and the item is stopped for all
+#: of it — so a player who is not watching the rail still finds out, which is what M41 asks for.
+#:
+#: **Read from the tuning table rather than written here, unlike the three windows above it**, and
+#: `rates.TUNING` says why: those size how long a service is given to answer the same question, and
+#: this one decides how long work is stopped and when a refusal happens by default. Two runs of one
+#: seed under two values produce different work, so it is part of the rules identity and moving it
+#: correctly invalidates runs written under the old one.
+CEO_ANSWER_SECONDS = TUNING["authorization_ceo_answer_seconds"]
+
+#: Sim-ticks before an unanswered Authorization is abandoned, and abandonment is a refusal (M41).
+#:
+#: Four sim-days at the shipped clock. It does not count down while the run is paused, because
+#: nothing does: a deadline in sim-ticks is a property of the run rather than of the wall clock, so
+#: a player who pauses to think is not answering by timeout.
+AUTHORIZATION_DEADLINE_TICKS = (
+    CEO_ANSWER_SECONDS * simtime.TICKS_PER_WALL_SECOND_AT_BASE_RATE * FASTEST_CLIENT_RATE
+)
+
+#: Sim-ticks between a refusal and the director asking again (M42).
+#:
+#: Half the window, so a refused item asks about twice per window rather than once per tick — which
+#: is the whole reason this number exists. Without it the derivation would raise a fresh request on
+#: the tick after every refusal, and a CEO who said no once would be asked thirty-six times a wall
+#: second by a director whose item is stopped either way.
+#:
+#: It is not a retry: each ask is a new request with its own id, its own deadline and its own row in
+#: the report, which is the distinction M42 draws between "ask again" and "keep asking".
+AUTHORIZATION_REASK_TICKS = AUTHORIZATION_DEADLINE_TICKS // 2
+
 #: Sim-ticks before an unanswered statement request is abandoned (R18).
 #:
 #: Twice the window, so a request whose answer is merely late is abandoned one window after the
@@ -179,6 +236,17 @@ class PendingRequest:
     def is_statement(self) -> bool:
         """Whether this is a request for prose and citations rather than for a choice."""
         return self.service == BENCH
+
+    @property
+    def is_authorization(self) -> bool:
+        """Whether this is a question for the CEO rather than for a service.
+
+        Read by the step's abandonment, which has to mark the item's record refused, and by the
+        kernel's statement dispatch, which must not carry it to the bench. Both read the leg rather
+        than the shape of the payload, for the reason the module docstring gives: the leg is the one
+        field that says which validation and which application path a request takes.
+        """
+        return self.service == CEO
 
     def to_state(self) -> dict[str, Any]:
         return {

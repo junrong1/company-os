@@ -303,6 +303,67 @@ def test_a_walk_a_command_derived_is_compared_as_strictly_as_the_steps_own() -> 
         folder.fold(tampered, at_live_head=False, strict=True, through_tick=recorder.state.tick)
 
 
+def test_a_run_that_hired_folds_at_all() -> None:
+    """A live defect found by U15, and the run it broke is an ordinary one.
+
+    `request_hire` is an input the fold re-issues, and re-issuing it calls `assign_direct` — which
+    produces a `WORK_ASSIGNED`. That event was classified as an input too, so the fold applied the
+    same assignment twice and the second one found the item already active: `CommandRejected` out
+    of the middle of a fold. **Any run that ever hired could not be replayed, reported or forked,
+    and the report route answered 500.** Nothing caught it because no test folded a run that hired.
+
+    The fix is the mark `handoff_completed` already models — "another input derived this" — and
+    this is the test that would have failed before it.
+    """
+    recorder = Recorder()
+    recorder.record(sim.request_hire(recorder.state, "dir_hr"))
+    recorder.advance(400)
+
+    folded = folder.replay_to_state(
+        recorder.log, strict=True, through_tick=recorder.state.tick
+    )
+
+    assert hashing.state_hash(sim.snapshot(folded)).overall == recorder.hash
+    assert len(folded.hires) == 1
+    assert list(folded.dynamic_items) == list(recorder.state.dynamic_items)
+
+
+def test_the_hires_assignment_is_regenerated_rather_than_applied() -> None:
+    """And it is compared as strictly as any other output, which is what the mark buys.
+
+    Without the comparison the fix would be "stop applying it", which would also have made a
+    tampered assignment invisible. `for_hire` puts the event on the *output* side of the
+    partition, so the fold regenerates it and checks the log's copy against what it produced.
+    """
+    recorder = Recorder()
+    recorder.record(sim.request_hire(recorder.state, "dir_hr"))
+    recorder.advance(2)
+
+    assigned = [
+        e
+        for e in recorder.log
+        if e.kind is EventKind.WORK_ASSIGNED and e.decoded_payload().get("for_hire")
+    ]
+    assert len(assigned) == 1, "the hire's assignment carries no mark"
+
+    tampered = [
+        build(
+            seq=e.seq,
+            tick=e.tick,
+            kind=e.kind,
+            rules_ver=e.rules_ver,
+            payload={**e.decoded_payload(), "person": "stf_cs"},
+            run_id=e.run_id,
+        )
+        if e is assigned[0]
+        else e
+        for e in recorder.log
+    ]
+
+    with pytest.raises(folder.ReplayDiverged, match="WORK_ASSIGNED"):
+        folder.fold(tampered, at_live_head=False, strict=True, through_tick=recorder.state.tick)
+
+
 def test_the_fold_reproduces_the_ceos_input_derived_position() -> None:
     """R12: the CEO resumes where their logged input put them, not at spawn."""
     recorder = Recorder()

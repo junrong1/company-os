@@ -15,6 +15,15 @@ Together they answer the only question that matters during recovery: what is the
 sequence I can trust, and how much does going back to it cost? The answer is bounded at one
 sim-day, which is what makes truncation a real option rather than a euphemism for deleting
 the run.
+
+**And the shape version is read before either of them is believed** (R27). A day-boundary hash
+covers whatever subsystems the state shape declared when it was written, and the version is inside
+the digest — so a log written under an older shape cannot match a hash computed under a newer one,
+however healthy it is. Without this check that is indistinguishable from corruption, and U15 would
+have made every run written before it report as damaged on the day it landed. So a recorded shape
+that is not the running one is reported as a **version move**: the hashes are declared
+incomparable, the sequence density still stands on its own, and the summary says which versions are
+involved rather than inviting an operator to truncate a run that is fine.
 """
 
 from __future__ import annotations
@@ -40,6 +49,13 @@ class VerifyReport:
     missing_seqs: list[int] = field(default_factory=list)
     #: Day boundaries whose recorded hash does not match a re-fold, earliest first.
     diverged_checkpoints: list[dict] = field(default_factory=list)
+    #: Set when this log's checkpoints were written under a different state shape (R27).
+    #:
+    #: Not a divergence and not damage: it means the hashes cannot be compared at all, so the
+    #: checkpoint half of verification is skipped and says so. A run in this state is still
+    #: foldable — nothing about the shape version stops the fold — and it is still unplayable, for
+    #: the separate reason that its rules version moved with it.
+    shape_move: dict = field(default_factory=dict)
     #: The last sequence that folds cleanly. Truncating here costs at most one sim-day.
     last_good_seq: int = 0
     last_good_tick: int = 0
@@ -47,12 +63,25 @@ class VerifyReport:
     refusal: str = ""
 
     def summary(self) -> str:
+        if self.healthy and self.shape_move:
+            return (
+                f"{self.event_count} events, sequence dense through {self.max_seq}; "
+                f"day-boundary hashes not compared — they were written under state shape "
+                f"{self.shape_move['recorded']} and this build writes "
+                f"{self.shape_move['running']}"
+            )
         if self.healthy:
             return (
                 f"{self.event_count} events, sequence dense through {self.max_seq}, "
                 f"every day-boundary hash matches"
             )
         parts = []
+        if self.shape_move:
+            parts.append(
+                f"day-boundary hashes were written under state shape "
+                f"{self.shape_move['recorded']} and this build writes "
+                f"{self.shape_move['running']}, so they were not compared"
+            )
         if self.refusal:
             parts.append(self.refusal)
         if self.missing_seqs:
@@ -107,11 +136,37 @@ def verify(events: Sequence[Envelope], running_rules_ver: str | None = None) -> 
     for envelope in ordered:
         if envelope.kind is EventKind.DAY_CHECKPOINT:
             payload = envelope.decoded_payload()
+            written_under = int(payload.get("state_shape_ver", 1))
+            if written_under != hashing.STATE_SHAPE_VERSION and not report.shape_move:
+                # **Before any hash is compared** (R27). The checkpoint carries the shape it was
+                # written under precisely so this question can be asked first, and asking it second
+                # would mean reporting a deliberate change as corruption — with a "truncate here"
+                # remedy attached to a run that has nothing wrong with it. The first mismatch is
+                # enough: a log's checkpoints are written by one build.
+                report.shape_move = {
+                    "recorded": written_under,
+                    "running": hashing.STATE_SHAPE_VERSION,
+                    "at_seq": envelope.seq,
+                    "at_tick": int(payload["tick"]),
+                    "history": list(hashing.SHAPE_HISTORY.get(written_under, ())),
+                }
             recorded.append((int(payload["tick"]), envelope.seq, payload["state_hash"]))
     recorded.sort()
 
-    # Fold up to each boundary and compare. Earliest divergence is the useful one: a later
-    # mismatch is a consequence of it, not independent evidence.
+    # Fold up to each boundary and compare, unless the shape moved — in which case the fold still
+    # runs and only the comparison is skipped. That is deliberately not an early return: a fold that
+    # completes is itself evidence, so `last_good_seq` keeps meaning "the last sequence that folds
+    # cleanly" instead of collapsing to "the last sequence that exists". What is lost with the
+    # hashes is the ability to detect a *wrong* state, and the report says so rather than implying
+    # the checkpoints passed.
+    #
+    # **When U15 moved the shape it moved the rules with it**, so a run written before it is refused
+    # by the guard above and never reaches here. This branch is for a shape move that does not change
+    # what the numbers mean — a hashed subsystem added to a run that plays identically — which R27
+    # asks be legible whichever unit eventually makes one.
+    #
+    # Earliest divergence is the useful one: a later mismatch is a consequence of it, not
+    # independent evidence.
     last_good_seq = ordered[0].seq if ordered else 0
     last_good_tick = 0
 
@@ -140,6 +195,14 @@ def verify(events: Sequence[Envelope], running_rules_ver: str | None = None) -> 
                 }
             )
             break
+
+        if report.shape_move:
+            # Folded, not compared. The recorded digest covers a different set of subsystems and
+            # carries a different version inside it, so a mismatch here would say nothing about
+            # whether the state is right.
+            last_good_seq = seq
+            last_good_tick = tick
+            continue
 
         actual = hashing.state_hash(sim.snapshot(result.state))
         if actual.overall != expected:

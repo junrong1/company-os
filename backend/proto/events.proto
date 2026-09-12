@@ -109,6 +109,13 @@ enum EventKind {
   // the figures the CEO was shown are still on the record afterwards.
   OPTIONS_COMPARED = 24;
 
+  // The CEO answering one director's request to read another line (U15, M40). An
+  // *input*: the run could not have derived it, so the fold re-issues it rather than
+  // regenerating it, and a replay reproduces both a grant and a refusal with nothing
+  // reachable but the log. The question it answers is a REQUEST_RAISED on the `ceo`
+  // leg, which the fold regenerates like any other.
+  AUTHORIZATION_DECIDED = 25;
+
   // Work.
   WORK_ASSIGNED = 30;
   WORK_REASSIGNED = 31;

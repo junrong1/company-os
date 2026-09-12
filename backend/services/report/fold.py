@@ -28,6 +28,7 @@ from simcore import effects
 from simcore import hashing
 from simcore import lifecycle
 from simcore import log as folder
+from simcore import pending as pend
 from simcore import step as sim
 from simcore import time as simtime
 
@@ -88,6 +89,62 @@ class DecisionRecord:
 
 
 @dataclass(slots=True)
+class AuthorizationRecord:
+    """One time a director asked to read another line, and what it cost (M43).
+
+    **One row per ask, not per item.** M42 makes a second request for the same knowledge a fresh
+    question rather than a retry, so the report has to be able to show a CEO who refused on day two
+    and granted on day five as two decisions with two consequences — collapsing them onto the item
+    would report the last answer as though it had always been the answer.
+
+    The consequence is a measured quantity rather than an adjective: `stalled_ticks` is how long the
+    work stood still between the ask and the answer, and for a refusal that is still standing it is
+    how long it has stood still so far. That is the figure that makes "a refusal has consequences"
+    checkable from the log by somebody who does not trust the sentence above it.
+    """
+
+    item: str
+    #: The director who asked, and the line whose knowledge they asked for.
+    asking: str
+    needs: str
+    #: Which time of asking this is, for this item.
+    asks: int
+    #: One of five: `open` while nobody has answered, `granted`, `refused`, `abandoned` when the
+    #: deadline answered for the CEO, and `overtaken` when the work ended before anybody did.
+    outcome: str
+    raised_at_seq: int
+    raised_at_tick: int
+    decided_at_seq: int = 0
+    decided_at_tick: int = 0
+    #: Sim-ticks the item stood still because of this ask. Still accumulating when `open`.
+    stalled_ticks: int = 0
+    #: True while the CEO has not answered and the run has not answered for them.
+    open: bool = False
+    #: Whether the item this was about had been delivered by the end of the log.
+    delivered: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "item": self.item,
+            "asking": self.asking,
+            "needs": self.needs,
+            "asks": self.asks,
+            "outcome": self.outcome,
+            "raised_at_seq": self.raised_at_seq,
+            "raised_at_tick": self.raised_at_tick,
+            "raised_at_day": simtime.day_of(self.raised_at_tick),
+            "decided_at_seq": self.decided_at_seq,
+            "decided_at_tick": self.decided_at_tick,
+            "decided_at_day": simtime.day_of(self.decided_at_tick) if self.decided_at_tick else 0,
+            "stalled_ticks": self.stalled_ticks,
+            "stalled_hours": self.stalled_ticks // simtime.TICKS_PER_SIM_HOUR,
+            "open": self.open,
+            "delivered": self.delivered,
+            "basis": AUTHORED,
+        }
+
+
+@dataclass(slots=True)
 class Report:
     run_id: str
     rules_ver: str
@@ -101,6 +158,8 @@ class Report:
     #: Departments left over their ceiling, and when.
     load_events: list[dict[str, Any]] = field(default_factory=list)
     attrition: list[dict[str, Any]] = field(default_factory=list)
+    #: Every Authorization the CEO was asked for, and what each answer did (M43, U15).
+    authorizations: list[AuthorizationRecord] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -117,6 +176,7 @@ class Report:
             "claims": [claim.to_dict() for claim in self.claims],
             "load_events": self.load_events,
             "attrition": self.attrition,
+            "authorizations": [record.to_dict() for record in self.authorizations],
         }
 
     def claim_for(self, label: str) -> Claim | None:
@@ -221,6 +281,41 @@ def build(run_id: str, events: list[Envelope], through_tick: int | None = None) 
                 }
             )
 
+        elif envelope.kind is EventKind.REQUEST_RAISED and payload.get("service") == pend.CEO:
+            report.authorizations.append(
+                AuthorizationRecord(
+                    item=str(payload.get("owning_item", "")),
+                    asking=str(payload.get("person", "")),
+                    needs=str(payload.get("needs", "")),
+                    asks=int(payload.get("asks", 1)),
+                    outcome="open",
+                    raised_at_seq=envelope.seq,
+                    raised_at_tick=tick,
+                    open=True,
+                )
+            )
+
+        elif envelope.kind is EventKind.AUTHORIZATION_DECIDED:
+            _close_authorization(
+                report,
+                str(payload.get("item", "")),
+                outcome="granted" if payload.get("granted") else "refused",
+                seq=envelope.seq,
+                tick=tick,
+            )
+
+        elif envelope.kind is EventKind.ANSWER_REJECTED and payload.get("service") == pend.CEO:
+            # The two ways an Authorization ends without the CEO answering it, and the report keeps
+            # them apart because they read differently to a person: the deadline answered for them,
+            # or the work ended before anybody did.
+            _close_authorization(
+                report,
+                str(payload.get("owning_item", "")),
+                outcome="abandoned" if payload.get("abandoned") else "overtaken",
+                seq=envelope.seq,
+                tick=tick,
+            )
+
         elif envelope.kind is EventKind.RUN_TERMINATED:
             report.outcome = {
                 "reason": payload["reason"],
@@ -245,8 +340,43 @@ def build(run_id: str, events: list[Envelope], through_tick: int | None = None) 
             "deliverables": len(report.deliverables),
         }
 
+    _settle_authorizations(report, state)
     report.claims = _claims(report, state, ordered[-1].seq)
     return report
+
+
+def _close_authorization(
+    report: Report, item_id: str, *, outcome: str, seq: int, tick: int
+) -> None:
+    """Attach an answer to the newest open ask for this item.
+
+    Newest rather than first, because M42's second ask is a second row: an answer belongs to the
+    question that was actually open when it arrived. A missing row is ignored rather than invented —
+    a log prefix can hold an answer whose request is before the prefix, and a report that
+    manufactured the question would be reporting an ask nobody made.
+    """
+    for record in reversed(report.authorizations):
+        if record.item == item_id and record.open:
+            record.outcome = outcome
+            record.decided_at_seq = seq
+            record.decided_at_tick = tick
+            record.stalled_ticks = max(0, tick - record.raised_at_tick)
+            record.open = False
+            return
+
+
+def _settle_authorizations(report: Report, state: sim.State) -> None:
+    """Finish the rows the log did not close, and say what each one's item ended up doing.
+
+    An ask the CEO never answered is still stalling its item at the head of the log, so its
+    consequence is measured to *there* rather than left at zero — an unanswered request that
+    reported no cost would be the one reading of this mechanic that is definitely wrong.
+    """
+    delivered = {deliverable["item"] for deliverable in report.deliverables}
+    for record in report.authorizations:
+        if record.open:
+            record.stalled_ticks = max(0, state.tick - record.raised_at_tick)
+        record.delivered = record.item in delivered
 
 
 def _tacit_for(state: sim.State, item_id: str, cp_index: int) -> str:

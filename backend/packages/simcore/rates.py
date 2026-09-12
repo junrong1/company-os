@@ -164,6 +164,18 @@ TUNING: dict[str, int] = {
     # is authored tuning rather than a literal at its call site, so the ask mechanic's gain
     # belongs here — which is also why adding it moves RULES_VERSION.
     "visibility_per_tacit_answer": 2,
+    # How long the CEO has to answer an Authorization, in wall-seconds at the fastest clock rate
+    # the client offers. `simcore.pending` converts it into the sim-tick window and the re-ask
+    # interval; the sizing argument is written out there, beside the two numbers it produces.
+    #
+    # **It belongs in this table, and the reason is worth stating because the three deadlines above
+    # it in `pending.py` are not here.** Those size how long a *service* is given to answer — change
+    # one and a run waits longer for the same answer. This one decides how long an item is stopped
+    # and when a refusal happens by default, so two runs of one seed under two values produce
+    # different work, different metrics and different logs. That is exactly what the rules version
+    # exists to identify, and U15 moving it is the honest consequence of building a mechanic rather
+    # than a timeout.
+    "authorization_ceo_answer_seconds": 20,
 }
 
 

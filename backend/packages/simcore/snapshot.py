@@ -43,7 +43,13 @@ class SnapshotInvalid(Exception):
 #: the three sites that has to check it — and it cannot check what it does not carry. The bump
 #: makes every pre-U6 snapshot a documented drop-and-refold, which the format-version refusal
 #: below already words as "a snapshot is a cache, so nothing is lost".
-SNAPSHOT_FORMAT_VERSION = 2
+#:
+#: 3: the MVP's U15 added `authorizations`, what each item has asked the CEO to allow. It is hashed
+#: state, so a snapshot that omitted it would fail its own round-trip guard — but the bump is not
+#: for that. It is for the *fork*: a child restored from a pre-U15 snapshot would come back with an
+#: item that is stopped in its parent and moving in the child, and the two timelines would then
+#: differ by something nobody decided.
+SNAPSHOT_FORMAT_VERSION = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +113,14 @@ def to_wire(state: sim.State) -> dict[str, Any]:
         "pending": {
             request_id: request.to_state()
             for request_id, request in state.pending.items()
+        },
+        # U15's Authorizations. They stall the items they belong to, so a restore that dropped them
+        # would restart work the CEO has not agreed to — which is the same class of silent loss the
+        # round-trip guard caught four times above, and this one would also be a rule being
+        # forgotten rather than a number.
+        "authorizations": {
+            item_id: record.to_state()
+            for item_id, record in state.authorizations.items()
         },
         "last_period_consulted": state.last_period_consulted,
         "queued_answers": {
@@ -264,6 +278,15 @@ def from_wire(wire: dict[str, Any]) -> sim.State:
             period_index=int(recorded["period_index"]),
         )
         for request_id, recorded in wire["pending"].items()
+    }
+    from simcore import authorization as authz
+
+    state.authorizations = {
+        item_id: authz.from_state(item_id, recorded)
+        # `.get` rather than `[...]`: the format version above already refuses a snapshot older
+        # than this field, so this is the belt on a check that has already passed rather than a
+        # migration — and an empty default is the right answer for a state that had none.
+        for item_id, recorded in wire.get("authorizations", {}).items()
     }
     state.last_period_consulted = int(wire["last_period_consulted"])
     state.queued_answers = {

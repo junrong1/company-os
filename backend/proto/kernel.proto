@@ -100,6 +100,14 @@ enum CommandKind {
   // at; a comparison mutates nothing and needs no boundary, and pausing to weigh two
   // options is exactly when it is wanted.
   COMPARE_OPTIONS = 11;
+
+  // Grant or refuse a director's request to read another reporting line (U15).
+  //
+  // A kind rather than a verb of its own, unlike FORK_RUN above, because the test is
+  // what the thing does: this applies an input to a run that already exists, at a tick
+  // boundary, and wants an idempotency key because a person presses it. Creating a run
+  // is what earns a verb.
+  DECIDE_AUTHORIZATION = 12;
 }
 
 message CommandOutcome {

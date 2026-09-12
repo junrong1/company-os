@@ -422,6 +422,20 @@ def child_run_id_for(parent_run_id: str, idempotency_key: str) -> str:
 MAX_IDEMPOTENCY_KEY_CHARS = 128
 
 
+def _asking_director(state: sim.State, request: pend.PendingRequest) -> str:
+    """The director an Authorization request is on, or the empty string for any other leg.
+
+    Read off folded state rather than off a dispatch table, because nothing dispatched it: the CEO
+    answers this leg from the tray, so the kernel keeps no subject for it. Pure, and outside the
+    class, so the lock-held block in `diagnose` stays a list comprehension over state and nothing
+    else.
+    """
+    if not request.is_authorization:
+        return ""
+    record = state.authorizations.get(request.owning_item)
+    return record.asking if record is not None else ""
+
+
 def refuse_an_unusable_identifier(label: str, value: str) -> str:
     """Why this run id or idempotency key cannot be used, or "" if it can.
 
@@ -1914,6 +1928,16 @@ class KernelRuntime:
                 state, whole("bitmask"), whole("at_tick")
             ),
             kernel_pb2.REQUEST_HIRE: lambda state: sim.request_hire(state, decoded["director"]),
+            # `.get` and `str(...)` for the same reason `ask_person` uses them: a payload missing a
+            # key is a client mistake to answer with a reason, and a KeyError here would escape as
+            # a 500 because nothing above catches anything but CommandRejected. `granted` is
+            # compared to `True` rather than coerced, so a missing field is a refusal rather than a
+            # grant — the safe direction for a permission.
+            kernel_pb2.DECIDE_AUTHORIZATION: lambda state: sim.decide_authorization(
+                state,
+                str(decoded.get("request", "")),
+                granted=decoded.get("granted") is True,
+            ),
             # `.get` rather than `[...]`: this is the one command carrying free-form text a
             # person typed, so a payload missing a key is a client mistake to answer with a
             # reason. A KeyError here would escape as a 500 — nothing above this catches
@@ -2688,7 +2712,13 @@ class KernelRuntime:
                     "raised_at_tick": request.raised_at_tick,
                     "deadline_tick": request.deadline_tick,
                     "ticks_remaining": max(0, request.deadline_tick - run.state.tick),
-                    "person": str(run.statement_subjects.get(request_id, {}).get("person", "")),
+                    # Who the question is on. For a statement that is the subject the dispatch
+                    # kept; for an Authorization it is the director the record says is asking, and
+                    # it comes from folded state because nothing dispatched it — the CEO answers it
+                    # from the tray. Without this second half, "why is this item not moving" needs a
+                    # log again for exactly the leg whose whole consequence is an item not moving.
+                    "person": str(run.statement_subjects.get(request_id, {}).get("person", ""))
+                    or _asking_director(run.state, request),
                     "asked": request_id in run.statements_asked,
                 }
                 for request_id, request in sorted(run.state.pending.items())

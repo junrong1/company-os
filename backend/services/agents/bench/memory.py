@@ -14,6 +14,14 @@ summary auditable: a sentence is written over a selection somebody else can reco
 guard below refuses any sentence that does not cite one of its events. You can always ask which
 events a sentence was written over, and the answer is on the sentence.
 
+**A memory does not widen with an Authorization, and that asymmetry is the point** (M36, M39). The
+kernel derives two scopes — `authorized_scope`, what a director may *speak* for, and
+`remembered_scope`, what they carry about their own line — and U15 widens only the first. A granted
+Authorization lets a director draw on another line's events for the item it was granted about; it
+does not put that line into the memory the CEO reads under this director's name, because a memory is
+an account of one reporting line and a permission to read is not a change of who you are. The
+memory route therefore calls `remembered_scope` exactly as it did before this unit.
+
 **Nothing here is ever appended.** A memory is a read, so unlike a statement it is not an event, not
 folded, not replayed, and not copied by a fork. That is why its guard lives beside its producer
 instead of in `simcore.statement`: the predicates a statement is held to are shared because a

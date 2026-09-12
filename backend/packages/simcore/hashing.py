@@ -59,9 +59,33 @@ SHAPE_HISTORY: dict[int, tuple[str, ...]] = {
         # Filled by U8.
         "lifecycle",
     ),
+    # The MVP's U15. Appended, never rewritten: version 1's tuple is still exactly what a
+    # checkpoint written under it covered, which is what lets `verify` say "the shape moved"
+    # rather than "the state is corrupt" about a log this build did not write (R27).
+    2: (
+        "world",
+        "people",
+        "items",
+        "metrics",
+        "ceo",
+        "pending",
+        "capacity",
+        "morale",
+        "hiring",
+        "lifecycle",
+        # What the CEO was asked to allow, and what they answered. A subsystem of its own rather
+        # than a field on each item, so a divergence in who may read what localises to this subtree
+        # instead of arriving as "items changed" — which is the whole reason the sub-hashes exist.
+        "authorization",
+    ),
 }
 
-STATE_SHAPE_VERSION = 1
+#: 2 since the MVP's U15, which gave a director a way to ask for another line's knowledge and gave
+#: the CEO's answer a consequence. The move is deliberate and it costs what R27 says it costs: every
+#: day-boundary hash written under version 1 is incomparable with one written now, because the shape
+#: version is inside the overall digest. `verify` therefore reads the recorded version *before* it
+#: compares hashes, so an older run reports a version move rather than corruption.
+STATE_SHAPE_VERSION = 2
 
 SUBSYSTEMS: tuple[str, ...] = SHAPE_HISTORY[STATE_SHAPE_VERSION]
 

@@ -64,6 +64,7 @@ class EventKind(IntEnum):
     DECISION_RESOLVED = 22
     QUESTION_ANSWERED = 23
     OPTIONS_COMPARED = 24
+    AUTHORIZATION_DECIDED = 25
 
     # Work.
     WORK_ASSIGNED = 30
@@ -123,7 +124,11 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     # byte-identical to version 1 and a log written before this unit still replays strictly. The
     # bump is for the consumer that has to be able to tell whether the event it is holding can carry
     # a director at all.
-    EventKind.REQUEST_RAISED: 2,  # U11, MVP U10
+    # 3: the MVP's U15 added a fourth leg, answered by the CEO rather than by a service. An
+    # Authorization request carries the director asking, the line whose knowledge they need, and
+    # which time of asking this is — present only on that leg, so the other three payloads are
+    # byte-identical to version 2 and every log written before this unit still replays strictly.
+    EventKind.REQUEST_RAISED: 3,  # U11, MVP U10, MVP U15
     # 2: the answer to a statement request rides here rather than on a new kind, which is what keeps
     # it inside the partial unique index that already enforces one answer per request per run. The
     # discriminator is on the payload: `service` names the leg, and the answer then carries the
@@ -151,7 +156,16 @@ KIND_SCHEMA_VERSIONS: dict[EventKind, int] = {
     # applies it nor regenerates it — regenerating would make every replay re-run N branches
     # for no gain in what the replay proves.
     EventKind.OPTIONS_COMPARED: 1,  # Phase 3
-    EventKind.WORK_ASSIGNED: 2,  # U4
+    # The CEO's answer to a cross-line read, and the consequence it had for the item. An input:
+    # nothing in the run derives it, so the fold re-issues the command rather than regenerating the
+    # event — which is what makes a grant and a refusal both replay with no model, no bench and no
+    # client reachable.
+    EventKind.AUTHORIZATION_DECIDED: 1,  # MVP U15
+    # 3: the MVP's U15 marked the assignment `request_hire` derives with `for_hire`, so the fold
+    # can tell it from an assignment somebody issued. Additive, and it is the field that decides
+    # whether the event is applied or regenerated — a log written without it folds the old way,
+    # which is to say it does not fold at all once it holds a hire.
+    EventKind.WORK_ASSIGNED: 3,  # U4, MVP U15
     EventKind.WORK_REASSIGNED: 2,  # U4
     EventKind.WORK_RETURNED_TO_BACKLOG: 2,  # U7
     EventKind.DELIVERABLE_PRODUCED: 2,  # U4
