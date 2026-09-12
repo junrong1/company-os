@@ -2151,4 +2151,79 @@ describe('the bench, rendered', () => {
     host.remove()
   })
 
+  it('offers a standing Authorization in person as well as from the tray (U15, M40)', () => {
+    // The CEO may be across the floor from the director asking, so the tray has to carry it — and
+    // they may be standing in front of them, so the conversation has to as well. Both render the
+    // same component, which is what stops the two surfaces asking the question two ways.
+    act(() => {
+      useRunStore.getState().reset()
+      useRunStore.getState().apply(genesisFrame())
+      useRunStore.getState().apply({
+        kind: 'REQUEST_RAISED',
+        seq: '7',
+        tick: '60',
+        schema_ver: 3,
+        rules_ver: 'test',
+        run_id: 'run-1',
+        command_id: '',
+        request_id: 'req-authz-conv',
+        payload: {
+          tick: 60,
+          service: 'ceo',
+          owning_item: 'wi_faq',
+          deadline_tick: 2220,
+          period_index: 0,
+          person: 'dir_admin',
+          needs: 'dir_cs',
+          asks: 1,
+        },
+      })
+    })
+
+    const sent: Array<[string, Record<string, unknown>]> = []
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    act(() => {
+      root.render(
+        createElement(Conversation, {
+          personId: 'dir_admin',
+          onCommand: (kind: string, payload: Record<string, unknown>) =>
+            sent.push([kind, payload]),
+        } as never),
+      )
+    })
+
+    const card = host.querySelector('[data-kind="authorization"]') as HTMLElement
+    expect(card).not.toBeNull()
+    expect(card.textContent).toContain('asks to read')
+
+    act(() => (card.querySelector('button') as HTMLButtonElement).click())
+    expect(sent).toEqual([
+      ['decide_authorization', { request: 'req-authz-conv', granted: true }],
+    ])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('offers nothing to a director nobody is asking about', () => {
+    act(() => {
+      useRunStore.getState().reset()
+      useRunStore.getState().apply(genesisFrame())
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    act(() => {
+      root.render(createElement(Conversation, { personId: 'dir_admin' }))
+    })
+
+    expect(host.querySelector('[data-kind="authorization"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
 })

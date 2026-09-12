@@ -19,7 +19,7 @@ import { type AnsweredQuestion, useRunStore } from '../net/store'
 import { CompareAffordance } from './Comparison'
 import type { CompareSender } from './comparison-model'
 import { OptionConsequence } from './Consequence'
-import type { CommandSender } from './Panels'
+import { AuthorizationCard, type CommandSender } from './Panels'
 import { Described, Scripted } from './Marking'
 import {
   type AssignableItem,
@@ -93,6 +93,15 @@ export function Conversation({ personId, runId, onCommand, onCompare }: Conversa
   // would do the tray scan twice per render for one value.
   const statements = useRunStore(useShallow((state) => state.statements))
   const benchPresent = useRunStore((state) => state.spend.benchPresent)
+
+  // What this person has asked the CEO to allow (U15, M40). Selected by asking director rather
+  // than by item, because the question belongs to the person the CEO is standing in front of —
+  // the tray answers it from across the floor, and this answers it in front of them.
+  const asks = useRunStore(
+    useShallow((state) =>
+      Object.values(state.authorizations).filter((entry) => entry.asking === personId),
+    ),
+  )
 
   // Genesis is written once and never replaced, so these are stable by reference and need no
   // shallow comparison.
@@ -169,6 +178,19 @@ export function Conversation({ personId, runId, onCommand, onCompare }: Conversa
       </header>
 
       {schema !== null && <Schema schema={schema} name={header.name} />}
+
+      {/* Above the decision, unlike the briefing below it, because this is not something to read
+          while deciding — it is a second thing to decide, and it is stopping work right now. The
+          same card the tray renders, so the two surfaces cannot ask the question two ways. */}
+      {asks.map((ask) => (
+        <AuthorizationCard
+          key={ask.requestId || ask.itemId}
+          entry={ask}
+          item={(catalog ?? []).find((entry) => entry.id === ask.itemId)}
+          nameOf={(id) => roster?.[id]?.name ?? id}
+          onDecide={onCommand}
+        />
+      ))}
 
       {stopped !== null && (
         <Decision

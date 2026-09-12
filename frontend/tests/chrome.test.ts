@@ -102,13 +102,15 @@ describe('the chrome palette', () => {
     for (const { index } of beamRules) {
       const preceding = SHELL_CSS.split('\n').slice(0, index).join('\n')
       const selector = preceding.slice(preceding.lastIndexOf('\n', preceding.lastIndexOf('{')))
-      // The three shapes "somebody is waiting on you" takes in the chrome: the dot beside a
-      // person, the conversation with one of them open, and the tray that holds the queue.
-      // Anything else spending the amber is the reserved signal leaking.
+      // The four shapes "somebody is waiting on you" takes in the chrome: the dot beside a
+      // person, the conversation with one of them open, the tray that holds the queue, and — since
+      // U15 — the card for a director who cannot get on until the CEO answers them (M41). Anything
+      // else spending the amber is the reserved signal leaking.
       const aboutWaiting =
         selector.includes('beam') ||
         selector.includes("data-state='blocked'") ||
-        selector.includes('data-waiting')
+        selector.includes('data-waiting') ||
+        selector.includes('decision--ask')
       expect(aboutWaiting, `var(--beam) used under selector: ${selector.trim()}`).toBe(true)
     }
   })

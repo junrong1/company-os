@@ -455,6 +455,51 @@ export interface StatementView {
 }
 
 // =========================================================================
+// Authorization (U15, M39-M42)
+// =========================================================================
+
+/**
+ * One director asking the CEO to read another reporting line.
+ *
+ * **Keyed by item, because that is what the answer unblocks.** The kernel keeps one record per item
+ * for the same reason, and it is what makes M42 structural on this side too: a card answers for the
+ * item it names, and granting one says nothing about any other.
+ *
+ * **`requestId` is what the answer is addressed to**, and it is carried rather than derived. The
+ * kernel mints it inside `step()` from the item, the line and the tick, so a client that rebuilt it
+ * would be a second copy of a derivation it cannot see the inputs to — and would answer a different
+ * question than the one on the card.
+ *
+ * A card is dropped when it is answered rather than kept as history: what the CEO decided is in the
+ * report, and a tray that accumulated answered questions would be a tray nobody reads. `asks` is
+ * what survives, because a second ask is a second card and a player should be able to see it is
+ * the second.
+ */
+export interface AuthorizationView {
+  itemId: string
+  requestId: string
+  /** The director asking. The beam over them is this field. */
+  asking: string
+  /** The director whose line they want to read. */
+  needs: string
+  /**
+   * What the work is called, as the kernel names it.
+   *
+   * Carried on the event rather than looked up, because the commonest item this happens to — a
+   * hire — is created at runtime and is in no catalog the client holds. Empty only for a card
+   * rebuilt from a snapshot, where the surface falls back to the catalog and then to the id: the
+   * record is hashed state and an authored title cannot change within a run, so putting one in it
+   * would move every hash in the tree to carry a string the genesis payload already has.
+   */
+  title: string
+  /** Which time of asking this is, for this item. */
+  asks: number
+  atTick: bigint
+  /** The tick the request is abandoned at, which is a refusal (M41). */
+  deadlineTick: bigint
+}
+
+// =========================================================================
 // Branch comparisons
 // =========================================================================
 //
@@ -579,6 +624,15 @@ export interface RunStore {
   spend: SpendView
   tray: TrayEntry[]
   /**
+   * What the CEO has been asked to allow, by item (U15).
+   *
+   * Deliberately not merged into `tray`. The tray is the authored decision supply — the
+   * denominator the HUD's decision pressure is measured against — and an Authorization is not one
+   * of the decisions the scenario authored. Merging them would make asking for permission look
+   * like progress through the work, which is the one reading of the number that would be wrong.
+   */
+  authorizations: Record<string, AuthorizationView>
+  /**
    * Every decision already settled, keyed by `decisionKey` or `snapshotDecisionKey`.
    *
    * The tray holds what is still open; this holds what is closed, which is a different question
@@ -667,6 +721,7 @@ function emptyRun(): Omit<
     dailyCost: 0,
     spend: emptySpend(),
     tray: [],
+    authorizations: {},
     decisions: {},
     deliverables: [],
     terminal: null,
@@ -916,6 +971,14 @@ function toBound(value: unknown): number | null {
  * it wrong would open a block on the conversation every sim-day about nothing.
  */
 const BENCH_SERVICE = 'bench'
+
+/**
+ * The leg the CEO answers, on the same three events the bench uses.
+ *
+ * `service` is the discriminator the kernel put on the payload precisely so one transport can carry
+ * four legs, and reading it here is what keeps a period consult's request out of the tray.
+ */
+const CEO_SERVICE = 'ceo'
 
 /**
  * One statement, read off an answer payload.
@@ -1253,6 +1316,51 @@ function applyEvent(set: Setter, get: Getter, frame: EventFrame, seq: bigint): v
           atTick: tick,
         },
       }
+    }
+  }
+
+  // --- what the CEO has been asked to allow (U15) ------------------------
+  //
+  // The same three kinds again, and the same discriminator. A request opens a card, the CEO's answer
+  // closes it, and a rejection closes it too — an abandonment at the deadline, or the work ending
+  // before anybody answered. The card is keyed by item because that is what the answer unblocks.
+  if (frame.kind === 'REQUEST_RAISED' && toStr(payload.service) === CEO_SERVICE) {
+    const owning = toStr(payload.owning_item)
+    const asking = toStr(payload.person)
+    if (owning !== '' && asking !== '') {
+      patch.authorizations = {
+        ...(patch.authorizations ?? state.authorizations),
+        [owning]: {
+          itemId: owning,
+          // The envelope's field, not the payload's: the kernel addresses a request by the
+          // envelope it rode in on, and `decide_authorization` looks it up by exactly this.
+          requestId: isEventFrame(frame) ? frame.request_id : '',
+          asking,
+          needs: toStr(payload.needs),
+          title: toStr(payload.title),
+          asks: toInt(payload.asks, 1),
+          atTick: tick,
+          deadlineTick: toBig(payload.deadline_tick),
+        },
+      }
+    }
+  }
+
+  if (frame.kind === 'AUTHORIZATION_DECIDED') {
+    const owning = toStr(payload.item)
+    if (owning !== '') {
+      const remaining = { ...(patch.authorizations ?? state.authorizations) }
+      delete remaining[owning]
+      patch.authorizations = remaining
+    }
+  }
+
+  if (frame.kind === 'ANSWER_REJECTED' && toStr(payload.service) === CEO_SERVICE) {
+    const owning = toStr(payload.owning_item)
+    if (owning !== '') {
+      const remaining = { ...(patch.authorizations ?? state.authorizations) }
+      delete remaining[owning]
+      patch.authorizations = remaining
     }
   }
 
@@ -1737,6 +1845,39 @@ function readSnapshot(
   // the whole job of the panel that reads this. So the held records are kept and the ones this
   // client never saw are filled in beside them.
   if (isRecord(items)) patch.decisions = fillDecisionsFrom(current.decisions, items)
+
+  // Authorizations *do* survive a resync, and they are read off the snapshot rather than kept.
+  // A comparison is a projection whose basis this client can no longer account for, and a
+  // decision is history — this is neither: it is a question that is still open, and it is still
+  // stopping an item. Dropping it would leave the player with work that will not move and no card
+  // to explain it, which is precisely the failure M41 exists to prevent. The snapshot carries the
+  // record's own request id, so a card rebuilt here can still be answered.
+  const recorded = snapshot.authorization
+  if (isRecord(recorded)) {
+    const next: Record<string, AuthorizationView> = {}
+    for (const [itemId, record] of Object.entries(recorded)) {
+      if (!isRecord(record)) continue
+      // Only what is still open. A granted record is folded state the surface has nothing to ask
+      // about, and a refused one is asked again as a fresh request with its own event.
+      if (toStr(record.status) !== 'outstanding') continue
+      next[itemId] = {
+        itemId,
+        requestId: toStr(record.request_id),
+        asking: toStr(record.asking),
+        needs: toStr(record.needs),
+        // Not in the record, for the reason `title` states: the surface falls back to the catalog.
+        title: '',
+        asks: toInt(record.asks, 1),
+        atTick: toBig(record.raised_at_tick),
+        // Not in the record: the deadline lives on the pending request rather than on the
+        // authorization, and a snapshot of folded state carries the record. Zero reads as "no
+        // countdown known", which the surface renders as no countdown rather than as an expired
+        // one.
+        deadlineTick: 0n,
+      }
+    }
+    patch.authorizations = next
+  }
 
   // A snapshot carries no tray of its own; it is rebuilt from the items that are blocked.
   if (patch.items !== undefined) {

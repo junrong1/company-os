@@ -531,7 +531,15 @@ export function actorsFromStore(ceo?: CeoPose, tick?: bigint): Actor[] {
   // Who the kernel says is stopped, read off the tray. `person.waiting` is set at genesis and
   // by a resync and by nothing else — no event carries person state — so the beam that tells
   // the CEO somebody needs them would never light during a run (R20).
-  const waiting = new Set(state.tray.map((entry) => entry.personId))
+  //
+  // Two sources now, and they are the same claim: somebody is waiting on the CEO. A tray entry is
+  // a person stopped at a decision; an Authorization is a director stopped on a permission (U15,
+  // M41). Without the second, a player who does not scan the rail watches an item stop for a
+  // reason the office never showed them — which is the failure the beam exists to prevent.
+  const waiting = new Set([
+    ...state.tray.map((entry) => entry.personId),
+    ...Object.values(state.authorizations).map((entry) => entry.asking),
+  ])
 
   const actors: Actor[] = Object.values(state.people).map((person) => {
     // Where they are *this frame*, interpolated along the path the wire gave us. Before U3 this

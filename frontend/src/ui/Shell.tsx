@@ -405,9 +405,9 @@ export function Shell({
   }, [sendInput])
 
   const command = useCallback(
-    (kind: string, payload: Record<string, unknown>) => {
+    (kind: string, payload: Record<string, unknown>, idempotencyKey?: string) => {
       setRejection(null)
-      submitCommand(runId, kind, payload, newIdempotencyKey(kind))
+      submitCommand(runId, kind, payload, idempotencyKey ?? newIdempotencyKey(kind))
         .then((outcome) => {
           // A rejection is a *successful* request whose answer is "no", and the reason is a
           // sentence written to be shown. Applying is reported through the events the command

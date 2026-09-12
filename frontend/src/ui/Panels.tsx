@@ -21,7 +21,13 @@ import { useMemo, useState } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 
 import { type MetricDef, NO_METRIC_DEFS, PAL, RESERVED_BEAM, deptColour } from '../design/tokens'
-import { type CatalogEntry, type ItemStatus, type TrayEntry, useRunStore } from '../net/store'
+import {
+  type AuthorizationView,
+  type CatalogEntry,
+  type ItemStatus,
+  type TrayEntry,
+  useRunStore,
+} from '../net/store'
 import { CompareAffordance } from './Comparison'
 import { DecisionsPanel } from './Decisions'
 import { Mark } from './Marking'
@@ -29,11 +35,22 @@ import { MemoryAffordance } from './Memory'
 import type { CompareSender } from './comparison-model'
 import { OptionConsequence } from './Consequence'
 import { FROM_TRAY_COST, resolvePayload } from './conversation-model'
-import { STATUS_LABEL, lockReason, progressPercent } from './panels-model'
+import { STATUS_LABEL, authorizationKey, lockReason, progressPercent } from './panels-model'
 import { personPose } from './stage'
 
 export interface CommandSender {
-  (kind: string, payload: Record<string, unknown>): void
+  /**
+   * `idempotencyKey` is optional and derived by the caller when the command has an *intent* that
+   * can be named — once per intent, not once per attempt (R30).
+   *
+   * Every other command here is safe to send twice: assigning an assigned item and settling a
+   * settled checkpoint are both refused with a sentence that reads correctly. An Authorization is
+   * not, because the second press of Grant arrives after the first has already answered the
+   * question, and "no outstanding Authorization request" is a true sentence and a baffling one to
+   * show somebody who double-clicked. A key derived from the request answers the second press with
+   * the first press's outcome instead.
+   */
+  (kind: string, payload: Record<string, unknown>, idempotencyKey?: string): void
 }
 
 // =========================================================================
@@ -60,6 +77,13 @@ export function OrgPanel({
   onWalkTo?: (personId: string) => void
 }) {
   const roster = useRunStore(useShallow((state) => state.genesis?.roster ?? {}))
+  // Who is waiting on the CEO for a permission rather than for a decision (U15, M41). A second
+  // source for the same beam, and it has to be a second source: an Authorization stops an item
+  // without moving the person's state, so a director asking for one is `working` on the wire and
+  // stopped in fact.
+  const asking = useRunStore(
+    useShallow((state) => Object.values(state.authorizations).map((entry) => entry.asking).sort()),
+  )
   // Posed at the store's tick, not read raw. A walk states its own end — the path and the tick
   // it began on — so a row would otherwise read "Walking" for the rest of the run for anyone
   // whose last walk was home from a hand-off. The store's tick is accurate to within the event
@@ -102,7 +126,8 @@ export function OrgPanel({
 
   const row = (personId: string, isDirector: boolean) => {
     const encoded = people[personId] ?? 'idle||0'
-    const [state, itemId, waiting] = encoded.split('|')
+    const [state, itemId, stopped] = encoded.split('|')
+    const waiting = stopped === '1' || asking.includes(personId) ? '1' : '0'
     const entry = roster[personId]
 
     // Only one of these five branches renders a number, and the marking follows the number
@@ -295,7 +320,9 @@ export function TrayPanel({
   onCompare?: CompareSender
 }) {
   const tray = useRunStore(useShallow((state) => state.tray))
+  const authorizations = useRunStore(useShallow((state) => state.authorizations))
   const catalog = useRunStore(useShallow((state) => state.genesis?.catalog ?? []))
+  const roster = useRunStore(useShallow((state) => state.genesis?.roster ?? {}))
   // Genesis is written once and never replaced, so this is stable by reference.
   const metricDefs = useRunStore((state) => state.genesis?.metricDefs) ?? NO_METRIC_DEFS
 
@@ -305,10 +332,32 @@ export function TrayPanel({
     return index
   }, [catalog])
 
+  const asks = Object.values(authorizations)
+
   return (
-    <section className="panel" data-panel="tray" data-waiting={tray.length}>
+    // Two counts, deliberately. `data-waiting` is the authored decision supply and nothing else,
+    // because the HUD's decision pressure is measured against it — an Authorization counted here
+    // would make asking for permission look like progress through the work. `data-asks` is the
+    // other thing on this rail, counted separately so a surface can say both.
+    <section
+      className="panel"
+      data-panel="tray"
+      data-waiting={tray.length}
+      data-asks={asks.length}
+    >
       <h2>Waiting on you</h2>
-      {tray.length === 0 && <p className="hint">Nobody is stopped.</p>}
+      {tray.length === 0 && asks.length === 0 && <p className="hint">Nobody is stopped.</p>}
+      {/* Above the decisions, because an Authorization is stopping work *now* — a decision is
+          somebody standing at their desk with the work already done to that point. */}
+      {asks.map((entry) => (
+        <AuthorizationCard
+          key={entry.requestId || entry.itemId}
+          entry={entry}
+          item={byId[entry.itemId]}
+          nameOf={(personId) => roster[personId]?.name ?? personId}
+          onDecide={onResolve}
+        />
+      ))}
       {tray.map((entry) => (
         <TrayCard
           key={`${entry.itemId}:${entry.cpIndex}`}
@@ -320,6 +369,67 @@ export function TrayPanel({
         />
       ))}
     </section>
+  )
+}
+
+/**
+ * One director asking to read another line (M40).
+ *
+ * **It says who is asking, what for, and what it is costing**, because a permission request with
+ * none of those is a dialog box rather than a decision. The item is named as the thing that is
+ * stopped, which is the consequence the CEO is actually weighing: granting is not "yes, fine", it
+ * is "yes, and the work moves again".
+ *
+ * Two actions, both plain. There is no default and no primary: a refusal is a real answer here,
+ * and styling one of them as the obvious one would be the surface making the decision.
+ */
+export function AuthorizationCard({
+  entry,
+  item,
+  nameOf,
+  onDecide,
+}: {
+  entry: AuthorizationView
+  item: CatalogEntry | undefined
+  nameOf: (personId: string) => string
+  onDecide?: CommandSender
+}) {
+  const decide = (granted: boolean) =>
+    onDecide?.(
+      'decide_authorization',
+      { request: entry.requestId, granted },
+      authorizationKey(entry.requestId, granted),
+    )
+
+  return (
+    <article className="decision decision--ask" data-kind="authorization" data-item={entry.itemId}>
+      <p className="decision__item">
+        {nameOf(entry.asking)} asks to read {nameOf(entry.needs)}&rsquo;s line
+      </p>
+      <p className="decision__prompt">
+        {entry.title || item?.title || entry.itemId} is their line&rsquo;s work and needs what{' '}
+        {nameOf(entry.needs)} knows. It is stopped until you answer.
+      </p>
+      {entry.asks > 1 && (
+        // Said plainly rather than shown as a badge. The CEO answered this once already, and a
+        // second card that looked identical to the first would read as a bug rather than as the
+        // second question M42 says it is.
+        <p className="decision__cost" style={{ color: PAL.textFaint }}>
+          Asked again — this is time {entry.asks}.
+        </p>
+      )}
+      <div className="decision__actions">
+        <button type="button" onClick={() => decide(true)}>
+          Grant
+        </button>
+        <button type="button" onClick={() => decide(false)}>
+          Refuse
+        </button>
+      </div>
+      <p className="decision__cost" style={{ color: PAL.textFaint }}>
+        A refusal leaves the work stopped. Saying nothing is a refusal too.
+      </p>
+    </article>
   )
 }
 

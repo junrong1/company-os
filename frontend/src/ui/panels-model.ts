@@ -148,3 +148,24 @@ export function pastDecisions(
         : 1,
   )
 }
+
+// =========================================================================
+// Authorization (U15)
+// =========================================================================
+
+/**
+ * The idempotency key for answering one Authorization. Once per intent, not per attempt (R30).
+ *
+ * Derived from the request and the verdict rather than minted per press, for the reason the fork
+ * key is derived from the decision and the option: the second press of Grant is the *same* intent
+ * and must be answered with the first press's outcome, while Refuse is a different intent and must
+ * not be. A random key would send both to the kernel, where the second finds the question already
+ * closed and comes back with a true sentence that reads as a bug to whoever double-clicked.
+ *
+ * Here rather than in `Panels.tsx` because that file exports components and this is not one — the
+ * same split `lockReason` and `progressPercent` are on, and the reason the lint rule asks for it is
+ * that a module mixing the two loses fast refresh for everything in it.
+ */
+export function authorizationKey(requestId: string, granted: boolean): string {
+  return `authz-${requestId}-${granted ? 'grant' : 'refuse'}`
+}

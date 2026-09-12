@@ -568,6 +568,15 @@
 .item[data-available='false'] .item__title { color: var(--text-faint); font-weight: 400; }
 
 .item__actions,
+/* An Authorization is the second thing that earns the reserved beam, and for the same reason the
+   first one does: somebody is stopped and the CEO is what unstops them (U15, M41). Carried on the
+   card's leading edge rather than its top, so a tray holding both kinds reads as one list with two
+   shapes in it instead of two lists. */
+.decision--ask {
+  padding-left: 9px;
+  box-shadow: inset 3px 0 0 var(--beam), inset 4px 0 0 var(--beam-edge);
+}
+
 .decision__actions {
   display: flex;
   flex-wrap: wrap;
