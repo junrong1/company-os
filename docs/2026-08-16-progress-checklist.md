@@ -148,12 +148,13 @@ pushed the office off the screen.
 
 ## Phase 5 — the MVP (`docs/plans/2026-08-16-001-feat-company-os-mvp-plan.md`)
 
-Twenty-five units in six phases. **Eighteen are done: Phases A, B and C are complete, Phase D has
-started and Phase E is three-fifths in** — the repository runs, scenarios are files, the bench briefs
-and refuses and pays for a situation once, a past decision forks into a timeline that plays forward
-and survives a restart, every director carries a memory the CEO can read, the whole tree of
-timelines is a surface the player moves between, and the fork is finally reachable from inside the
-game rather than from a terminal. The plan's open questions and everything execution
+Twenty-five units in six phases. **Twenty are done: Phases A, B, C and D are complete and Phase E is
+four-fifths in** — the repository runs, scenarios are files, the bench briefs and refuses and pays
+for a situation once, a past decision forks into a timeline that plays forward and survives a
+restart, every director carries a memory the CEO can read, one line cannot read another's without
+the CEO saying so and the work stops until they do, the whole tree of timelines is a surface the
+player moves between, and the fork is finally reachable from inside the game rather than from a
+terminal. The plan's open questions and everything execution
 resolved or found are in
 [`docs/2026-08-16-mvp-execution-decisions.md`](2026-08-16-mvp-execution-decisions.md), which also
 carries the deferred defect register.
@@ -187,11 +188,13 @@ carries the deferred defect register.
 | U12. Caching on the situation | `[x]` | `modelgw/cache.py` holds the content address — the assembled prompt, the authorization scope and a purpose namespace — and `StoreResponseCache` in the agents service holds the table, scoped to a lineage and filtered on the rules version. The lookup runs in front of the ceiling because a hit is not a call; the *write* waits for `keep()`, because only the caller knows the guards passed. 37 new tests, and the DDL version did not move |
 | U13. Continuous integration for the keyless path | `[x]` | `.github/workflows/ci.yml` — four jobs, no secret of any kind: the keyless suite on both store dialects, the bench against the mock adapter, the client's four steps with the type check separated out, and `docker compose up` from a clean checkout reaching a client that creates a run. Found two live defects before it went green: a `tsc -b` failure the suites could not see, and a flaky comparison test only a shared runner loses |
 
-**Phase D — memory and Authorization.** One unit in, one to go.
+**Phase D — memory and Authorization.** Complete.
 
 | Unit | Status | Evidence |
 |---|---|---|
 | U14. Director memory and the CEO's reading surface | `[x]` | `GET /runs/{id}/memory/{director}` — a scoped slice of the log, never a second store. `context.scan` is the one admission pass and `memory.select` is a whole-run window onto it, so a memory cannot see what a briefing could not; the selection is derived from an authored salience table, so the panel renders on the keyless path and every citation resolves to a set anybody can recompute. The prose is the only generated half, and a sentence that cites nothing, cites outside the line, invents a figure or recommends anything is refused before the CEO reads it. Two calls per open — the derived half at once, the summary behind a stated pending line — and the regeneration cadence is the content-addressed cache rather than a timer. The scope is derived in the kernel and handed across by the launcher, the fourth composed callable, so no bench module can compute one. 39 new backend tests plus 16 client ones; found a live capacity defect in `present_members` and left it in the register |
+
+| U15. Authorization as the co-work mechanic | `[x]` | `POST /runs/{id}/commands` with `decide_authorization`, a fourth leg on the pending-input contract and a fifth hashed subsystem. The need is **derived** — `step.needed_line` reads folded state and authored content, so no client, bench module or command path can raise one — and neither shipped company authors a cross-line dependency, which is why it is derived from a hire being People's work about another line rather than from a marker nobody wrote. The stall is what gives a refusal consequence: an item whose Authorization is outstanding or refused burns nothing, and it reads the item's own record rather than `state.pending`, so a refusal goes on stalling after the question is gone. A grant widens `authorized_scope` for that item only and never `remembered_scope`, which answers the product question U14 left open; M42 is structural, because the record is keyed by item. `STATE_SHAPE_VERSION` moved to 2 and `verify` now reads the recorded shape **before** it compares a hash, so a deliberate change reports as a version move rather than as corruption (R27). `RULES_VERSION` moved too, for one tuning entry, and the argument for which side of that line it sits on is in the decisions doc. 31 new backend tests plus 16 client ones; verified live on two runs from one seed — granted delivered on day 3, refused delivered nothing by day 4 and asked again on its own at tick 1120. **Two live defects, and the first was not this unit's**: `request_hire` made its own run unfoldable, so any run that ever hired could not be replayed, reported or forked and the report answered 500 — pre-existing since U7, caught by no suite, closed here because M43 lives in the report; and the tray card named a runtime-created item by its id, which no test could see because every test named an authored one |
 
 **Phase E — forks, timelines, the Universe.** Four units in, one to go.
 
@@ -202,13 +205,13 @@ carries the deferred defect register.
 | U18. The timeline diff | `[x]` | `GET /report/runs/{id}/diff/{other}` — a fold across two logs at one sim-day, on the report app the launcher mounts rather than on the gateway, because a diff is a fold and R4 forbids the import. **A day is its first tick**, which is what makes "at the same sim-day" decidable: `fold` advances past a log's last event by design, so folding to a day's *end* would run a paused timeline through ticks it never took and print the result beside the other side's history. A day's opening tick is reached by both or by neither — and it is the tick the kernel checkpoints its own state hash on, so R12 became a check rather than a claim: each side's reported hash is byte-identical to the `DAY_CHECKPOINT` in the log, verified against Postgres, and at a day before the fork both sides hash the same. The separating decision is named at the nearest common ancestor, so two cousins are described by the decisions they took rather than by one neither did. Entered by picking two nodes on the tree; the held node wears a second marker on the opposite edge from the standing one, so a node can be both. 35 new backend tests plus 25 client ones. **Two live defects, both on this unit's own surface and neither visible to any suite**: every figure was rendered under the *other* timeline's heading (measured — the left card at x 40–358, its own figures at 462–532), and two timelines that had ended read as "running" because `runs.terminal_reason` was NULL and neither log held a terminal event. Nothing appended, no event kind, no payload field, no shape version, no fixture |
 | U25. Forking from the client | `[x]` | The decisions projection the store never had — `DECISION_RESOLVED` advanced a count and dropped the option, the tick and the sequence, which is the field a fork is addressed by — plus a Decided panel that lists what was settled with the option taken marked and offers a fork per alternative, priced by the same `OptionConsequence` the tray and the conversation render. A fork is two calls: `POST /fork` then a switch at rate zero, and the shell opens the Universe on the new node, so the beat has a visible outcome instead of the same office at the same tick. The idempotency key is derived from the decision and the option — once per intent, not per attempt, which is U16's review finding 1 on the client side. A resync fills the list in from the snapshot's per-item `decisions` (the client's records are a suffix, so the missing ones are the leading `n − k`) and those entries are listed, honest about carrying sequence zero, and offer no fork — a snapshot is folded state and folded state holds no log positions. 32 new client tests. **Two live defects found, both on U17's entry path and neither visible to any suite**: the client posted a command nobody issued into the timeline it had just entered and showed its refusal as a banner, and the clock control read ×1 over a paused world. Nothing appended, no event kind, no payload field, no shape version, no fixture |
 
-**Phase F.** Not started. **U15** is unblocked and is the last of Phase D — it inherits two scope
-derivations from U14 and has to widen the right one. **U19** and **U20** are unblocked; U21, U22 and
-U23 sit behind them. U18 is in, and it leaves both of them something: the state-hash-against-
-`DAY_CHECKPOINT` comparison U19's re-fold over a lineage generalises, already written twice and
-confirmed against Postgres; and `logschema.lineage.separating_decision`, which answers "what
-separated these two" for any pair at their nearest common ancestor, which is the naming U20's report
-over a whole tree needs.
+**Phase F.** Not started. **U19** and **U20** are unblocked; U21, U22 and U23 sit behind them. U18
+and U15 leave them four things: the state-hash-against-`DAY_CHECKPOINT` comparison U19's re-fold over
+a lineage generalises, already written twice and confirmed against Postgres;
+`logschema.lineage.separating_decision`, which answers "what separated these two" for any pair at
+their nearest common ancestor, which is the naming U20's report over a whole tree needs; a fifth
+hashed subsystem for U19's determinism check to cover; and a report that can be built for a run that
+hired at all, which it could not before U15.
 
 **One fix outside the plan.** `a69c304` — a command's events were never published to a connected
 client. `_publish` had one caller inside the tick loop and published only what that batch returned,
@@ -243,6 +246,11 @@ Every shipped unit but one turned up a live defect on its path. The pattern is w
   it and a shared runner loses it — so U13's **first CI run** is what surfaced it. Bounding the ticker
   fixes it and weakens it, so the property now also has a deterministic test that forces the
   interleaving instead of racing for it.
+- **`request_hire` made its own run unfoldable, and it had been that way since U7.** Re-issuing
+  `HIRE_REQUESTED` calls `assign_direct`, which produces a `WORK_ASSIGNED` the fold *also* treated as
+  an input and applied a second time — so any run that ever hired could not be replayed, reported or
+  forked, and the report route answered 500. Found by U15 opening the report on a live run one
+  command after the hire; no suite folded a run that hired.
 - The plan's DDL bump for the cache table was not needed, and U12 is where that was noticed rather
   than paid: `create_all` is check-first and runs at every startup, so a *new table* arrives on the
   next boot of an existing store with nothing to migrate. DDL 3 was a wipe because the same bump
@@ -380,9 +388,15 @@ Requirements this plan has moved are marked with the unit that moved them.
   whole scoped slice never crosses the wire. With no model configured the derived half renders whole
   and the summary reports itself absent — asserted through the published route, on the keyless path
   the suite already runs on
-- [ ] M39–M43 — U15. It inherits two scope derivations from U14 and has to widen the right one: an
-  Authorization grants what a director may read *now*, and whether it also enters their memory is the
-  product question that unit owns
+- [x] M39–M43 — **U15**. A director whose work is about another line asks the CEO, and the item stops
+  until they answer. The need is derived inside `step()` from folded state, so nothing outside the
+  kernel can raise one; a grant widens `authorized_scope` for **that item only** and never
+  `remembered_scope`, which answers the product question U14 left open — a permission to read is not
+  a change of who you are. M42 is structural rather than enforced, because the record is keyed by the
+  item that asked, so a grant cannot become a standing permission and there is no settings surface
+  that could make one. An abandoned request is a refusal and the record keeps which of the two it
+  was, because the report prints it: every ask is a row carrying the asker, the line, the verdict and
+  the sim-ticks the work stood still
 
 **Forks, Timelines, Universe (M44–M52)**
 - [x] M51 comparison stays an in-place preview
@@ -430,13 +444,13 @@ U15 closed when MVP U16 minted a fork id that cannot collide. The
 simulation half of the product is built and covered by four suites plus golden vectors across two
 languages, and the daylight visual system is complete on top of it.
 
-The MVP plan is **19 of 25 units in**, with Phases A, B and C complete, Phase D started and Phase E
-four-fifths in. Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about 54 are
+The MVP plan is **20 of 25 units in**, with Phases A, B, C and D complete and Phase E four-fifths in.
+Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about 59 are
 met now — M13 is the one U7 closed, M15 and M16 stopped being half-met, U11 closed the five the bench
 is made of, U13 closed M30 and M67's proof half, U12 built all of M33 but the one line U16 owned, U16
 closed that line plus the five forks are made of, U14 closed the three memory rests on, U17
-closed M49, and U18 closed M50 and M52. The suites went from 699 backend tests to **1,302**, and the
-client from 404 to **582**.
+closed M49, U18 closed M50 and M52, and U15 closed M39 through M43. The suites went from 699 backend
+tests to **1,337**, and the client from 404 to **600**.
 
 What remains is still concentrated where the plan said it would be, but the shape has changed three
 times. The bench was the plan's single biggest risk and the unit most likely to be "estimated as an
@@ -444,7 +458,11 @@ edit"; its contract, its transport and the four directors who actually brief and
 and no event payload, schema version or golden fixture moved to get there. **Forks were the plan's
 second risk and are now in**, on the same terms. **The two read surfaces on top of them are in too**,
 and on stronger terms than either: a memory and a Universe tree are both *queries* — no event kind,
-no payload field, no shape version, no fixture, and nothing appended by either of them. **The diff is in on the same terms**, and it is the fourth read surface in a row that cost the log
+no payload field, no shape version, no fixture, and nothing appended by either of them. **Authorization is in, and it is the one that cost the log something** — a fourth leg, a fifth hashed
+subsystem, a state-shape move and a rules-version move, all of it for a mechanic whose whole point is
+that a refusal stops work. It is also the unit that put the *stall* behind a request for the first
+time: `raise_request` had claimed one since U11 and never had one. **The diff is in on the same
+terms**, and it is the fourth read surface in a row that cost the log
 nothing. What does not exist is Authorization and the report.
 
 **CI was the thing genuinely overdue, and it is now in.** Four jobs, no secret of any kind, and it

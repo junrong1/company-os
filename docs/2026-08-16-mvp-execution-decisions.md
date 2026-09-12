@@ -1819,3 +1819,200 @@ version kept grid units, drew every node 18px apart instead of 288, and its own 
   states for the life of the process. `test_switching_into_a_timeline_nobody_has_folded_yet` drops a
   registration deliberately to prove the switch folds what it enters, which is the behaviour an
   eviction policy would depend on.
+
+---
+
+## What U15 found, that U19 and U20 need
+
+Twenty units. A director who needs another line's knowledge has to ask, the CEO's answer stops the
+work or lets it go, and both answers are on the log.
+
+### The need is derived, because a request the CEO answers has to be one the run produced
+
+`REQUEST_RAISED` is in the fold's output set and is compared byte-for-byte against what `step()`
+reproduces, so an Authorization raised by a client, a bench module or any command path would sit in
+the log with nothing to match it. `step.needed_line` is therefore the whole of what decides who asks
+and for what, and it reads folded state and authored content only. **Nothing outside `simcore` can
+cause an Authorization to exist.**
+
+Two sources, and neither needs a scenario to author anything:
+
+- **a hire is always about the line it hires into.** `request_hire` routes recruitment through
+  People — the item is the recruiter's work — while what it is *for* is another director's line: who
+  left, what is queued, how far over the ceiling they are. It is two clicks from the shipped client
+  and it fires on both shipped companies;
+- **work handed outside its authored line takes its history with it.** An item's `want` says whose
+  work it is; when the CEO gives it to a specialist in another line, the director now holding it has
+  none of what was learned about it.
+
+The alternative was an authored marker — a `needs_line` field on an item, or a counterpart on
+`visit_meeting`. It was rejected for a reason worth writing down: **neither shipped company authors a
+single cross-line dependency.** Every `requires.items` edge in `default.toml` and `ashcroft.toml` is
+inside one line, so a mechanic keyed to authored content would have been a mechanic that never
+fired, verified only by tests that authored their own scenario. The derivation makes the first
+Authorization arrive on the path a player is already pushed down — the one that fixes overload.
+
+**It changes what hiring is, and that is a real consequence rather than a side effect.** A hire into
+another line now stops until the CEO answers. Seven existing tests had to grant it, and they read
+better for it: `hire_for()` in `test_capacity.py` and `_a_hire_arrives` in `test_scenario.py` now
+answer the question the way a player does. What the plan asked for is a refusal with teeth, and the
+only work a run can produce twice on demand is a hire — which is also what makes the unit's own
+verification a *measurement* rather than a claim.
+
+### The stall is a status, not a burn multiplier, and that is what kept the rules version cheap
+
+The plan offers both: "a blocked-on-request status or a burn multiplier". The multiplier is the more
+elegant answer and it costs a `MULTIPLIER_SLOTS` entry, which is part of the rules identity — so it
+would have moved `RULES_VERSION` *and* needed a tuning fraction nobody could justify. The status
+costs one field's worth of new state and answers M41 exactly: an item whose Authorization is
+outstanding or refused burns nothing, walks nowhere and delivers nothing. `_advance_work` returns
+before the burn.
+
+It is read off `state.authorizations[item]` rather than off `state.pending`, and the difference is
+the mechanic: a refusal goes on stalling after the question has left the outstanding table. That is
+"we are waiting for an answer" against "the answer was no", and a projection of open questions
+cannot say the second.
+
+**The item's *status* is deliberately untouched.** `blocked` means stopped at a checkpoint and the
+tray renders exactly that set; borrowing it would have put a decision on the rail with no options on
+it.
+
+### The rules version moved anyway, for one number, and the argument is worth keeping
+
+`TUNING` gained `authorization_ceo_answer_seconds`, from which `pending.py` derives the window and
+the re-ask interval. That moves `RULES_VERSION`, which invalidates every run written before this
+unit — correctly, because a run under a different value does different work.
+
+The reason it belongs in the table while the three windows above it in `pending.py` do not:
+`REQUEST_DEADLINE_TICKS` and `STATEMENT_DEADLINE_TICKS` size how long a *service* is given to answer
+the same question, so changing one makes a run wait longer for the same outcome. This one decides
+how long an item is stopped and when a refusal happens by default. Two runs of one seed under two
+values produce different work, different metrics and different logs, which is precisely what the
+rules version identifies.
+
+### The shape version moved to 2, and `verify` now reads it before it believes a hash
+
+`authorization` is a declared subsystem, so `SHAPE_HISTORY[2]` is `SHAPE_HISTORY[1]` plus one entry
+and `STATE_SHAPE_VERSION` is 2. The version is inside the overall digest by construction, so **every
+hash in the tree moved even though a run that asks nobody anything carries an empty table** —
+`test_scenario.DAY_ZERO_STATE_HASH` moved for exactly that reason and the old value is kept beside
+the new one.
+
+R27's other half is in `verify`: a recorded `state_shape_ver` that is not the running one is
+reported as a **version move**, the hashes are declared incomparable, and sequence density stands on
+its own. Without it U15 would have made every historical run report as corruption, with a
+"truncate here" remedy attached to a run that is fine.
+
+**One nuance, because it decides what the branch is for.** U15 moved the rules version *and* the
+shape version together, so a pre-U15 log is refused by the rules guard first and never reaches the
+shape check. What the check is for is a shape move that does *not* change what the numbers mean — a
+hashed subsystem added to a run that plays identically — which R27 asks be legible whichever unit
+eventually makes one. The fold still runs at each checkpoint and only the comparison is skipped, so
+`last_good_seq` keeps meaning "the last sequence that folds cleanly".
+
+### The CEO is a fourth leg, and their answer is a command
+
+An Authorization rides the pending-input contract: `service = "ceo"`, the same caps, the same
+deadline, the same abandonment, and the same projection that lets a restarted kernel remember what it
+asked. What it does not share is the delivery path. A statement is delivered by a leg on a thread and
+lands at a derived tick two sim-days later; this is a person pressing a button, so it is
+`DECIDE_AUTHORIZATION`, applied at the tick it is issued at, with an idempotency key.
+
+**That choice also steps around a defect in the register rather than into it.** `receive_answer`'s
+`request is None` branch emits `ANSWER_REJECTED` from a command path with no `INPUT_RECEIVED` beside
+it, which makes the log unreplayable — and a player double-clicking Grant is a far likelier duplicate
+than a service answering twice. `decide_authorization` refuses a duplicate by raising
+`CommandRejected`, which mutates nothing and appends nothing; the client derives the key from the
+request and the verdict, so the second press is answered with the first press's outcome.
+
+### U14's open product question, answered: the grant widens `authorized_scope` and not `remembered_scope`
+
+U14 left it explicitly. The answer is that a grant widens what a director may *speak for now*, per
+item, and never what they carry about their own line:
+
+- `authorized_scope(state, director, for_item=...)` adds the other line's present members and items
+  when that item's record is granted and names this director as the asker. `for_item` is a parameter
+  rather than a field, so the default is the unwidened line and R23's "no reachable unscoped
+  variant" survives a caller who has never heard of this mechanic;
+- `remembered_scope` is untouched. A permission to read is not a change of who you are, and a
+  granted cross-line read that stayed in the CEO's memory panel afterwards would be a standing
+  permission arriving through a read surface.
+
+**M42 is structural rather than enforced.** The record is keyed by *item*, so a grant cannot carry to
+a second item, and "no standing permission" is a property of where the table is keyed rather than a
+check somebody has to remember to write. A refusal is asked again one window later as a fresh request
+with its own id, its own deadline and its own row in the report — which is the distinction between
+"ask again" and "keep asking".
+
+### Where this unit is narrower than the plan's wording, and why
+
+The plan asks that a request refused by the per-item outstanding cap "degrades visibly rather than
+disappearing". What happens is that the **ask is deferred** and the item keeps working until it
+lands. Stalling on a question that was never asked was the alternative and it is worse: the item
+would stop with no card anywhere to answer it, which is the one failure mode with no surface at all.
+The cap is transient — a statement's window is two sim-days — so the ask arrives, and `diagnose()`
+shows three requests on one item meanwhile, which is where the visibility is.
+
+### The un-run-scoped request id is now a player-facing one, and it is still safe for the same reason
+
+`authorization_request_id` derives from `(item, needs, tick)` and inherits
+`statement_request_id`'s property exactly: `State` carries no run id, so a parent and a fork standing
+in the same state mint the same id. What is new is that the id is now on a *button a person presses*
+rather than only on a service's answer, so it is worth restating why that is still safe. The verdict
+names the run it is for and `decide_authorization` looks the request up in **that** run's `pending`
+— verified live by posting a valid request id to the wrong run, which came back
+`rejected: no outstanding Authorization request ... Nothing was changed.` Closing it properly still
+needs a run identifier the fold reproduces, which is still a `State` shape change.
+
+### Two live defects, and the first one was not this unit's
+
+**`request_hire` made its run unfoldable, and every suite passed.** `HIRE_REQUESTED` is an input the
+fold re-issues, and re-issuing it calls `assign_direct` — which produces a `WORK_ASSIGNED` the fold
+*also* classified as an input and applied a second time, where it found the item already active and
+raised `CommandRejected` out of the middle of the fold. **Any run that ever hired could not be
+replayed, reported or forked, and `GET /report/runs/{id}/report` answered 500.** Pre-existing since
+U7; nothing caught it because no test folded a run that hired. Found by opening the report on a live
+run, one command after the hire.
+
+Closed here rather than registered, because U15's own trigger makes hiring the commonest way to raise
+an Authorization and M43 lives in the report: leaving it would have shipped a mechanic whose main
+path made the record of it unreachable. The fix is the mark `handoff_completed` already models — the
+hire's assignment carries `for_hire`, and `is_output` reads it — so the event is regenerated and
+compared rather than applied. `test_a_run_that_hired_folds_at_all` is the test that would have failed
+before it, and `test_the_hires_assignment_is_regenerated_rather_than_applied` tampers with it to
+prove the fix did not buy silence.
+
+**The tray card named the work by its id.** A hiring item is created at runtime and is in no catalog
+the client holds, so `item?.title ?? entry.itemId` showed the CEO `wi_hire-hire_sales_1` and asked
+them to decide about it. Invisible to every suite, because every test named an authored item. The
+request payload carries `title` now. Found by opening the page — which is the fifth unit in a row
+where the defect on its own surface needed the thing to be running.
+
+### Verified live, end to end, twice
+
+`docker compose`'s single-process path, SQLite, two runs from one seed differing only in the answer:
+
+- **granted**: the hire delivered on sim-day 3; the report row reads `granted`, 39 ticks stalled;
+- **refused**: nothing delivered by day 4, and the director had **asked again on its own** at tick
+  1120 — exactly one `AUTHORIZATION_REASK_TICKS` after the refusal landed at 40 — with the second
+  row open and 500 ticks of stall against it.
+
+Through the real client: the card renders in the tray with the amber edge, the beam lights on
+`dir_hr` in the org rail and on the office canvas (66 pixels of `#f2c46b` in one marker, measured off
+the canvas), decision pressure stays at `1 of 9` with the ask counted separately under `data-asks`,
+and a mouse click on Grant applies the command and clears the card.
+
+### What U19 and U20 inherit
+
+- **U19 gets a second reason its re-fold matters, and a new shape to check.** `authorization` is a
+  hashed subsystem, so a lineage-wide determinism check now covers who was allowed to read what.
+  `verify`'s day-boundary false negative on a CEO input across a boundary is still U19's — this unit
+  did not touch it, and `state_shape_ver` is now read before the hash in the same function, so the
+  fix lands beside a check that already partitions "this cannot be compared" from "this does not
+  match".
+- **U20 gets the rows and the measurement.** `report.authorizations` is one row per ask carrying the
+  asker, the line, the item, the verdict, whether it was the CEO's or the deadline's, and
+  `stalled_ticks` — which is the figure that makes "a refusal has consequences" checkable by
+  somebody who does not trust the sentence above it. An open ask reports what it is *still* costing,
+  measured to the head of the log.
+- **The report is reachable for a run that hired**, which it was not before this unit.
