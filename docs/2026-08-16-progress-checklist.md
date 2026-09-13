@@ -139,7 +139,7 @@ pushed the office off the screen.
 | No run is ever evicted from `KernelRuntime.runs` | U16 review, finding 1 (the other half) | still open — a full lineage is 16 resident folded states for the life of the process. U17 proved the switch folds what it enters, which is what an eviction policy would rest on |
 | Three synchronous routes now share one starved threadpool, and one of them calls a provider | U16 review, finding 2, widened by U14 | the `async` change the register already scopes |
 | A departed hire still counts toward their line's headcount and draw | U14, measured | register — it moves a capacity figure, so it wants a unit that can re-baseline one |
-| A forked child's inherited bench statements are never asked | U16 review, finding 9 | **U19** — it owns the property the asymmetry threatens |
+| A forked child's inherited bench statements are never asked | U16 review, finding 9 | **closed by U19** — settled by asking rather than by explaining. A fork now dispatches what it inherited, so a briefing on one side and a deadline on the other stops being a difference the option did not cause. Verified live: the child's ask reaches the loop from the *synchronous* fork route, which is the `call_soon_threadsafe` branch finding 11 says the suite cannot take |
 | Three names for the fork point's sequence, and a proto that drifts from the shipped JSON | U16 review, finding 5 | open, cheap |
 | R44, the in-person claim is never validated | audit gap 4 | **closed as a decision** — an explicit PRD non-goal while the product is local |
 | R41, authored-tuning marking on every surface | audit gap 5 | **closed** by Phase 3 U2 |
@@ -148,13 +148,13 @@ pushed the office off the screen.
 
 ## Phase 5 — the MVP (`docs/plans/2026-08-16-001-feat-company-os-mvp-plan.md`)
 
-Twenty-five units in six phases. **Twenty are done: Phases A, B, C and D are complete and Phase E is
-four-fifths in** — the repository runs, scenarios are files, the bench briefs and refuses and pays
-for a situation once, a past decision forks into a timeline that plays forward and survives a
-restart, every director carries a memory the CEO can read, one line cannot read another's without
-the CEO saying so and the work stops until they do, the whole tree of timelines is a surface the
-player moves between, and the fork is finally reachable from inside the game rather than from a
-terminal. The plan's open questions and everything execution
+Twenty-five units in six phases. **Twenty-one are done: Phases A, B, C, D and E are complete, and
+the first of Phase F's is in** — the repository runs, scenarios are files, the bench briefs and
+refuses and pays for a situation once, a past decision forks into a timeline that plays forward and
+survives a restart, every director carries a memory the CEO can read, one line cannot read another's
+without the CEO saying so and the work stops until they do, the whole tree of timelines is a surface
+the player moves between, the fork is reachable from inside the game rather than from a terminal, and
+the suites now fold whole lineages rather than single runs. The plan's open questions and everything execution
 resolved or found are in
 [`docs/2026-08-16-mvp-execution-decisions.md`](2026-08-16-mvp-execution-decisions.md), which also
 carries the deferred defect register.
@@ -196,7 +196,7 @@ carries the deferred defect register.
 
 | U15. Authorization as the co-work mechanic | `[x]` | `POST /runs/{id}/commands` with `decide_authorization`, a fourth leg on the pending-input contract and a fifth hashed subsystem. The need is **derived** — `step.needed_line` reads folded state and authored content, so no client, bench module or command path can raise one — and neither shipped company authors a cross-line dependency, which is why it is derived from a hire being People's work about another line rather than from a marker nobody wrote. The stall is what gives a refusal consequence: an item whose Authorization is outstanding or refused burns nothing, and it reads the item's own record rather than `state.pending`, so a refusal goes on stalling after the question is gone. A grant widens `authorized_scope` for that item only and never `remembered_scope`, which answers the product question U14 left open; M42 is structural, because the record is keyed by item. `STATE_SHAPE_VERSION` moved to 2 and `verify` now reads the recorded shape **before** it compares a hash, so a deliberate change reports as a version move rather than as corruption (R27). `RULES_VERSION` moved too, for one tuning entry, and the argument for which side of that line it sits on is in the decisions doc. 31 new backend tests plus 16 client ones; verified live on two runs from one seed — granted delivered on day 3, refused delivered nothing by day 4 and asked again on its own at tick 1120. **Two live defects, and the first was not this unit's**: `request_hire` made its own run unfoldable, so any run that ever hired could not be replayed, reported or forked and the report answered 500 — pre-existing since U7, caught by no suite, closed here because M43 lives in the report; and the tray card named a runtime-created item by its id, which no test could see because every test named an authored one |
 
-**Phase E — forks, timelines, the Universe.** Four units in, one to go.
+**Phase E — forks, timelines, the Universe.** Complete.
 
 | Unit | Status | Evidence |
 |---|---|---|
@@ -205,13 +205,21 @@ carries the deferred defect register.
 | U18. The timeline diff | `[x]` | `GET /report/runs/{id}/diff/{other}` — a fold across two logs at one sim-day, on the report app the launcher mounts rather than on the gateway, because a diff is a fold and R4 forbids the import. **A day is its first tick**, which is what makes "at the same sim-day" decidable: `fold` advances past a log's last event by design, so folding to a day's *end* would run a paused timeline through ticks it never took and print the result beside the other side's history. A day's opening tick is reached by both or by neither — and it is the tick the kernel checkpoints its own state hash on, so R12 became a check rather than a claim: each side's reported hash is byte-identical to the `DAY_CHECKPOINT` in the log, verified against Postgres, and at a day before the fork both sides hash the same. The separating decision is named at the nearest common ancestor, so two cousins are described by the decisions they took rather than by one neither did. Entered by picking two nodes on the tree; the held node wears a second marker on the opposite edge from the standing one, so a node can be both. 35 new backend tests plus 25 client ones. **Two live defects, both on this unit's own surface and neither visible to any suite**: every figure was rendered under the *other* timeline's heading (measured — the left card at x 40–358, its own figures at 462–532), and two timelines that had ended read as "running" because `runs.terminal_reason` was NULL and neither log held a terminal event. Nothing appended, no event kind, no payload field, no shape version, no fixture |
 | U25. Forking from the client | `[x]` | The decisions projection the store never had — `DECISION_RESOLVED` advanced a count and dropped the option, the tick and the sequence, which is the field a fork is addressed by — plus a Decided panel that lists what was settled with the option taken marked and offers a fork per alternative, priced by the same `OptionConsequence` the tray and the conversation render. A fork is two calls: `POST /fork` then a switch at rate zero, and the shell opens the Universe on the new node, so the beat has a visible outcome instead of the same office at the same tick. The idempotency key is derived from the decision and the option — once per intent, not per attempt, which is U16's review finding 1 on the client side. A resync fills the list in from the snapshot's per-item `decisions` (the client's records are a suffix, so the missing ones are the leading `n − k`) and those entries are listed, honest about carrying sequence zero, and offer no fork — a snapshot is folded state and folded state holds no log positions. 32 new client tests. **Two live defects found, both on U17's entry path and neither visible to any suite**: the client posted a command nobody issued into the timeline it had just entered and showed its refusal as a banner, and the clock control read ×1 over a paused world. Nothing appended, no event kind, no payload field, no shape version, no fixture |
 
-**Phase F.** Not started. **U19** and **U20** are unblocked; U21, U22 and U23 sit behind them. U18
-and U15 leave them four things: the state-hash-against-`DAY_CHECKPOINT` comparison U19's re-fold over
-a lineage generalises, already written twice and confirmed against Postgres;
+**U19 is in**, and it is the first unit of the determinism work.
+
+| Unit | Status | Evidence |
+|---|---|---|
+| U19. Determinism over the lineage | `[x]` | The suites now fold *lineages*, on both dialects, built through the kernel's own surfaces by `tests/conftest.py` — a parent walked to a briefing, a decision, and a fork per option. Every day boundary of every timeline re-folds to the hash the kernel wrote (M65); the three are one history below the divergence and three distinct futures above it, which is what stops that being vacuous; a fork exported and replayed in another process reproduces its hash; two fresh lineages from one seed are the same lineage timeline by timeline; emptying `model_cache` between the fork and the re-fold moves no hash and a child holds its parent's statements byte for byte (M34); and a comparison is diffed against **every table in `metadata`** rather than a list — one `OPTIONS_COMPARED` row for one that runs, nothing at all for one that is refused (M35). **The registered `verify` defect was not in `verify`, and not a diagnosis defect**: one expression in `simcore.log.fold` measured the run's reach by the largest tick an event *named* while the replay schedules by `issued_at_tick`, so `fork` refused a decision taken inside a scheduled input's lead and `resume_run` could not rebuild a run whose bench answer was in flight. Measured live on the compose path, the same three HTTP calls refused and then accepted. A second defect closed beside it: `verify` never called `compare_checkpoint`, so a divergence named ten subsystems instead of one. It also settled U16's review finding 9, which named U19 as its owner: a statement outstanding at the fork point was copied onto the child and asked by nobody, so the parent got a briefing and the child waited out a deadline — a difference between two timelines that the option did not cause, which is the one thing M34 forbids. 26 new backend tests plus a lineage harness; no event kind, no payload field, no shape version, no fixture |
+
+**Phase F.** Not started. **U20** is unblocked, and **U23**'s only dependency — U18 — is in, so it is
+reachable too; U21 and U22 sit behind U20. U18, U15 and U19 leave them four things: a lineage harness
+and a dual-dialect kernel fixture in `conftest`, which is the tree U20's report folds;
 `logschema.lineage.separating_decision`, which answers "what separated these two" for any pair at
-their nearest common ancestor, which is the naming U20's report over a whole tree needs; a fifth
-hashed subsystem for U19's determinism check to cover; and a report that can be built for a run that
-hired at all, which it could not before U15.
+their nearest common ancestor, which is the naming U20's report over a whole tree needs;
+`report.fold.state_at_day` now returning the kernel's own hash in *every* case rather than all but
+the straddling one, so "the report's figures match the diff's" is a comparison between two surfaces
+that both reproduce the log; and a report that can be built for a run that hired at all, which it
+could not before U15.
 
 **One fix outside the plan.** `a69c304` — a command's events were never published to a connected
 client. `_publish` had one caller inside the tick loop and published only what that batch returned,
@@ -368,17 +376,19 @@ Requirements this plan has moved are marked with the unit that moved them.
 **Determinism (M31–M35)**
 - [x] M31 a statement replays exactly — **U10**, strict replay passes because the request is derived inside `step()` rather than read from the log. Still true with the bench live: **U11**'s guards are lexical over a closed vocabulary precisely because their refusal is an output event the fold regenerates
 - [x] M32 the retrieved context is logged and identical on replay — **U10**, after it caught its own window being latency-dependent
-- [x] M35 a comparison branch is never written to the store — and **U5** now proves the clock cannot be starved by one
+- [x] M35 a comparison branch is never written to the store — **U5** proved the clock cannot be starved by one, and **U19** made it a diff over every table in `metadata` around the command path, on both dialects: one row for a comparison that runs, none at all for one that is refused
 - [x] M33 — **U12**, closed by **U16**. Responses are cached on the situation, which R29 already
   replaced M33's "tick, person, request" with: a digest of the assembled prompt, the authorization
   scope the context was drawn under, and a purpose namespace. The *shared by every fork* half was
   built, tested and inert until U16 copied the parent's `lineage_root_id` at fork; the test that
   pinned both sides of that line no longer needs its hand-written `UPDATE`
-- [ ] M34 — U19. Not U12's and not U16's: pre-divergence statements are byte-identical because the
-  fork copies the parent's event rows and replay reads the log, so the cache is a cost optimisation
-  and authoritative for nothing. U16 made the copy an `INSERT..SELECT` over every column but the run
-  id, asserted on the stored rows, so the byte-identity half is now proved. A test folds a run with
-  and without the table populated and gets one hash
+- [x] M34 — **U19**. Pre-divergence statements are byte-identical because the fork copies the
+  parent's event rows and replay reads the log, so the cache is a cost optimisation and
+  authoritative for nothing. Both halves are now assertions on a real lineage: `model_cache` is
+  filled through the component that owns it, every timeline's boundary hashes are re-folded, the
+  table is emptied and they are re-folded again — and the filled half is checked first, because a
+  test that emptied an already empty table would pass forever. Beside it, two fresh lineages from one
+  seed are compared timeline by timeline under R11's projection
 
 **Memory and Authorization (M36–M43)**
 - [x] M36, M37, M38 — **U14**. A director's memory is the events touching their line, read through
@@ -426,7 +436,10 @@ Requirements this plan has moved are marked with the unit that moved them.
 - [x] M62 staff movement on the wire — **U3**, and live only because `a69c304` publishes what a command committed; U3 measured that the delegation walk never reached the client before it
 - [x] M63 command/tick synchronisation — **U4**
 - [x] M64 comparison off the clock's pool — **U5**, closing `docs/residual-review-findings/` §2 and the remaining half of §1
-- [ ] M65 determinism over a lineage — U19
+- [x] M65 determinism over a lineage — **U19**. Every day boundary of every timeline re-folded from
+  zero and compared, independently of `verify` and then through it; three timelines are one history
+  below their divergence and three distinct futures above it; and a fork exported and replayed in a
+  second interpreter reproduces its hash
 
 **Launch (M66–M67)**
 - [x] M67's first-command half — **U1**; the README leads with `docker compose up` and `company-os.html` is demoted to prototype
@@ -444,13 +457,14 @@ U15 closed when MVP U16 minted a fork id that cannot collide. The
 simulation half of the product is built and covered by four suites plus golden vectors across two
 languages, and the daylight visual system is complete on top of it.
 
-The MVP plan is **20 of 25 units in**, with Phases A, B, C and D complete and Phase E four-fifths in.
-Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about 59 are
-met now — M13 is the one U7 closed, M15 and M16 stopped being half-met, U11 closed the five the bench
-is made of, U13 closed M30 and M67's proof half, U12 built all of M33 but the one line U16 owned, U16
-closed that line plus the five forks are made of, U14 closed the three memory rests on, U17
-closed M49, U18 closed M50 and M52, and U15 closed M39 through M43. The suites went from 699 backend
-tests to **1,337**, and the client from 404 to **600**.
+The MVP plan is **21 of 25 units in**, with Phases A, B, C, D and E complete and the first of
+Phase F's done. Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about
+61 are met now — M13 is the one U7 closed, M15 and M16 stopped being half-met, U11 closed the five the
+bench is made of, U13 closed M30 and M67's proof half, U12 built all of M33 but the one line U16
+owned, U16 closed that line plus the five forks are made of, U14 closed the three memory rests on,
+U17 closed M49, U18 closed M50 and M52, U15 closed M39 through M43, and U19 closed M34 and M65 and
+made M35 a store diff. The suites went from 699 backend tests to **1,416**, and the client from 404
+to **600**.
 
 What remains is still concentrated where the plan said it would be, but the shape has changed three
 times. The bench was the plan's single biggest risk and the unit most likely to be "estimated as an
@@ -509,8 +523,27 @@ tenth unit running, and this time both defects were on its own new surface rathe
 else's: a column of figures rendered under the *other* timeline's heading, and two ended timelines
 described as running because the fact that they had ended is in neither the row nor the log.
 
-**Next is U15, then U19 and U20.** **U15** is the last of Phase D and the heaviest thing left before
-the report: it moves `STATE_SHAPE_VERSION`, regenerates the golden fixtures, and owns the run-scoped
-`statement_request_id` U16 left open. **U19** inherits U18's hash comparison and one defect of its
-own to close — `verify` refuses a healthy run whose CEO walked across a day boundary, measured and
-in the register.
+**U19 is in, and the pattern held on somebody else's code for the second time running.** It was
+written down as a suites unit and it closed three live defects, all of them on the fork and restart
+paths and none of them visible to any suite. The registered defect turned out not to be in `verify` and not to be
+about diagnosis at all: `simcore.log.fold` measured how far a run had got by the largest tick an
+event *named*, while the replay schedules inputs by the tick they were *issued* at, so the two
+disagreed by exactly the lead a scheduled input carries. What that refused was `fork` — the product's
+central beat, M44 — for any decision taken inside that lead, and `resume_run` for any run whose bench
+answer was in flight, which with a provider configured is two sim-days after every briefing.
+**Measured live on the compose path, before and after, on the same three HTTP calls**, by mounting
+the pre-U19 file over the built image. Thirty fork tests could not see it because every one of them
+reaches its decision through a fixture that never walks the CEO, so none of them ever had a scheduled
+input in the prefix it forked — the suite was uniform rather than thin, and the uniformity was in
+the fixture.
+
+It also settled the last of U16's review findings that named a unit: a fork now asks the questions it
+inherits, so a briefing on one side of a fork and a deadline on the other stops being a difference
+the option did not cause. That one is worth noting for *where* it was proved — the dispatch hop the
+suite takes is a direct call, and the one deployment takes is `call_soon_threadsafe` from a
+synchronous route, so it was verified in the container's own log rather than in the suite.
+
+**Next is U20**, then U21 and U22 behind it; **U23** is unblocked too, since U18 shipped the diff its
+hero ends on. U20 inherits a lineage harness, a `state_at_day` that now returns the kernel's own hash
+in every case, and the open question U19 registered rather than took: `simcore.verify` has no
+production caller at all, and a report over a lineage is where one belongs.

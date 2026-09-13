@@ -660,19 +660,22 @@ could not close it: closing it needs table creation to happen behind the lease, 
 `refuse_a_store_this_build_cannot_read`'s docstring. This is a data-integrity window, not a
 tidiness point, and it wants its own unit.
 
-**`simcore.verify` calls a healthy run unhealthy when the CEO walked across a day boundary.** Found
-by U18. `verify` folds a *sequence* prefix ending at each `DAY_CHECKPOINT` and passes that
-boundary's tick as `through_tick`; `fold` compares `through_tick` against the largest tick any event
-in the prefix **names**, and a `CEO_INPUT` names the tick it *applies* at, deliberately a few ticks
-ahead of the one it was submitted on. So a player holding a direction across a boundary leaves an
-event the prefix keeps and the fold refuses. **Measured on this build:** an otherwise identical run
-verifies healthy with the office quiet and comes back `healthy=False` with `asked to fold through
-tick 540, but the log holds an event at tick 542` once one `submit_ceo_input` straddles the
-boundary — a sentence about a run row lagging its log, describing something else entirely. It
-reaches the player through `POST /runs/{id}/diagnose`, which is the call an operator makes when
-things look wrong. U18 sidestepped it (`state_at_day` filters by the fold's own tick rule instead of
-cutting by sequence, and says so) rather than fixing it, because `verify` is **U19**'s — the unit
-that already owns the determinism suites over a lineage and would have to re-baseline them.
+**~~`simcore.verify` calls a healthy run unhealthy when the CEO walked across a day boundary.~~**
+Found by U18, **closed by U19** — and it was neither in `verify` nor confined to diagnosis. The
+cause was one expression in `simcore.log.fold`: the `through_tick` guard measured the run's reach as
+the largest tick any event *named*, while `_replay` schedules inputs by `issued_at_tick`, so the two
+disagreed by exactly the lead a scheduled input carries. Its live reach was `fork` and `resume_run`,
+not the diagnosis path — the register's sentence about `POST /runs/{id}/diagnose` was wrong, because
+`diagnose` does not call `verify`. See *What U19 found* for the measurements, including the same
+fork refused and then accepted on the compose path.
+
+**`simcore.verify` has no production caller.** Noticed by U19 while closing the entry above. The
+function that decides whether a log can be trusted, and what truncating back to the last good
+boundary would cost, is reachable only from the suites: `diagnose` reports on the clock and the
+outstanding requests and never folds, and nothing else imports it. It is why a defect that made
+every briefed run report as damaged could sit in the tree without any surface saying so. A report
+over a lineage is the natural home for it — **U20** — and it is registered rather than taken by U19,
+whose requirements are M34, M65 and M35.
 
 **`achieved_multiplier_permille` truncates a fraction of a tick at every wake and never accumulates
 it.** Found by U4, confirmed and deepened by U5. At rate 1 the clock runs at roughly 55% of nominal
@@ -2016,3 +2019,192 @@ and a mouse click on Grant applies the command and clears the card.
   somebody who does not trust the sentence above it. An open ask reports what it is *still* costing,
   measured to the head of the log.
 - **The report is reachable for a run that hired**, which it was not before this unit.
+
+---
+
+## What U19 found, that U20 needs
+
+U19 was written down as a suites unit: extend the determinism, replay and comparison suites across a
+lineage so they notice when forking breaks the claim, and close the `verify` false negative U18
+registered on the way past. Both happened. What was not expected is that **the registered defect was
+not in `verify` at all, and it was not a diagnosis defect** — it was one expression in the fold, and
+it was refusing forks and restarts on the shipped path.
+
+### The bound and the scheduling were two rules, and they had to be one
+
+An input event carries two ticks. A `CEO_INPUT` names the tick it *applies* at, a fixed lead ahead of
+the tick it was submitted on, so that client and kernel agree by construction; an `INPUT_RECEIVED`
+names the tick its answer *lands* at, `STATEMENT_OFFSET_TICKS` — **two sim-days** — after the bench
+answered. `simcore.log.issued_at_tick` exists to name the other tick, the one the event was issued
+at, and `_replay` schedules every input by it.
+
+The `through_tick` guard did not use it. It measured how far the run had got as the largest tick any
+event *named*:
+
+```python
+final_tick = max(final_tick, tick)          # the payload's own tick
+...
+if through_tick < final_tick:
+    raise FoldRefused("a run row behind its own log …")
+```
+
+So the bound and the scheduling disagreed by exactly the lead a scheduled input carries, and every
+caller folding to a tick inside that lead was refused — with a sentence about a run row lagging its
+log, describing something that had not happened. The fix is one argument:
+
+```python
+final_tick = max(final_tick, issued_at_tick(payload, envelope.tick))
+```
+
+It is not a widening of the guard. For every event with no `submitted_at_tick` — which is every
+output, and outputs name the tick they were produced at — the expression is unchanged, so a run row
+genuinely behind its own log is still refused and there is a test that says so. What changed is that
+a *scheduled* input no longer counts as reach the log does not prove.
+
+The important half is what the fold then does with the event it no longer refuses: it keeps it, and
+applies it at the tick it was issued on, so the input sits in `state.ceo_inputs` at the boundary
+exactly as it did in the kernel. The state hash covers those, so the alternative fix — dropping the
+straddling event, which is what U18 did on its own surface — stops the refusal and folds to a state
+the run was never in. Every regression test here asserts the boundary hash rather than the absence of
+a refusal, for that reason.
+
+### It was not the diagnosis path, and the register's sentence was wrong
+
+The register said the defect "reaches the player through `POST /runs/{id}/diagnose`, which is the
+call an operator makes when things look wrong". It does not: `diagnose` does not call `verify`, and
+**nothing in the running system does** — `simcore.verify` has no production caller, only the suites
+and this unit's new lineage checks. That is worth writing down on its own, because a verification
+routine with no caller is one that rots, and U20's report over a lineage is where the question
+"is this log trustworthy" naturally belongs. It is not in U19's requirements, so it is registered
+below rather than taken here.
+
+Where the defect actually reached the player is `fold(through_tick=…)`'s other three callers, and two
+of them are live:
+
+- **`fork` folds the parent's prefix through the decision's own tick.** A decision taken while a
+  scheduled input was outstanding could not be forked at all. That is the product's central beat —
+  M44, "the same moment, a different answer" — refused.
+- **`resume_run` folds through `runs.current_tick`**, and the row moves only on append. A kernel that
+  restarted while a bench answer was in flight could not rebuild that run.
+- `export` and `report.build` pass a tick a caller supplied, so both could meet it too.
+
+**Measured, on the compose path, before and after, with the same three HTTP calls** — submit a held
+direction for a tick 200 ahead, settle `wi_hiring` from the tray, `POST /runs/{id}/fork` at that
+decision:
+
+```
+before  {"created": false, "refusal": "asked to fold through tick 0, but the log proves the run
+         reached tick 200. A run row behind its own log means the two disagree about how far the
+         run got."}
+after   {"created": true, "child_run_id": "run-c28f84d8ffc7", "forked_at_tick": 0, …}
+```
+
+The before was produced by mounting the pre-U19 `log.py` over the built image, so the two runs differ by
+one expression and nothing else. It is reachable by a player holding a key and settling a decision
+inside the client's input lead, which is a wall-time budget converted at the current rate.
+
+**And with a provider configured it is not a narrow window at all.** A briefing's answer names a tick
+two sim-days ahead, so *every* decision taken within two sim-days of a briefing was unforkable, and
+the run was unresumable for the same window. Measured on a lineage built through a briefing: at the
+day boundary at tick 540 the prefix names tick 1112, and all three timelines came back
+`healthy=False` from `verify` with every hash in them correct. On the shipped keyless path the
+agents service logs `no bench configured; the statement request is left for its deadline` and no
+answer event is ever written, so that half is latent until a key is configured — which is the
+product's intended mode, not an exotic one.
+
+### Why thirty fork tests could not see it
+
+Every fork test in `test_kernel_service.py` reaches its decision through `_blocked_at_a_decision`,
+which assigns an item and ticks until it stops. It never walks the CEO, so no briefing is ever
+raised, so no fork test ever had a scheduled input in the prefix it forked. The suite was not thin —
+it was uniform, and the uniformity was in the fixture rather than in the assertions. The new
+`conftest.build_lineage` drives the CEO to a director on purpose for exactly this reason, and it is
+what every U19 lineage test is built on.
+
+### `verify` was not reading the sub-hashes it was written to read
+
+A second defect, found while working in the same function. The module docstring promises that "the
+per-subsystem sub-hashes then say which subtree", and `compare_checkpoint` implements it — but
+`verify` never called it. It called `_differing_subsystems(state, expected_overall)`, which took the
+*overall* hash, cannot localise anything with it, and returned every subsystem carrying any state at
+all. So a real divergence reported "look in one of these ten" while the checkpoint event in front of
+it held a digest per subsystem. It now passes the recorded `subsystems` map, and the report
+distinguishes three answers rather than two: a named subtree, "every recorded sub-hash matches, so the
+checkpoint's own digest is what disagrees", and "this checkpoint carries no sub-hashes". The middle
+one used to print as `unknown`, about the case it knew most about.
+
+### One lineage harness, in `conftest`, built through the shipped path
+
+The lineage the three suites assert on is built by `tests/conftest.py`: `create_run`, a walk to a
+director by submitted input, a briefing answered by a scripted producer, a decision, and a fork per
+option. Deliberately the kernel's own surfaces — a harness that assembled a lineage out of `simcore`
+calls would be testing a second implementation of forking, and the fork's prefix copy is a store
+transaction that only `KernelRuntime` can reach.
+
+It also settles a duplication that was about to become two: `test_store.py` owned the Postgres probe
+and the lineage suites needed the same question answered. Two probes would be two answers, and one
+suite skipping while the other runs is worse than either — the skip message is the only thing that
+says a run was incomplete. The probe, the URL and the skip sentence now live in `conftest`, and
+`test_store.py` reads them.
+
+`kernel_on` is a context manager as well as a fixture because one test needs *two* lineages from one
+seed, and on Postgres that cannot be two live kernels: the second is refused the writer lease, which
+is the whole point of the lease. They are built sequentially instead, the schema dropped between.
+
+### M35 is asserted by a store diff now, and the refusal is the stronger half
+
+The existing coverage made the point at library level — `run_branch` returns its events and nothing in
+that suite can write. The new pair goes through `apply_command` on a real store on both dialects and
+diffs **every table in `metadata`**, not a list of interesting ones, because a list is something
+somebody has to remember to extend. A comparison may move exactly one `OPTIONS_COMPARED` row and the
+run row every append moves; a refused comparison may move nothing at all, and that is the assertion
+worth having, because it admits no row and therefore cannot pass by accident.
+
+### U16's finding 9 is settled by asking, not by explaining
+
+The review left U19 a choice: make a fork dispatch the statements it inherits, or write down why a
+child does not inherit the asking. Asking is right, and the finding's own sentence is the argument —
+a briefing on one side of a fork and a deadline on the other is *a difference between two timelines
+that the option did not cause*, which is the single thing M34 exists to forbid. It would have
+arrived on U18's diff looking like a consequence of the decision.
+
+The fork's own guard does not cover it and was never meant to: it refuses a fork whose **decided
+item** has an unanswered request, because that question could only be answered against a decision
+already taken. A request on any *other* item is inherited, and inheriting the question without
+inheriting the asking is the gap.
+
+What it costs is at most one model call and usually none. The content address is the assembled
+prompt, the authorization scope and the purpose — all identical to the parent's at that tick, since
+the child's state at the fork point *is* the parent's fold — and the cache is scoped to the lineage
+the child now shares, so a child hits the parent's entry whenever the parent already has one. The
+case where it does not is exactly this one, where the parent has no answer yet, and one call is the
+right price for removing a divergence from the diff.
+
+**The hop is the interesting part, and it is U16 review finding 11's shape.** `fork` runs on a
+request thread, `_advance` runs on a worker thread, and a task belongs to a loop — so the dispatch
+needs the same `call_soon_threadsafe` hop `_ask_soon` already made. It is written once now
+(`_on_the_loop`) rather than twice. And the branch the suite takes is not the branch deployment
+takes: in the suite `fork` is called from the event loop and the hop is a direct call, while live
+`POST /runs/{id}/fork` is a **synchronous** FastAPI route on a threadpool thread. So it was verified
+on the compose path rather than only in the suite — the keyless bench logs a line per question it
+declines, and there are two, twenty seconds apart:
+
+```
+17:14:09  "no bench configured; the statement request is left for its deadline"  run-02fab7b34904
+17:14:29  "no bench configured; the statement request is left for its deadline"  run-4e376bf5bc1d
+```
+
+The first is the parent, asked while the CEO stood at the desk. The second is the child, asked by the
+fork route. Before this change there was one line.
+
+### What U20 inherits
+
+- **A lineage harness and a dual-dialect kernel fixture**, in `conftest`. U20's report over a tree
+  needs the same three timelines these tests fold, and `lineage.checkpoints(run_id)` is already the
+  per-day hash map its figures have to agree with.
+- **`state_at_day` now returns the kernel's own hash in every case.** U18's filter dropped a
+  straddling input and its docstring said what that cost; the filter is now the fold's own
+  `issued_at_tick` and the caveat is gone. So U20's "the report's figures match the diff's" is a
+  comparison between two surfaces that both reproduce the log's `DAY_CHECKPOINT` byte for byte —
+  verified live against Postgres on a forked lineage at day 3.
+- **`verify` has no production caller**, and a report over a lineage is where one belongs.
