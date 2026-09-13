@@ -15,11 +15,12 @@ silently passing. Skipped is not passed, and U6's verification requires both.
 
 from __future__ import annotations
 
-import os
 import threading
 
 import pytest
-from sqlalchemy import delete, insert, select, text, update
+from sqlalchemy import delete, insert, select, update
+
+import conftest
 
 from contracts.envelope import EventKind
 from kernel import lease as lease_module
@@ -55,44 +56,21 @@ from simcore.step import Emitted
 #: infra/postgres/init/20-test-database.sql. This suite creates and drops the schema and
 #: takes the writer lease; from U9 a running kernel does the same things in `companyos`.
 #: Sharing one database would have the suite dropping tables from under a live kernel.
-DEFAULT_POSTGRES_URL = "postgresql+psycopg://companyos:companyos@127.0.0.1:55432/companyos_test"
-POSTGRES_URL = os.environ.get("COMPANY_OS_TEST_POSTGRES_URL", DEFAULT_POSTGRES_URL)
+#:
+#: **Whether it is reachable is `conftest`'s to answer, not this file's** (U19). This suite asked
+#: first and the lineage suites ask the same question, and two probes would be two answers — one
+#: suite skipping while the other runs is worse than either, because the skip message is the only
+#: thing that says a run was incomplete.
+POSTGRES_URL = conftest.POSTGRES_URL
 
 RUN = "run-aaaa"
 OTHER_RUN = "run-bbbb"
 
 
-def _postgres_reachable() -> tuple[bool, str]:
-    try:
-        engine = make_engine(POSTGRES_URL)
-        with engine.connect() as connection:
-            connection.execute(text("SELECT 1"))
-        engine.dispose()
-        return True, ""
-    except Exception as exc:  # noqa: BLE001 - any failure means "not available"
-        return False, f"{type(exc).__name__}: {exc}"
-
-
-_POSTGRES_OK, _POSTGRES_WHY = _postgres_reachable()
-
-
 @pytest.fixture(params=["sqlite", "postgresql"])
 def store(request, tmp_path):
     """A fresh, empty store on each dialect."""
-    if request.param == "sqlite":
-        engine = make_engine(f"sqlite:///{tmp_path}/log.sqlite3")
-    else:
-        if not _POSTGRES_OK:
-            pytest.skip(
-                f"Postgres not reachable at {POSTGRES_URL} ({_POSTGRES_WHY}). Start it with "
-                "`docker compose -f docker-compose.yml -f docker-compose.test.yml up -d "
-                "postgres`. This half of the suite is required by U6's verification, so a "
-                "skip here is an incomplete run, not a pass."
-            )
-        engine = make_engine(POSTGRES_URL)
-        # A shared database, so start from nothing. Dropping the tables takes the
-        # append-only triggers with them.
-        metadata.drop_all(engine)
+    engine = conftest.engine_for(request.param, tmp_path)
 
     log_store = LogStore(engine)
     log_store.create_all()
@@ -1322,14 +1300,11 @@ def test_an_exported_run_from_the_store_reproduces_its_hash(store, handle) -> No
 
 
 def test_postgres_is_reachable_for_this_suite() -> None:
-    """U6's verification names both dialects, so a Postgres-less run is incomplete.
+    """U6's and U19's verification name both dialects, so a Postgres-less run is incomplete.
 
     This is a separate test rather than a skip inside the fixture so the omission is
     visible in the summary line rather than buried in skip counts.
     """
-    if not _POSTGRES_OK:
-        pytest.skip(
-            f"Postgres not reachable at {POSTGRES_URL} ({_POSTGRES_WHY}). "
-            "U6 is only verified when this passes."
-        )
-    assert _POSTGRES_OK
+    if not conftest.POSTGRES_OK:
+        pytest.skip(conftest.POSTGRES_SKIP)
+    assert conftest.POSTGRES_OK

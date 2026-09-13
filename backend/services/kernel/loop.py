@@ -1574,14 +1574,25 @@ class KernelRuntime:
         nothing is asked: there is no thread to answer on, and inventing one would put a provider
         call on whatever thread happened to call `_advance`.
         """
+        self._on_the_loop(run, self._ask, requests)
+
+    def _on_the_loop(self, run: RunLoop, what: Any, *rest: Any) -> None:
+        """Call `what(run, *rest)` on the event loop, from whatever thread is calling.
+
+        Two dispatch sites need this and neither is on the loop: `_advance` is a worker thread, and
+        `fork` is a request thread — live, a *synchronous* FastAPI route, so it takes the
+        threadsafe branch that the suite's own callers never do. Written once rather than twice
+        because the second one arrived with U19, and a second copy of a hop is a second thing that
+        can be subtly wrong about which loop it found.
+        """
         loop = self._loop or _the_loop_we_are_on()
         if loop is None:
             return
         if _the_loop_we_are_on() is loop:
-            self._ask(run, requests)
+            what(run, *rest)
             return
         try:
-            loop.call_soon_threadsafe(self._ask, run, requests)
+            loop.call_soon_threadsafe(what, run, *rest)
         except RuntimeError as exc:
             # The loop is closed, which means the process is going down. The request is durable and
             # a restart asks it again from `start_background`.
@@ -2524,6 +2535,24 @@ class KernelRuntime:
         }
         self.runs[child_run_id] = child
         self._publish(child, result.envelopes)
+
+        # **A statement outstanding at the fork point is the child's question too** (U16 review,
+        # finding 9, settled here because M34 is what the asymmetry threatens). `fork` fills
+        # `statement_subjects` exactly as `resume_run` does — but a resume's are dispatched by
+        # `start_background`, which has long since run by the time anybody forks, so a question the
+        # parent asked and had answered was recorded on the child and asked by nobody. It reached
+        # its deadline there: a briefing on one side of a fork and none on the other, which is a
+        # parent/child difference the option did not cause and the diff would have shown as one.
+        #
+        # The fork's own guard does not cover it. That refuses a fork whose *decided item* has an
+        # unanswered request; a request on any other item is inherited, and inheriting the question
+        # without inheriting the asking is the gap.
+        #
+        # It costs at most one call, and usually none: the content address is the assembled prompt,
+        # the scope and the purpose, all identical to the parent's at this tick, and the cache is
+        # scoped to the lineage the child now shares — so the child hits the parent's entry whenever
+        # the parent already has one.
+        self._on_the_loop(child, self._ask_outstanding_statements)
 
         log.info(
             "run forked",

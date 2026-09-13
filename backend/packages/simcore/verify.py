@@ -90,13 +90,33 @@ class VerifyReport:
             first = self.diverged_checkpoints[0]
             parts.append(
                 f"state diverges by the day boundary at tick {first['tick']} "
-                f"(day {first['day']}); subsystems {first['subsystems'] or 'unknown'}"
+                f"(day {first['day']}); {_subsystem_phrase(first)}"
             )
         parts.append(
             f"last trustworthy sequence {self.last_good_seq} (tick {self.last_good_tick}); "
             "truncating there loses at most one sim-day"
         )
         return "; ".join(parts)
+
+
+def _subsystem_phrase(diverged: dict) -> str:
+    """What the sub-hashes localised the divergence to, in the summary's words.
+
+    Three answers rather than two, because "no subsystem differs" and "this checkpoint cannot
+    say" are different facts and the second is the only one an operator should treat as a dead
+    end. A checkpoint whose sub-hashes all match while its overall digest does not is pointing
+    at the *checkpoint* — the recorded digest — rather than at the state, which is a far more
+    useful thing to be told than "unknown".
+    """
+    if diverged.get("unknown_subsystems"):
+        return "subsystems unknown — this checkpoint carries no sub-hashes"
+    differing = diverged.get("subsystems") or []
+    if not differing:
+        return (
+            "every recorded sub-hash matches, so the checkpoint's own digest is what "
+            "disagrees rather than the state it covers"
+        )
+    return f"subsystems {differing}"
 
 
 def sequence_gaps(events: Sequence[Envelope]) -> list[int]:
@@ -131,8 +151,8 @@ def verify(events: Sequence[Envelope], running_rules_ver: str | None = None) -> 
             report.refusal = str(exc)
             return report
 
-    # Every recorded day-boundary hash, in tick order.
-    recorded: list[tuple[int, int, str]] = []
+    # Every recorded day-boundary hash, in tick order, with the sub-hashes beside it.
+    recorded: list[tuple[int, int, str, dict[str, str]]] = []
     for envelope in ordered:
         if envelope.kind is EventKind.DAY_CHECKPOINT:
             payload = envelope.decoded_payload()
@@ -150,8 +170,21 @@ def verify(events: Sequence[Envelope], running_rules_ver: str | None = None) -> 
                     "at_tick": int(payload["tick"]),
                     "history": list(hashing.SHAPE_HISTORY.get(written_under, ())),
                 }
-            recorded.append((int(payload["tick"]), envelope.seq, payload["state_hash"]))
-    recorded.sort()
+            recorded.append(
+                (
+                    int(payload["tick"]),
+                    envelope.seq,
+                    payload["state_hash"],
+                    {
+                        str(name): str(digest)
+                        for name, digest in (payload.get("subsystems") or {}).items()
+                    },
+                )
+            )
+    # By tick, and by tick alone. The tuples now carry a dict of sub-hashes, and a bare sort
+    # would compare those on a tie — which is a `TypeError` rather than an ordering, on the one
+    # function an operator calls when a log is already suspect.
+    recorded.sort(key=lambda entry: entry[0])
 
     # Fold up to each boundary and compare, unless the shape moved — in which case the fold still
     # runs and only the comparison is skipped. That is deliberately not an early return: a fold that
@@ -170,7 +203,7 @@ def verify(events: Sequence[Envelope], running_rules_ver: str | None = None) -> 
     last_good_seq = ordered[0].seq if ordered else 0
     last_good_tick = 0
 
-    for tick, seq, expected in recorded:
+    for tick, seq, expected, expected_subsystems in recorded:
         prefix = [envelope for envelope in ordered if envelope.seq <= seq]
         try:
             result = folder.fold(
@@ -192,6 +225,7 @@ def verify(events: Sequence[Envelope], running_rules_ver: str | None = None) -> 
                     "seq": seq,
                     "reason": f"{type(exc).__name__}: {exc}",
                     "subsystems": [],
+                    "unknown_subsystems": True,
                 }
             )
             break
@@ -215,7 +249,13 @@ def verify(events: Sequence[Envelope], running_rules_ver: str | None = None) -> 
                     "expected": expected,
                     "actual": actual.overall,
                     # Which subtree, so the divergence localises further than "somewhere".
-                    "subsystems": _differing_subsystems(result.state, expected),
+                    "subsystems": _differing_subsystems(result.state, expected_subsystems),
+                    # Whether that list is an answer or an absence. A checkpoint written without
+                    # sub-hashes cannot say which subtree moved, and a run whose every sub-hash
+                    # matches is saying something quite different — that the *digest* disagrees
+                    # while the state it covers does not. Reporting both as an empty list left the
+                    # summary saying "unknown" about the one case it knew most about.
+                    "unknown_subsystems": not expected_subsystems,
                 }
             )
             break
@@ -228,16 +268,21 @@ def verify(events: Sequence[Envelope], running_rules_ver: str | None = None) -> 
     return report
 
 
-def _differing_subsystems(state: sim.State, expected_overall: str) -> list[str]:
-    """Which subsystems to look at first.
+def _differing_subsystems(state: sim.State, recorded_subsystems: dict[str, str]) -> list[str]:
+    """Which subtree to look at first, from the sub-hashes the checkpoint carries.
 
-    The overall hash cannot say which subtree changed — only that one did. This cannot
-    either, without the recorded sub-hashes, so it reports the subsystems that carry state
-    at all rather than guessing. When the checkpoint event carries sub-hashes (it does), the
-    caller compares those directly; this is the fallback for an older checkpoint.
+    **This used to be the thing its own docstring described somebody else doing.** It took the
+    *overall* hash, which cannot name a subtree, and returned every subsystem carrying any state
+    at all — so `verify` reported "the divergence is in one of these ten" while the checkpoint
+    event sitting in front of it held a digest per subsystem. The localisation the module
+    docstring promises, and the whole reason sub-hashes are written, was one argument away.
+
+    A checkpoint with no `subsystems` — none this build writes — gets the honest empty answer,
+    and the report marks it unknown rather than none.
     """
-    actual = hashing.state_hash(sim.snapshot(state))
-    return [name for name, digest in actual.subsystems.items() if digest and expected_overall]
+    if not recorded_subsystems:
+        return []
+    return compare_checkpoint(recorded_subsystems, state)
 
 
 def compare_checkpoint(

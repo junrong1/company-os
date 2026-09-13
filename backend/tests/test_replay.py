@@ -444,6 +444,110 @@ def test_a_run_row_behind_its_own_log_is_refused() -> None:
         folder.fold(recorder.log, at_live_head=False, through_tick=1)
 
 
+def test_the_bound_is_the_tick_the_log_proves_not_the_largest_it_names() -> None:
+    """U19. The one expression that used to be two, and the defect it made.
+
+    An input carries two ticks: the one it was *issued* at and the one it *applies* at. The
+    replay schedules by the first — `issued_at_tick` exists for that — and the bound was taken
+    from the second, so the two disagreed by exactly the lead a scheduled input carries and a
+    caller folding to a tick in between was refused for a reason that had not happened.
+
+    Both halves are asserted, because the fix must not have cost the guard: a tick inside the
+    lead is accepted, and a tick below an *output* — which names the tick it was produced at, so
+    the run demonstrably reached it — is still refused.
+    """
+    recorder = Recorder()
+    recorder.advance(20)
+    recorder.record(sim.submit_ceo_input(recorder.state, 1, at_tick=recorder.state.tick + 4))
+    scheduled = recorder.log[-1]
+    issued = int(scheduled.decoded_payload()["submitted_at_tick"])
+    applies = int(scheduled.decoded_payload()["tick"])
+    assert applies > issued, "the fixture is not the shape this test is about"
+
+    folded = folder.fold(recorder.log, at_live_head=False, through_tick=issued)
+    assert folded.state.tick == issued
+    assert applies in folded.state.ceo_inputs, (
+        "the input is registered rather than dropped: the kernel's own state held it at this "
+        "tick, so a fold that dropped it would hash to a state the run was never in"
+    )
+
+    produced_at = max(
+        envelope.tick
+        for envelope in recorder.log
+        if folder.is_output(envelope.kind, envelope.decoded_payload())
+    )
+    with pytest.raises(folder.FoldRefused, match="disagree"):
+        folder.fold(recorder.log, at_live_head=False, through_tick=produced_at - 1)
+
+
+def test_a_held_direction_across_a_day_boundary_still_verifies() -> None:
+    """The register's entry, closed. Found by U18, owned by U19.
+
+    Measured before the fix: an otherwise identical run verified healthy with the office quiet
+    and came back `healthy=False` with "asked to fold through tick 540, but the log holds an
+    event at tick 542" once one `submit_ceo_input` straddled the boundary — a sentence about a
+    run row lagging its log, describing something else entirely. It reached the player through
+    `POST /runs/{id}/diagnose`, which is the call an operator makes when things already look
+    wrong.
+
+    The assertion is the boundary hash rather than merely the absence of a refusal, because
+    dropping the straddling event would also stop the refusal and would fold to a state the
+    kernel was never in.
+    """
+    boundary = simtime.TICKS_PER_SIM_DAY
+    recorder = Recorder()
+    recorder.advance(boundary - 2)
+    recorder.record(sim.submit_ceo_input(recorder.state, 1, at_tick=boundary + 2))
+    recorder.advance(2)
+    assert recorder.state.tick == boundary
+    recorder.checkpoint()
+    recorder.advance(boundary)
+    recorder.checkpoint()
+
+    report = verifier.verify(recorder.log)
+
+    assert report.healthy, report.summary()
+    assert "every day-boundary hash matches" in report.summary()
+
+
+def test_a_statement_landing_after_a_day_boundary_still_verifies() -> None:
+    """The same defect on the path that meets it without the player touching a key.
+
+    The register described a held direction, and it undersold the reach. `STATEMENT_OFFSET_TICKS`
+    is two sim-days, so an `INPUT_RECEIVED` written when the bench answers names a tick two
+    boundaries ahead — **measured on a real lineage: at the boundary at tick 540 the prefix named
+    tick 1112**, and all three timelines came back unverifiable. Every run with a briefing in it
+    had a log the diagnosis path refused, for the whole window between the answer and its landing.
+    """
+    import test_pending_input as bench_harness
+
+    boundary = simtime.TICKS_PER_SIM_DAY
+    recorder = bench_harness.Recorder(horizon_tick=boundary * 40)
+    request = recorder.open_a_checkpoint_in_person()
+    assert recorder.state.tick < boundary, "the briefing has to land before the first boundary"
+    recorder.record(
+        sim.receive_answer(
+            recorder.state, request.request_id, recorder.statement_answer(request)
+        )
+    )
+    landing = int(recorder.log[-1].decoded_payload()["tick"])
+    assert landing > boundary, "the answer has to land past the boundary for this to be the case"
+
+    recorder.advance_until(lambda s: s.tick >= boundary)
+    recorder.record(
+        [
+            sim.Emitted(
+                kind=EventKind.DAY_CHECKPOINT,
+                payload=verifier.build_checkpoint_payload(recorder.state),
+            )
+        ]
+    )
+
+    report = verifier.verify(recorder.log)
+
+    assert report.healthy, report.summary()
+
+
 # =========================================================================
 # Strict replay detects divergence
 # =========================================================================
@@ -753,6 +857,83 @@ def test_checkpoint_hashes_localise_damage_to_a_sim_day() -> None:
     assert diverged["day"] == 3
     assert report.last_good_seq == first_boundary_seq
     assert "at most one sim-day" in report.summary()
+
+    # Only the digest was moved, so every recorded sub-hash still matches the re-fold — and the
+    # report says *that* rather than naming ten subsystems or calling it unknown. It is the more
+    # useful sentence: the checkpoint is what disagrees, not the state it covers.
+    assert diverged["subsystems"] == []
+    assert not diverged["unknown_subsystems"]
+    assert "the checkpoint's own digest is what disagrees" in report.summary()
+
+
+def test_a_diverged_checkpoint_names_the_subsystem_that_moved() -> None:
+    """The localisation the module docstring promises, through `verify` rather than beside it.
+
+    `compare_checkpoint` could always do this and `verify` never called it: `_differing_subsystems`
+    took the *overall* hash, which cannot name a subtree, and answered with every subsystem
+    carrying any state at all. So a real divergence reported "look in one of these ten" while the
+    checkpoint event in front of it held a digest per subsystem. Here one subsystem's recorded
+    digest is moved and the report names that one.
+    """
+    recorder = Recorder()
+    recorder.record(sim.assign_direct(recorder.state, "wi_quotes", "stf_buyer"))
+    recorder.advance(simtime.TICKS_PER_SIM_DAY)
+    recorder.checkpoint()
+
+    damaged = []
+    for envelope in recorder.log:
+        if envelope.kind is EventKind.DAY_CHECKPOINT:
+            payload = envelope.decoded_payload()
+            payload["state_hash"] = "f" * 32
+            payload["subsystems"] = {**payload["subsystems"], "metrics": "0" * 32}
+            envelope = build(
+                seq=envelope.seq,
+                tick=envelope.tick,
+                kind=envelope.kind,
+                rules_ver=envelope.rules_ver,
+                payload=payload,
+                run_id=envelope.run_id,
+            )
+        damaged.append(envelope)
+
+    report = verifier.verify(damaged)
+
+    assert not report.healthy
+    assert report.diverged_checkpoints[0]["subsystems"] == ["metrics"]
+    assert "subsystems ['metrics']" in report.summary()
+
+
+def test_a_checkpoint_carrying_no_sub_hashes_reports_unknown_rather_than_none() -> None:
+    """"Nothing differs" and "this cannot say" are different answers, and only one is a dead end.
+
+    Nothing this build writes lands here — `build_checkpoint_payload` always carries sub-hashes —
+    but collapsing the two into an empty list is what made the old report say "unknown" about the
+    case it knew most about, so the distinction is held as an assertion rather than a convention.
+    """
+    recorder = Recorder()
+    recorder.advance(simtime.TICKS_PER_SIM_DAY)
+    recorder.checkpoint()
+
+    damaged = []
+    for envelope in recorder.log:
+        if envelope.kind is EventKind.DAY_CHECKPOINT:
+            payload = envelope.decoded_payload()
+            payload["state_hash"] = "f" * 32
+            payload.pop("subsystems")
+            envelope = build(
+                seq=envelope.seq,
+                tick=envelope.tick,
+                kind=envelope.kind,
+                rules_ver=envelope.rules_ver,
+                payload=payload,
+                run_id=envelope.run_id,
+            )
+        damaged.append(envelope)
+
+    report = verifier.verify(damaged)
+
+    assert report.diverged_checkpoints[0]["unknown_subsystems"]
+    assert "carries no sub-hashes" in report.summary()
 
 
 def test_checkpoint_sub_hashes_localise_to_a_subsystem() -> None:
@@ -1262,3 +1443,140 @@ def test_a_snapshot_written_before_phase_2_still_restores() -> None:
     # as unasked, which is the honest consequence of a snapshot that never recorded it.
     payload = sim.ask_person(restored, "stf_ap", "why?")[0].payload
     assert payload["first_time"] is True
+
+
+# =========================================================================
+# Determinism over a lineage (U19)
+# =========================================================================
+#
+# The suites above cover *a run*. A fork is a second history sharing a prefix with the first, and
+# nothing here would have noticed a fork's fold drifting: a child's log is not a run's log, and
+# the timeline the player ends up comparing against is the one no test folded. M65 is that gap
+# stated as a requirement.
+#
+# The lineage under these tests is built by `conftest.build_lineage` through the kernel's own
+# surfaces, on both dialects. Three timelines, one decision, a briefing in the shared prefix, and
+# every timeline played two sim-days past the divergence so each writes day boundaries of its own.
+
+
+def test_every_timeline_in_a_lineage_refolds_to_its_own_recorded_hashes(lineage) -> None:
+    """Covers M65. Every boundary, on every timeline, re-folded from zero and compared.
+
+    Deliberately not `verify` — that is the next test, and it is the operator's path. This one
+    does the comparison itself so that M65 rests on a fold and a hash rather than on one function
+    being right about both.
+
+    A child's log is the parent's prefix followed by its own divergence, so this also asserts the
+    thing a fork could quietly break: the copied rows still fold, under the child's id, to the
+    hashes the parent wrote under its own.
+    """
+    seen = 0
+    for run_id in lineage.timelines:
+        events = lineage.events(run_id)
+        boundaries = [
+            envelope for envelope in events if envelope.kind is EventKind.DAY_CHECKPOINT
+        ]
+        assert boundaries, f"{run_id} crossed no day boundary, so there is nothing to compare"
+
+        for boundary in boundaries:
+            payload = boundary.decoded_payload()
+            at_tick = int(payload["tick"])
+            refolded = folder.fold(
+                [envelope for envelope in events if envelope.seq <= boundary.seq],
+                at_live_head=False,
+                strict=True,
+                through_tick=at_tick,
+            )
+            actual = hashing.state_hash(sim.snapshot(refolded.state))
+            moved = verifier.compare_checkpoint(payload["subsystems"], refolded.state)
+            assert actual.overall == payload["state_hash"], (
+                f"{run_id} at tick {at_tick}: the re-fold does not reproduce the hash the "
+                f"kernel wrote; subsystems {moved}"
+            )
+            assert actual.subsystems == payload["subsystems"]
+            seen += 1
+
+    assert seen >= 9, f"three timelines should carry at least three boundaries each, saw {seen}"
+
+
+def test_every_timeline_in_a_lineage_verifies(lineage) -> None:
+    """The same claim through the path an operator actually reaches, which is `diagnose`.
+
+    Worth having beside the test above rather than instead of it: this one would have failed on
+    every lineage this harness can build before U19, and for a reason that had nothing to do with
+    determinism — the bench's answer names its landing tick two sim-days ahead, so the first
+    boundary's prefix named a tick the run had not reached and the fold refused. Measured: all
+    three timelines came back `healthy=False` with "the log holds an event at tick 1112" while
+    every hash in them was correct.
+    """
+    for run_id in lineage.timelines:
+        report = verifier.verify(lineage.events(run_id))
+        assert report.healthy, f"{run_id}: {report.summary()}"
+        assert report.missing_seqs == []
+        assert report.last_good_seq == max(
+            envelope.seq
+            for envelope in lineage.events(run_id)
+            if envelope.kind is EventKind.DAY_CHECKPOINT
+        )
+
+
+def test_a_lineage_is_one_history_below_its_divergence_and_three_above_it(lineage) -> None:
+    """What makes the two tests above non-vacuous.
+
+    Three timelines that folded to the same hashes everywhere would satisfy M65 and mean nothing.
+    The property is two-sided: identical at every boundary the fork copied, and *different* at
+    every boundary each timeline wrote for itself — because they took different options, which is
+    the only thing that differs between them.
+    """
+    per_timeline = {run_id: lineage.checkpoints(run_id) for run_id in lineage.timelines}
+    shared = [tick for tick in sorted(per_timeline[lineage.root]) if tick < lineage.forked_at_tick]
+    diverged = [
+        tick for tick in sorted(per_timeline[lineage.root]) if tick > lineage.forked_at_tick
+    ]
+    assert shared and diverged, "the fixture must fork between two day boundaries"
+
+    for tick in shared:
+        hashes = {per_timeline[run_id].get(tick) for run_id in lineage.timelines}
+        assert len(hashes) == 1, f"tick {tick} is below the divergence and must be one history"
+
+    for tick in diverged:
+        hashes = [per_timeline[run_id].get(tick) for run_id in lineage.timelines]
+        assert all(hashes), f"every timeline should have reached tick {tick}"
+        assert len(set(hashes)) == len(hashes), (
+            f"tick {tick} is above the divergence: three options should be three futures, "
+            f"got {hashes}"
+        )
+
+
+def test_a_forked_timeline_replays_to_the_same_hash_in_another_process(lineage) -> None:
+    """A hash reproduced in the interpreter that produced it proves less.
+
+    U15's export test made this point about a run. A fork is where it earns the most: the child's
+    log is rows the store copied rather than events this process emitted, so anything that
+    depended on process-local state would agree with itself here and disagree there.
+    """
+    child = lineage.children[0]
+    artifact, state_hash = lineage.runtime.export(child)
+
+    path = BACKEND / "var" / "export-lineage-test.artifact"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(artifact)
+
+    try:
+        probe = f"""
+from pathlib import Path
+from simcore import export as exporter, hashing, step as sim
+state, meta = exporter.import_and_replay(Path({str(path)!r}).read_bytes())
+print(hashing.state_hash(sim.snapshot(state)).overall)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            cwd=BACKEND,
+            env={"PYTHONPATH": "packages:services", "PATH": ""},
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == state_hash
+    finally:
+        path.unlink(missing_ok=True)

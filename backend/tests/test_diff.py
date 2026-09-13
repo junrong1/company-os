@@ -356,15 +356,18 @@ def test_before_they_diverged_the_two_timelines_are_the_same_state() -> None:
     assert {row.delta for row in answer.rows} == {0}
 
 
-def test_a_straddling_ceo_input_does_not_stop_the_fold_at_a_boundary() -> None:
-    """The prefix is a filter rather than a sequence cut, and this is the difference.
+def test_a_straddling_ceo_input_folds_to_the_kernels_own_hash_either_way() -> None:
+    """The case U18 sidestepped and U19 closed, now asserted from the other side.
 
     A `CEO_INPUT` names the tick it *applies* at, a few ticks ahead of the one it was submitted
     on — so a player holding a direction across a day boundary leaves an event naming a tick past
-    it. A sequence cut keeps that event and `fold` then refuses, with a sentence about a run row
-    lagging its log that describes something else entirely.
+    it. U18 measured a sequence cut being refused here, and filtered the event out to get past it;
+    the filter then dropped an input the kernel's own state held, so this fold's hash at such a
+    boundary was not the kernel's.
 
-    Measured on this build: the same log folds by filter and refuses by cut.
+    Both halves are asserted, because only together do they say the defect is gone rather than
+    moved: the sequence cut folds, and the day fold reproduces the byte the log's own
+    `DAY_CHECKPOINT` carries.
     """
     boundary = simtime.TICKS_PER_SIM_DAY
     recorder = Recorder(f"{RUN}-walking")
@@ -372,16 +375,31 @@ def test_a_straddling_ceo_input_does_not_stop_the_fold_at_a_boundary() -> None:
     recorder.record(sim.submit_ceo_input(recorder.state, at_tick=boundary + 2, bitmask=1))
     recorder.advance(14)
 
+    recorded = _checkpoint_at(recorder.log, boundary)
+    assert recorded, "the recorder writes a checkpoint at the boundary this test is about"
+
     cut = max(envelope.seq for envelope in recorder.log if envelope.tick <= boundary)
-    with pytest.raises(folder.FoldRefused):
-        folder.fold(
-            [envelope for envelope in recorder.log if envelope.seq <= cut],
-            at_live_head=False,
-            through_tick=boundary,
-        )
+    by_cut = folder.fold(
+        [envelope for envelope in recorder.log if envelope.seq <= cut],
+        at_live_head=False,
+        through_tick=boundary,
+    )
+    assert by_cut.state.tick == boundary
 
     state, _ = reporting.state_at_day(recorder.log, 2)
     assert state.tick == boundary
+    assert hashing.state_hash(sim.snapshot(state)).overall == recorded
+    assert hashing.state_hash(sim.snapshot(by_cut.state)).overall == recorded
+
+
+def _checkpoint_at(log: list, tick: int) -> str:
+    """The state hash the kernel wrote at that boundary, or "" if it wrote none."""
+    for envelope in log:
+        if envelope.kind is EventKind.DAY_CHECKPOINT:
+            payload = envelope.decoded_payload()
+            if int(payload["tick"]) == tick:
+                return str(payload["state_hash"])
+    return ""
 
 
 # =========================================================================

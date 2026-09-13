@@ -25,6 +25,7 @@ from kernel import loop as loop_module
 from kernel.loop import KernelRuntime, RunLoop, child_run_id_for
 from kernel.store import LogStore, make_engine
 from simcore import compare as branching
+from simcore import hashing
 from simcore import log as folder
 from simcore import pending as pend
 from simcore import snapshot as snapshotting
@@ -2141,6 +2142,48 @@ async def test_a_statement_outstanding_across_a_restart_is_asked_again(runtime) 
     ]
 
 
+async def test_a_run_whose_bench_answered_still_resumes_from_its_log(runtime) -> None:
+    """U19, and a live one. A restart mid-briefing could not rebuild the run at all.
+
+    `resume_run` folds through `runs.current_tick`, and the row moves only on append. A bench
+    answer is written the moment the leg answers and carries the tick it *lands* at —
+    `STATEMENT_OFFSET_TICKS`, two sim-days ahead — so between the answer and its landing the log
+    names a tick the row has not reached, and the old bound read that as a row lagging its log and
+    refused. **Measured on this shape: a row at tick 540 against a log naming tick 1112.** The run
+    was unresumable for two sim-days after every briefing, and the suite above this one missed it
+    because its producer declines, so no answer was ever in flight across the restart.
+    """
+    runtime.use_statement_producer(_a_scripted_statement)
+    runtime.create_run(RUN, SEED)
+    run = runtime.runs[RUN]
+    _walk_the_ceo_to_a_briefing(runtime, RUN)
+    await _let_the_bench_answer(runtime, RUN)
+
+    landing = max(
+        int(envelope.decoded_payload()["tick"])
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind is EventKind.INPUT_RECEIVED
+    )
+
+    # Quiet to the day boundary, which is the last thing appended — so the row sits there while
+    # the log goes on naming the landing tick.
+    boundary = simtime.TICKS_PER_SIM_DAY
+    runtime._advance(run, boundary - run.state.tick)
+    assert run.state.tick == boundary
+    row = runtime.store.run_row(RUN)
+    assert int(row["current_tick"]) == boundary < landing, (
+        "the fixture is not the shape this test is about: the row has to be behind the tick the "
+        "answer names"
+    )
+
+    before = hashing.state_hash(sim.snapshot(run.state)).overall
+    del runtime.runs[RUN]
+    rebuilt = runtime.resume_run(RUN)
+
+    assert rebuilt.state.tick == boundary
+    assert hashing.state_hash(sim.snapshot(rebuilt.state)).overall == before
+
+
 async def test_a_statement_request_with_no_answerable_scope_is_left_not_raised(
     runtime, monkeypatch
 ) -> None:
@@ -2258,6 +2301,140 @@ async def test_a_child_takes_the_other_option_and_resolves_the_checkpoint_once(r
         "differ at one number rather than being offset from each other"
     )
     assert resolutions[0].decoded_payload()["option_index"] == 1
+
+
+async def test_a_decision_taken_after_a_briefing_can_still_be_forked(runtime) -> None:
+    """U19, and the live defect it closed. This is the product's central beat, and it refused.
+
+    Walk over, hear the briefing, decide, then reconsider — M44's "the same moment, a different
+    answer", reached the way the game steers a player into it. `fork` folds the parent's prefix
+    through the decision's own tick, and the bench's answer event names the tick it *lands* at,
+    `STATEMENT_OFFSET_TICKS` — two sim-days — ahead. So the prefix named a tick past the fork
+    point, and the old bound read that as a run row lagging its log. **Measured: "asked to fold
+    through tick 572, but the log holds an event at tick 1112", on the fork of the very decision
+    the CEO had just been briefed on.** Any decision taken within two sim-days of a briefing
+    answer was unforkable.
+
+    Every other fork test in this file reaches its decision through `_blocked_at_a_decision`,
+    which never walks the CEO and so never triggers a briefing — which is why a suite of thirty
+    fork tests could not see it.
+    """
+    runtime.use_statement_producer(_a_scripted_statement)
+    runtime.create_run(RUN, SEED)
+    run = runtime.runs[RUN]
+    _walk_the_ceo_to_a_briefing(runtime, RUN)
+    await _let_the_bench_answer(runtime, RUN)
+
+    resolved = runtime.apply_command(
+        RUN,
+        kernel_pb2.RESOLVE_CHECKPOINT,
+        canonical.encode(
+            {"item": BRIEF_ITEM, "cp_index": 0, "option_index": 0, "in_person": True}
+        ),
+    )
+    assert len(resolved) == 1 and resolved[0].kind is EventKind.DECISION_RESOLVED
+    decision_seq = resolved[0].seq
+
+    landing = max(
+        int(envelope.decoded_payload()["tick"])
+        for envelope in runtime.store.read_events(RUN)
+        if envelope.kind is EventKind.INPUT_RECEIVED
+    )
+    assert landing > run.state.tick, (
+        "the fixture is not the shape this test is about: the answer has to still be in flight "
+        "at the moment being forked"
+    )
+
+    outcome = runtime.fork(RUN, at_seq=decision_seq, option_index=1, idempotency_key="briefed")
+
+    assert outcome.forked, outcome.refusal
+    child = runtime.runs[outcome.child_run_id]
+    decisions = child.state.items[BRIEF_ITEM].decisions
+    spec = child.state.spec_of(BRIEF_ITEM)
+    assert len(decisions) == 1
+    assert decisions[0].choice == spec.checkpoints[0].options[1].label
+    # And the briefing the CEO heard came with it, rather than being re-asked into the child.
+    assert landing in [
+        int(envelope.decoded_payload()["tick"])
+        for envelope in runtime.store.read_events(outcome.child_run_id)
+        if envelope.kind is EventKind.INPUT_RECEIVED
+    ]
+
+
+async def test_a_child_asks_the_statement_it_inherited_outstanding(runtime) -> None:
+    """U16 review, finding 9, settled by U19 — and settled by asking rather than by explaining.
+
+    A statement outstanding at the fork point is copied onto the child with the prefix. `fork`
+    filled `statement_subjects` exactly as `resume_run` does, but a resume's are dispatched by
+    `start_background`, which has long since run by the time anybody forks — so the question was
+    recorded on the child and asked by nobody, and reached its deadline there. The parent gets a
+    briefing and the child does not: **a difference between two timelines that the option did not
+    cause**, which is the one thing M34 exists to forbid, and it would have arrived on the diff as a
+    consequence of the decision.
+
+    The fork's own guard does not cover this. It refuses a fork whose *decided item* has an
+    unanswered request; this one is outstanding on `wi_hiring` while the decision being reconsidered
+    is on `wi_ap_map`, which is the case that is inherited rather than refused.
+    """
+    asked: list[tuple[str, str]] = []
+    answer_now = False
+
+    def producer(request):
+        asked.append((request.run_id, request.request_id))
+        return _a_scripted_statement(request) if answer_now else None
+
+    runtime.use_statement_producer(producer)
+    runtime.create_run(RUN, SEED)
+    run = runtime.runs[RUN]
+
+    # A briefing the bench declines, so it is still outstanding when the fork happens.
+    _walk_the_ceo_to_a_briefing(runtime, RUN)
+    await _let_the_bench_answer(runtime, RUN)
+    outstanding = [
+        request_id
+        for request_id, request in run.state.pending.items()
+        if request.is_statement
+    ]
+    assert len(outstanding) == 1, outstanding
+    assert asked == [(RUN, outstanding[0])], "the parent asked once"
+
+    # A decision on a *different* item, which is the fork point.
+    runtime.apply_command(
+        RUN,
+        kernel_pb2.ASSIGN_WORK,
+        canonical.encode({"item": "wi_ap_map", "person": "stf_ap", "via_manager": False}),
+    )
+    while run.state.items["wi_ap_map"].status != sim.STATUS_BLOCKED:
+        runtime._advance(run, 1)
+    resolved = runtime.apply_command(
+        RUN,
+        kernel_pb2.RESOLVE_CHECKPOINT,
+        canonical.encode(
+            {"item": "wi_ap_map", "cp_index": 0, "option_index": 0, "in_person": True}
+        ),
+    )
+    assert outstanding[0] in run.state.pending, "the briefing has to still be open at the fork point"
+
+    answer_now = True
+    outcome = runtime.fork(
+        RUN, at_seq=resolved[0].seq, option_index=1, idempotency_key="inherits-a-question"
+    )
+    assert outcome.forked, outcome.refusal
+
+    child = runtime.runs[outcome.child_run_id]
+    assert outstanding[0] in child.statement_subjects, "the question was not even inherited"
+    await _let_the_bench_answer(runtime, outcome.child_run_id)
+
+    assert (outcome.child_run_id, outstanding[0]) in asked, (
+        "the child inherited the question and asked nobody; it would have waited out a deadline "
+        "the parent did not, which is a divergence the option did not cause"
+    )
+    assert [
+        envelope
+        for envelope in runtime.store.read_events(outcome.child_run_id)
+        if envelope.kind is EventKind.INPUT_RECEIVED
+        and envelope.seq > outcome.forked_at_seq
+    ], "the answer never reached the child's log"
 
 
 async def test_the_parents_log_is_byte_identical_before_and_after_a_fork(runtime) -> None:

@@ -632,30 +632,30 @@ class Diff:
 def fold_tick_of(envelope: Envelope) -> int:
     """The tick the fold places an event at.
 
-    The fold's own expression, named rather than copied, because the truncation below has to
-    agree with it exactly: the fold refuses a `through_tick` below the largest tick any event
-    names, so a prefix built by a different rule would refuse on a log the fold would have
-    accepted.
+    The fold's own expression, *called* rather than copied, because the truncation below has to
+    agree with it exactly: the fold refuses a `through_tick` below the tick the log proves the
+    run reached, so a prefix built by a different rule would refuse on a log the fold would
+    have accepted. U18 wrote this as a copy of one branch of that rule and U19 made it the call
+    — the rule moved underneath it, which is what a copy of somebody else's rule does.
     """
-    return int(envelope.decoded_payload().get("tick", envelope.tick))
+    return folder.issued_at_tick(envelope.decoded_payload(), envelope.tick)
 
 
 def state_at_day(events: list[Envelope], day: int) -> tuple[sim.State, int]:
     """Fold a timeline to the first tick of `day`. Returns the state and the sequence reached.
 
-    **The prefix is a filter, not a sequence cut, and the difference is one event wide.** A
-    `CEO_INPUT` carries the tick it *applies* at, deliberately a few ticks ahead of the tick it
-    was submitted on — so a player holding a direction across a day boundary leaves an event
-    naming a tick past it. `fold` compares `through_tick` against the largest tick any event
-    names, so a sequence cut at the boundary keeps that event and the fold refuses with a
-    sentence about a run row lagging its log, which is not what happened. Filtering by the
-    fold's own rule drops it instead.
+    **The prefix is a filter rather than a sequence cut, and the rule it filters by is the
+    fold's own.** A `CEO_INPUT` carries the tick it *applies* at, deliberately a few ticks ahead
+    of the tick it was submitted on, and an `INPUT_RECEIVED` carries the tick its answer lands
+    at — so a held direction or an arriving statement across a day boundary leaves an event
+    naming a tick past it. `fold_tick_of` is the fold's `issued_at_tick`, so such an event is
+    **kept** and applied at the tick it was issued on, which is where the run really was.
 
-    Nothing this diff reports depends on the difference: an input scheduled for after the tick
-    being compared at moves nobody before it. What it does cost is the state hash, which covers
-    the CEO's scheduled inputs — so the hash of a state folded across a straddling input is this
-    fold's, not the kernel's. `simcore.verify` cuts by sequence and therefore does refuse such a
-    log; that is a defect in the diagnosis path, registered rather than fixed here.
+    U18 filtered by the payload's own tick and dropped it, because `fold` then refused a
+    sequence prefix holding one — and the drop cost the state hash, which covers the CEO's
+    scheduled inputs, so at a straddling boundary this fold's hash was not the kernel's. U19
+    closed that in `fold` (the bound is the tick the log proves, not the largest it names), and
+    both readings now produce the byte the log's `DAY_CHECKPOINT` holds.
     """
     at_tick = simtime.tick_of_day_start(day)
     prefix = [envelope for envelope in events if fold_tick_of(envelope) <= at_tick]

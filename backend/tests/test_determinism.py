@@ -28,6 +28,7 @@ from pathlib import Path
 
 import pytest
 
+import conftest
 from contracts.canonical import NotCanonical
 from simcore import hashing, rates, rng, time as simtime
 
@@ -682,3 +683,185 @@ print(hashing.digest(fingerprint))
 
     assert first == second
     assert len(first) >= 16
+
+
+# =========================================================================
+# The substrate over a lineage (U19)
+# =========================================================================
+#
+# Everything above is about one process making the same number twice. M34 is about a *fork*: two
+# timelines that differ only in a decision must differ only because of that decision. The two
+# ways that stops being true are a seed that does not reproduce and a cache that is consulted
+# as though it were authoritative, so there is a test for each.
+
+
+def _projected(lineage) -> dict[str, list]:
+    """Every timeline's whole log in R11's comparable form, keyed by how it was forked.
+
+    Keyed by option rather than by run id, because the ids are minted and a lineage built twice
+    is being compared on its histories rather than on its names. The projection is the one
+    `test_two_fresh_runs_with_a_statement_produce_byte_identical_logs` uses: sequence, tick, kind,
+    both schema versions and payload, and never the metadata group, which carries ingest time.
+    """
+    from contracts.envelope import canonical_log_projection
+
+    labelled = ["parent", *[f"child-{option}" for option in conftest.CHILD_OPTIONS]]
+    return {
+        label: canonical_log_projection(lineage.events(run_id))
+        for label, run_id in zip(labelled, lineage.timelines, strict=True)
+    }
+
+
+@pytest.mark.parametrize("dialect", ["sqlite", "postgresql"])
+def test_two_fresh_lineages_from_one_seed_are_the_same_lineage(dialect, tmp_path) -> None:
+    """Covers M34's seed half, on the keyless path.
+
+    Two lineages built from scratch, from one seed, forked at the same decision to the same
+    options — genesis, the walk, the briefing, the retrieved context, the landing tick and both
+    divergences produced twice rather than read twice from one log. They are compared timeline by
+    timeline, so a lineage that reproduced its parent and drifted in a child would fail here
+    rather than average out.
+
+    Sequentially rather than side by side: on Postgres two live kernels is precisely what the
+    writer lease refuses, so the first is stopped and its schema dropped before the second starts.
+
+    With a live provider this assertion would be scoped to the derived landing tick R17 pins
+    rather than to the statement text. The producer here is scripted, which is what the shipped
+    keyless build does, so the whole log is comparable.
+    """
+    with conftest.kernel_on(dialect, tmp_path / "first") as runtime:
+        first = _projected(conftest.build_lineage(runtime))
+    with conftest.kernel_on(dialect, tmp_path / "second") as runtime:
+        second = _projected(conftest.build_lineage(runtime))
+
+    assert set(first) == {"parent", "child-1", "child-2"}
+    for label in first:
+        assert first[label] == second[label], f"{label} is not the same history twice"
+    # And the three are genuinely three, so equality above is not equality of one thing.
+    assert len({str(projection) for projection in first.values()}) == 3
+
+
+def test_emptying_the_response_cache_changes_no_state_hash(lineage) -> None:
+    """Covers M34's cache half. The cache is a cost optimisation and authoritative for nothing.
+
+    The reason it cannot be authoritative is structural — a statement enters the log as an input
+    event (M31) and the fork copies the parent's rows, so replay reads the log and never the table
+    — but "structural" is what this kind of claim always says right up until a lookup moves. So
+    the table is filled for this lineage, every timeline's boundary hashes are taken, the table is
+    emptied, and they are taken again.
+
+    The filled half matters as much as the emptied one: a test that emptied an already empty table
+    would pass forever and mean nothing.
+    """
+    from sqlalchemy import delete, func, select
+
+    from logschema import model_cache
+
+    _fill_the_cache_for(lineage)
+    engine = lineage.store.engine
+
+    with engine.connect() as connection:
+        held = connection.execute(select(func.count()).select_from(model_cache)).scalar_one()
+    assert held, "the cache was never filled, so emptying it proves nothing"
+
+    before = {run_id: _boundary_hashes(lineage, run_id) for run_id in lineage.timelines}
+    assert all(before.values()), "every timeline should carry day boundaries to compare"
+
+    with engine.begin() as connection:
+        connection.execute(delete(model_cache))
+
+    after = {run_id: _boundary_hashes(lineage, run_id) for run_id in lineage.timelines}
+
+    assert after == before
+
+
+def test_a_fork_holds_its_parents_statements_byte_for_byte(lineage) -> None:
+    """Covers M34's "differ only because of that decision", at the log rather than at the hash.
+
+    Model variance is the failure this requirement exists to stop, and it would arrive as a
+    briefing that reads differently on the two sides of a fork — a difference the diff would
+    present as a consequence of the option. It cannot happen because a fork copies rows rather
+    than re-asking, and this is that stated as bytes: every child's prefix below the divergence is
+    the parent's, statements included.
+    """
+    from contracts.envelope import EventKind, canonical_log_projection
+
+    def prefix(run_id: str) -> list:
+        return canonical_log_projection(
+            [
+                envelope
+                for envelope in lineage.events(run_id)
+                if envelope.seq < lineage.decision_seq
+            ]
+        )
+
+    statements = [
+        envelope
+        for envelope in lineage.events(lineage.root)
+        if envelope.kind is EventKind.INPUT_RECEIVED and envelope.seq < lineage.decision_seq
+    ]
+    assert statements, "the lineage has no statement below its divergence, so this proves nothing"
+
+    for child in lineage.children:
+        assert prefix(child) == prefix(lineage.root)
+
+
+def _boundary_hashes(lineage, run_id: str) -> dict[int, str]:
+    """Re-fold to each day boundary and hash, rather than reading the recorded hashes.
+
+    The recorded hashes are bytes in the log and would not move if the cache were deleted twice
+    over. What has to be insensitive to the cache is the *fold*, so this is a fold.
+    """
+    from simcore import hashing as hashes
+    from simcore import log as folder
+    from simcore import step as sim
+
+    from contracts.envelope import EventKind
+
+    events = lineage.events(run_id)
+    out: dict[int, str] = {}
+    for envelope in events:
+        if envelope.kind is not EventKind.DAY_CHECKPOINT:
+            continue
+        at_tick = int(envelope.decoded_payload()["tick"])
+        result = folder.fold(
+            [candidate for candidate in events if candidate.seq <= envelope.seq],
+            at_live_head=False,
+            through_tick=at_tick,
+        )
+        out[at_tick] = hashes.state_hash(sim.snapshot(result.state)).overall
+    return out
+
+
+def _fill_the_cache_for(lineage) -> None:
+    """One real cache entry per timeline, written through the component that owns the table."""
+    from agents.main import StoreResponseCache
+    from modelgw import Completion, Prompt, Turn, Usage
+    from modelgw.cache import CacheKey, Purpose
+
+    # The password rendered rather than masked: `str(URL)` writes `***`, and this cache answers
+    # an unreachable store with a miss and a log line rather than an exception — so a masked DSN
+    # would leave the table empty and the assertion above is what says so out loud.
+    cache = StoreResponseCache(lineage.store.engine.url.render_as_string(hide_password=False))
+    try:
+        for index, run_id in enumerate(lineage.timelines):
+            key = CacheKey.derive(
+                Prompt(
+                    system="You are the head of people.",
+                    turns=(Turn(role="user", text=f"Brief me, timeline {index}."),),
+                ),
+                scope={"people": [conftest.BRIEF_DIRECTOR]},
+                purpose=Purpose.DIRECTOR_STATEMENT,
+                run_id=run_id,
+            )
+            cache.put(
+                key,
+                Completion(
+                    text="BRIEFING: The recruiter is the constraint.",
+                    usage=Usage(41, 7),
+                    provider="ollama",
+                    model="a-model-2026",
+                ),
+            )
+    finally:
+        cache.dispose()

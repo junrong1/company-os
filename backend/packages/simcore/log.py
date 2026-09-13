@@ -294,13 +294,33 @@ def fold(
     logged_outputs: dict[int, list[Envelope]] = {}
     checkpoints: dict[int, str] = {}
     outstanding: dict[str, dict] = {}
+    #: How far the log *proves* the run got, which is not the largest tick it names. A
+    #: scheduled input names a tick in its own future — see `issued_at_tick` — so measuring
+    #: the clock by the largest named tick credits the run with time it may never have run.
     final_tick = state.tick
 
     for envelope in ordered:
         kind = envelope.kind
         payload = envelope.decoded_payload()
         tick = int(payload.get("tick", envelope.tick))
-        final_tick = max(final_tick, tick)
+        # **One rule for the bound and for the scheduling**, which is what this was missing.
+        # The replay registers an input at `issued_at_tick` and the bound was taken from the
+        # payload's own tick, so the two disagreed by exactly the lead a scheduled input
+        # carries: a `CEO_INPUT` applying a few ticks ahead, or an `INPUT_RECEIVED` landing
+        # `STATEMENT_OFFSET_TICKS` — two sim-days — after the bench answered. Every caller
+        # folding to a tick inside that lead was refused with a sentence about a run row
+        # lagging its log, which is not what had happened.
+        #
+        # Two of those callers are live, which is why this is a one-line fix to a real defect
+        # rather than a tidy-up: `fork` folds the parent's prefix through the decision's own
+        # tick, so a decision taken while a briefing was in flight could not be reconsidered at
+        # all; and `resume_run` folds through `runs.current_tick`, which moves only on append,
+        # so a kernel that restarted in that window could not rebuild the run.
+        #
+        # It is not a widening. Every output names the tick it was produced at and carries no
+        # `submitted_at_tick`, so for outputs this expression is unchanged and a run row
+        # genuinely behind its own log is still refused.
+        final_tick = max(final_tick, issued_at_tick(payload, envelope.tick))
 
         if kind is EventKind.GENESIS:
             raise UnknownEventInFold(
@@ -368,9 +388,9 @@ def fold(
     if through_tick is not None:
         if through_tick < final_tick:
             raise FoldRefused(
-                f"asked to fold through tick {through_tick}, but the log holds an event at "
-                f"tick {final_tick}. A run row behind its own log means the two disagree "
-                "about how far the run got."
+                f"asked to fold through tick {through_tick}, but the log proves the run "
+                f"reached tick {final_tick}. A run row behind its own log means the two "
+                "disagree about how far the run got."
             )
         final_tick = through_tick
 

@@ -1216,3 +1216,105 @@ def test_a_branch_whose_runway_is_not_yet_knowable_records_a_null(run: Recorder)
     # The real branch does pay costs, so its runway is a number — the null path is the one
     # above, and this is here so the two are stated together rather than in two places.
     assert summary.runway.value is not None
+
+
+# =========================================================================
+# A comparison writes nothing but its own record (U19, M35)
+# =========================================================================
+
+
+def test_a_comparison_writes_no_row_but_its_own_record(kernel_on_each_dialect) -> None:
+    """Covers M35, on a real store on both dialects, by diffing every table around the call.
+
+    The test above this file's first section makes the point at library level: `run_branch`
+    returns its events and nothing in that suite can write. This one makes it about the command
+    path, where a branch travels through `apply_command`, the writer and the store — which is
+    where a branch could be persisted by accident and where "never written" would stop being
+    structural.
+
+    Every table, taken from `metadata` rather than from a list here, because a list is a thing
+    somebody has to remember to extend. What may move is exactly one `OPTIONS_COMPARED` event and
+    the run row that every append moves; a branch's state, a snapshot of it, or a second event is
+    a difference this reads off directly.
+    """
+    from contracts.grpc import kernel_pb2
+
+    from conftest import stop_at_a_decision, whole_store
+
+    runtime = kernel_on_each_dialect
+    run = stop_at_a_decision(runtime)
+    before = whole_store(runtime.store.engine)
+
+    envelopes = runtime.apply_command(
+        run.run_id,
+        kernel_pb2.COMPARE_OPTIONS,
+        canonical.encode(
+            {
+                "item": "wi_ap_map",
+                "cp_index": 0,
+                "person": "stf_ap",
+                "at_tick": run.state.tick,
+                "in_person": True,
+            }
+        ),
+    )
+    assert len(envelopes) == 1 and envelopes[0].kind is EventKind.OPTIONS_COMPARED
+    record = envelopes[0].decoded_payload()
+    assert len(record["branches"]) > 1, "a comparison of one branch would not exercise this"
+
+    after = whole_store(runtime.store.engine)
+
+    assert set(after) == set(before)
+    for name, rows in after.items():
+        if name in {"event_log", "runs"}:
+            continue
+        assert rows == before[name], f"a comparison wrote to {name}"
+
+    appended = after["event_log"][len(before["event_log"]) :]
+    assert after["event_log"][: len(before["event_log"])] == before["event_log"]
+    assert len(appended) == 1, f"a comparison appended {len(appended)} events"
+    assert appended[0]["kind"] == EventKind.OPTIONS_COMPARED.value
+
+    # The run row moves because every append moves it, and it moves by exactly one sequence —
+    # a branch that had been written would have taken sequences with it.
+    assert len(after["runs"]) == len(before["runs"]) == 1
+    assert after["runs"][0]["head_seq"] == before["runs"][0]["head_seq"] + 1
+
+
+def test_a_refused_comparison_writes_nothing_at_all(kernel_on_each_dialect) -> None:
+    """The other half, and the one a store diff is really for.
+
+    The test above allows one row, so it could not tell "wrote its record" from "wrote its record
+    and something else that happens to look like one". A refusal allows none at all: every table
+    must come back exactly as it was, the run row included, because a refused command never
+    reaches the writer.
+
+    The sweep in `test_every_command_that_can_reject_leaves_the_state_untouched` makes this claim
+    about `state`; this one makes it about the store, which is the half a library-level test
+    cannot see.
+    """
+    from contracts.grpc import kernel_pb2
+
+    from conftest import stop_at_a_decision, whole_store
+
+    runtime = kernel_on_each_dialect
+    run = stop_at_a_decision(runtime)
+    before = whole_store(runtime.store.engine)
+
+    with pytest.raises(sim.CommandRejected, match="stale"):
+        runtime.apply_command(
+            run.run_id,
+            kernel_pb2.COMPARE_OPTIONS,
+            canonical.encode(
+                {
+                    "item": "wi_ap_map",
+                    "cp_index": 0,
+                    # Not the person the item is assigned to, which is the staleness guard.
+                    "person": "stf_buyer",
+                    "at_tick": run.state.tick,
+                    "in_person": True,
+                }
+            ),
+        )
+
+    assert whole_store(runtime.store.engine) == before
