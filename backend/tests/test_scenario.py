@@ -371,7 +371,7 @@ def test_the_nine_checkpoints_are_still_the_run_s_decision_supply() -> None:
 
 
 MINIMAL = """
-schema = 1
+schema = 2
 id = "minimal"
 title = "Two Desks Ltd"
 
@@ -625,7 +625,7 @@ def test_a_scenario_carrying_an_unknown_key_is_refused() -> None:
 @pytest.mark.parametrize(
     ("edit", "expected"),
     [
-        pytest.param(('schema = 1', 'schema = 1\napi_key = "sk-live-nope"'), "api_key", id="top"),
+        pytest.param(('schema = 2', 'schema = 2\napi_key = "sk-live-nope"'), "api_key", id="top"),
         pytest.param(
             ('director = "dir_admin"', 'director = "dir_admin"\nbudget = 4'),
             "budget",
@@ -1243,15 +1243,24 @@ def test_an_id_that_disagrees_with_the_filename_is_refused() -> None:
     assert "loaded as 'default'" in reason
 
 
-def test_a_file_declaring_another_schema_version_is_refused() -> None:
-    reason = refusal(variant(("schema = 1", "schema = 2")))
+@pytest.mark.parametrize("declared", [1, 3])
+def test_a_file_declaring_another_schema_version_is_refused(declared: int) -> None:
+    """Either side of this build's version, and 1 is the one that matters.
+
+    Schema 2 added `[[automation]]` and nothing else, so a version-1 file would load: every key
+    it carries is still a key, and the new table is optional. It is refused anyway, and the
+    reason is the content hash — the declared version is inside it, so accepting the file would
+    build a company whose identity no run recorded and defer the failure to a guard three steps
+    later that can only say "the file has changed".
+    """
+    reason = refusal(variant(("schema = 2", f"schema = {declared}")))
 
     assert f"this build reads scenario schema {sc.SCENARIO_SCHEMA_VERSION}" in reason
 
 
 def test_a_file_that_is_not_toml_is_refused_with_the_parser_s_position() -> None:
     with pytest.raises(sc.ScenarioInvalid) as caught:
-        sc.parse(b'schema = 1\nid = "default"\n[[person\n', name="default")
+        sc.parse(b'schema = 2\nid = "default"\n[[person\n', name="default")
 
     reason = str(caught.value)
     assert "not valid TOML" in reason
@@ -1408,6 +1417,150 @@ def test_a_scenario_with_a_missing_voice_line_is_refused() -> None:
 
     assert "voice has no 'axis' line" in reason
     assert "get nothing back" in reason
+
+
+# =========================================================================
+# The automation catalog: what the report may propose (U21, M57)
+# =========================================================================
+#
+# The catalog is the only place an automation proposal can come from, which makes the loader the
+# guard on the whole of M57: a proposal nobody authored cannot exist, because there is no other
+# door. What is checked here is the two things a reviewer of a scenario pull request cannot see
+# by reading it — that a proposal fits inside its own line's draw, and that the ids it cites are
+# ids this file declares.
+
+
+def test_the_shipped_companies_both_author_a_catalog_the_report_can_draw_from() -> None:
+    for name in ("default", "ashcroft"):
+        company = sc.load(name)
+
+        assert company.automations, f"{name} authors no automation candidates"
+        lines = {department.id for department in company.departments}
+        for candidate in company.automations:
+            assert candidate.line in lines, candidate.id
+            assert candidate.title and candidate.detail, candidate.id
+            assert candidate.removes_draw_hours_per_month > 0, candidate.id
+            for item_id in candidate.motivated_by:
+                assert item_id in company.items_by_id, (candidate.id, item_id)
+
+
+def test_every_shipped_candidate_fits_inside_its_own_lines_draw() -> None:
+    """The check that stops a payback being a saving the company could not pay.
+
+    `capacity.apply_draw_change` clamps a draw at zero, so a candidate larger than its line
+    would have the report state a reduction the run would only partly have taken. Asserted over
+    the shipped files as well as over a variant below, because the two are different failures:
+    the variant proves the loader refuses it, and this proves nobody has shipped one.
+    """
+    for name in ("default", "ashcroft"):
+        company = sc.load(name)
+        by_line = {
+            department.id: department.draw_hours_per_month
+            for department in company.departments
+        }
+        for candidate in company.automations:
+            assert candidate.removes_draw_hours_per_month <= by_line[candidate.line], (
+                f"{name}: {candidate.id} removes more than the {candidate.line} line carries"
+            )
+
+
+def test_a_candidate_bigger_than_its_line_is_refused() -> None:
+    reason = refusal(
+        variant(("removes_draw_hours_per_month = 25", "removes_draw_hours_per_month = 400"))
+    )
+
+    assert "removes 400 hours a month from the 'sales' line" in reason
+    assert "carries a draw of 100" in reason
+    assert "could never pay" in reason
+
+
+def test_a_candidate_citing_work_this_file_does_not_declare_is_refused() -> None:
+    reason = refusal(
+        variant(('motivated_by = ["wi_dup_entry", "wi_ai_rank"]', 'motivated_by = ["wi_ghost"]'))
+    )
+
+    assert "motivated_by names 'wi_ghost'" in reason
+    assert "not a work item in this file" in reason
+
+
+def test_two_candidates_with_one_id_are_refused() -> None:
+    reason = refusal(variant(('id = "au_month_end_close"', 'id = "au_invoice_matching"')))
+
+    assert "'au_invoice_matching' is already declared" in reason
+
+
+def test_a_candidate_naming_a_fifth_line_is_refused() -> None:
+    reason = refusal(variant(('line = "sales"', 'line = "marketing"')))
+
+    assert "which is not one of the four reporting lines" in reason
+
+
+def test_an_unknown_key_in_a_candidate_is_refused_like_every_other_table() -> None:
+    reason = refusal(
+        variant(('id = "au_invoice_matching"', 'id = "au_invoice_matching"\npayback_days = 30'))
+    )
+
+    assert "'payback_days' is not a key this format has" in reason
+
+
+def test_a_candidate_that_removes_nothing_is_refused() -> None:
+    """A proposal worth zero is not a proposal, and rendering one would say so at length."""
+    reason = refusal(
+        variant(("removes_draw_hours_per_month = 25", "removes_draw_hours_per_month = 0"))
+    )
+
+    assert "removes_draw_hours_per_month is 0, outside 1.." in reason
+
+
+def test_a_company_with_no_catalog_loads_and_proposes_nothing() -> None:
+    """Optional, and the empty case is a company nothing prescriptive is said about."""
+    company = sc.parse(MINIMAL.encode(), name="minimal")
+
+    assert company.automations == ()
+
+
+def test_the_catalog_is_inside_the_content_hash() -> None:
+    """R7 covers it, so editing what a company may propose ends the runs written against it.
+
+    It has to: the report reloads the scenario through the fold's own guard, so a catalog that
+    could be edited under a live run would let an exported document cite a proposal the run it
+    describes never had available.
+    """
+    before = sc.parse(SHIPPED.encode(), name="default").content_hash
+    after = sc.parse(
+        variant(("removes_draw_hours_per_month = 25", "removes_draw_hours_per_month = 24"))
+        .encode(),
+        name="default",
+    ).content_hash
+
+    assert before != after
+
+
+def test_the_catalog_has_exactly_two_readers_and_neither_is_the_kernel() -> None:
+    """The tripwire that keeps a proposal out of the simulation.
+
+    The same statement `test_the_tool_lists_have_exactly_two_readers` makes, and here it carries
+    more weight: the catalog arrived with a schema bump, and the claim that the bump moved the
+    scenario's *identity* and nothing a run does rests on nothing in the kernel reading it. The
+    loader validates it; `report/proposals.py` selects from it. No projection puts it on genesis,
+    no step reads it, and no state hash covers it — which is why `tests/fixtures/golden/genesis.json`
+    moved by exactly one line, the content hash, when this landed.
+    """
+    naming = {
+        path.relative_to(BACKEND).as_posix()
+        for root in (BACKEND / "packages", BACKEND / "services", BACKEND / "scripts")
+        for path in [*root.rglob("*.py"), BACKEND / "single_process.py"]
+        if "__pycache__" not in path.parts
+        # The tokens are an attribute read and the declaration, not the bare word: a module
+        # that *mentions* automation in a docstring has not read the catalog, and a tripwire
+        # that fired on prose would be retuned until it stopped meaning anything.
+        and any(token in path.read_text() for token in (".automations", "class Automation"))
+    }
+
+    assert naming == {
+        "packages/simcore/scenario.py",
+        "services/report/proposals.py",
+    }, f"a third module reads the automation catalog: {sorted(naming)}"
 
 
 # =========================================================================

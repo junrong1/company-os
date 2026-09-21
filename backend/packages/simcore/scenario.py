@@ -70,7 +70,14 @@ from simcore.world import ROOM_PLAN
 
 #: The format version a file declares. Bumped when the *format* changes in a way an existing
 #: file would not survive; a file declaring a different one is refused rather than guessed at.
-SCENARIO_SCHEMA_VERSION = 1
+#:
+#: **2 adds `[[automation]]`** (U21), and the bump is the discipline the closed key sets below
+#: state rather than a claim that a version-1 file would break. It would not break — the table is
+#: optional and a file without one loads — but the header is inside the content hash, so every
+#: existing run's recorded identity moves either way. A file that says `schema = 1` is therefore
+#: refused with one sentence naming the version, instead of loading and hashing to something its
+#: run will not recognise three guards later.
+SCENARIO_SCHEMA_VERSION = 2
 
 #: The canonicalisation version the content hash is computed under (R7).
 #:
@@ -154,6 +161,11 @@ MAX_PEOPLE = 40
 MAX_ITEMS = 40
 MAX_CHECKPOINTS_PER_ITEM = 8
 
+#: How many automation proposals a company may author. Twelve, which is three per reporting line
+#: and already more than a report a person reads can carry — the catalog is the *supply* a run's
+#: own evidence selects from, not a list the report prints.
+MAX_AUTOMATIONS = 12
+
 #: Must equal `step.MAX_BRANCHES_PER_COMPARISON`, and a test asserts it does. A comparison
 #: runs one branch per option and refuses a checkpoint offering more, so a scenario authoring
 #: a wider checkpoint would ship a decision the comparison surface cannot open. Refusing at
@@ -223,6 +235,34 @@ class Department:
 
 
 @dataclass(frozen=True, slots=True)
+class Automation:
+    """One thing this company could automate, and what automating it would take off the line.
+
+    **The catalog is authored and the report selects from it; nothing generates one** (M57). A
+    proposal is the report's one prescriptive claim, and a model inventing a payback for a company
+    that does not exist is the failure that would make the whole artifact indefensible — so what a
+    file supplies is the candidate and its size, and what decides whether it is *proposed* is the
+    fold: a line the run never overloaded gets no proposal, however good the candidate.
+
+    `removes_draw_hours_per_month` is the draw this would take off `line`, in the same
+    hours-per-month unit a department authors its draw in and the Manual work metric displays. It
+    is the only figure authored here, and everything the report states in money or in days is
+    computed from it by the arithmetic the simulation already charges (R60) — so a proposal cannot
+    claim a payback the run would not have paid.
+
+    `motivated_by` names the work items that would deliver it, which is how a proposal reaches the
+    events it cites: the report resolves those ids against decisions in the log.
+    """
+
+    id: str
+    line: str
+    title: str
+    detail: str
+    removes_draw_hours_per_month: int
+    motivated_by: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class Person:
     """One person on the roster, as a scenario authors them.
 
@@ -280,6 +320,10 @@ class Scenario:
     people: tuple[Person, ...]
     items: tuple[work.ItemSpec, ...]
     seeded: tuple[work.SeededAssignment, ...]
+    #: What this company could automate, in authored order (M57). Empty is a company that
+    #: proposes nothing, which is a scenario the report has nothing prescriptive to say about
+    #: rather than a scenario that is missing something.
+    automations: tuple[Automation, ...]
     #: Person id -> record, in roster order.
     people_by_id: dict[str, Person]
     #: Item id -> spec, in authored order.
@@ -809,7 +853,17 @@ def _check_missing(
 # scenario means, so it is a deliberate edit rather than a consequence of writing one.
 
 _SCENARIO_KEYS = frozenset(
-    {"schema", "id", "title", "summary", "department", "person", "item", "seeded_assignment"}
+    {
+        "schema",
+        "id",
+        "title",
+        "summary",
+        "department",
+        "person",
+        "item",
+        "seeded_assignment",
+        "automation",
+    }
 )
 _SCENARIO_REQUIRED = frozenset({"schema", "id", "title", "department", "person", "item"})
 
@@ -885,6 +939,13 @@ _REQUIRES_KEYS = frozenset({"visibility", "items"})
 _CHECKPOINT_KEYS = frozenset({"at_percent", "kind", "label", "prompt", "tacit", "option"})
 _OPTION_KEYS = frozenset({"label", "detail", "note", "effect"})
 _SEEDED_KEYS = frozenset({"item", "person", "done_percent"})
+
+_AUTOMATION_KEYS = frozenset(
+    {"id", "line", "title", "detail", "removes_draw_hours_per_month", "motivated_by"}
+)
+_AUTOMATION_REQUIRED = frozenset(
+    {"id", "line", "title", "detail", "removes_draw_hours_per_month"}
+)
 
 
 def _check_effect(
@@ -1553,6 +1614,92 @@ def _read_seeded(failures: _Failures, data: dict[str, Any]) -> list[dict[str, An
     return read
 
 
+def _read_automations(failures: _Failures, data: dict[str, Any]) -> list[dict[str, Any]]:
+    """What this company could automate (M57).
+
+    Optional, and the empty case is a company the report prescribes nothing for rather than a
+    file that forgot something: a scenario with no candidates authored has none to select from,
+    and the report saying nothing is the honest outcome.
+    """
+    raw = data.get("automation", [])
+    if not isinstance(raw, list):
+        failures.add("automation has to be a list of [[automation]] tables")
+        return []
+
+    if len(raw) > MAX_AUTOMATIONS:
+        failures.add(
+            f"the file declares {len(raw)} automation proposals and the limit is "
+            f"{MAX_AUTOMATIONS}. The catalog is what a run's own evidence selects from, not a "
+            "list the report prints.",
+            steps=(("automation", MAX_AUTOMATIONS),),
+        )
+
+    read: list[dict[str, Any]] = []
+    for index, entry in enumerate(raw):
+        steps = (("automation", index),)
+        if not isinstance(entry, dict):
+            failures.add(f"automation[{index}] is not a table", steps=steps)
+            continue
+
+        _check_keys(failures, entry, _AUTOMATION_KEYS, steps=steps)
+        _check_missing(failures, entry, _AUTOMATION_REQUIRED, steps=steps)
+
+        proposal = _check_id(failures, entry.get("id", ""), steps=steps, key="id")
+        label = f"{proposal!r}" if proposal else ""
+        line = _check_id(failures, entry.get("line", ""), steps=steps, key="line", label=label)
+        if line and line not in REPORTING_LINES:
+            failures.add(
+                f"automation[{index}]: line is {line!r}, which is not one of the four reporting "
+                f"lines. They are fixed: {', '.join(REPORTING_LINES)}.",
+                steps=steps,
+                key="line",
+            )
+
+        read.append(
+            {
+                "id": proposal,
+                "line": line,
+                "title": _check_text(
+                    failures,
+                    entry.get("title", ""),
+                    limit=MAX_TITLE_CHARS,
+                    steps=steps,
+                    key="title",
+                    label=label,
+                ),
+                "detail": _check_text(
+                    failures,
+                    entry.get("detail", ""),
+                    limit=MAX_PROSE_CHARS,
+                    steps=steps,
+                    key="detail",
+                    label=label,
+                ),
+                # Low bound of one: a proposal that removes no draw removes no burn either, so
+                # its payback would be zero and the report would be prescribing nothing at
+                # length. Refused at load, where it is an authoring mistake, rather than
+                # rendered as a proposal worth no days.
+                "removes_draw_hours_per_month": _check_int(
+                    failures,
+                    entry.get("removes_draw_hours_per_month", 0),
+                    low=1,
+                    high=MAX_DRAW_HOURS_PER_MONTH,
+                    steps=steps,
+                    key="removes_draw_hours_per_month",
+                    label=label,
+                ),
+                "motivated_by": _check_id_list(
+                    failures,
+                    entry.get("motivated_by", []),
+                    steps=steps,
+                    key="motivated_by",
+                    label=label,
+                ),
+            }
+        )
+    return read
+
+
 # =========================================================================
 # Phase two: does it describe one company?
 # =========================================================================
@@ -1568,6 +1715,7 @@ def _cross_check(
     people: list[dict[str, Any]],
     items: list[dict[str, Any]],
     seeded: list[dict[str, Any]],
+    automations: list[dict[str, Any]],
 ) -> None:
     person_ids = {person["id"] for person in people}
     item_ids = {item["id"] for item in items}
@@ -1577,6 +1725,64 @@ def _cross_check(
     _cross_check_people(failures, people, directors)
     _cross_check_items(failures, items, person_ids, item_ids)
     _cross_check_seeded(failures, seeded, person_ids, item_ids, items)
+    _cross_check_automations(failures, automations, departments, item_ids)
+
+
+def _cross_check_automations(
+    failures: _Failures,
+    automations: list[dict[str, Any]],
+    departments: list[dict[str, Any]],
+    item_ids: set[str],
+) -> None:
+    """A proposal has to be about a line this company staffs, and has to fit inside its draw.
+
+    **The size check is the one that matters.** `capacity.apply_draw_change` clamps a draw at
+    zero, so a proposal authored to remove more hours than its line carries would be a saving the
+    run could never actually pay — and the report computes its money and its runway from exactly
+    that arithmetic. Refusing at load makes it an authoring error a reviewer sees in the diff,
+    rather than a figure in an exported document that nobody can reconcile against the company it
+    describes.
+
+    The draw is read off the department declarations rather than off `draws`, because this runs
+    before anything is built.
+    """
+    draws = {
+        department["id"]: department["draw_hours_per_month"] for department in departments
+    }
+
+    seen: dict[str, int] = {}
+    for index, entry in enumerate(automations):
+        steps = (("automation", index),)
+        proposal = entry["id"]
+
+        if proposal in seen:
+            failures.add(
+                f"automation[{index}]: {proposal!r} is already declared at "
+                f"automation[{seen[proposal]}]. A proposal id is how the report addresses one.",
+                steps=steps,
+                key="id",
+            )
+        seen[proposal] = index
+
+        draw = draws.get(entry["line"])
+        if draw is not None and entry["removes_draw_hours_per_month"] > draw:
+            failures.add(
+                f"automation[{index}]: it removes {entry['removes_draw_hours_per_month']} "
+                f"hours a month from the {entry['line']!r} line, which carries a draw of "
+                f"{draw}. A draw cannot go below zero, so the report would state a saving this "
+                "company could never pay.",
+                steps=steps,
+                key="removes_draw_hours_per_month",
+            )
+
+        for item_id in entry["motivated_by"]:
+            if item_id not in item_ids:
+                failures.add(
+                    f"automation[{index}]: motivated_by names {item_id!r}, which is not a work "
+                    "item in this file. A proposal cites the work that would deliver it.",
+                    steps=steps,
+                    key="motivated_by",
+                )
 
 
 def _cross_check_departments(
@@ -1965,6 +2171,7 @@ def _build(
     people: list[dict[str, Any]],
     items: list[dict[str, Any]],
     seeded: list[dict[str, Any]],
+    automations: list[dict[str, Any]],
     content_hash: str,
 ) -> Scenario:
     """Turn validated data into the frozen records. Reached only once nothing was refused."""
@@ -2065,6 +2272,17 @@ def _build(
             )
             for entry in seeded
         ),
+        automations=tuple(
+            Automation(
+                id=entry["id"],
+                line=entry["line"],
+                title=entry["title"],
+                detail=entry["detail"],
+                removes_draw_hours_per_month=entry["removes_draw_hours_per_month"],
+                motivated_by=entry["motivated_by"],
+            )
+            for entry in automations
+        ),
         people_by_id={person.id: person for person in roster},
         items_by_id={item.id: item for item in catalog},
         lines={director: tuple(members) for director, members in lines.items()},
@@ -2155,16 +2373,24 @@ def parse(raw: bytes, *, name: str, origin: str = "") -> Scenario:
     people = _read_people(failures, data)
     items = _read_items(failures, data)
     seeded = _read_seeded(failures, data)
+    automations = _read_automations(failures, data)
 
     # Cross-references read ids the pass above validated, so the pass above has to have passed.
     failures.refuse(name, more_to_come=True)
-    _cross_check(failures, departments, people, items, seeded)
+    _cross_check(failures, departments, people, items, seeded, automations)
     failures.refuse(name)
 
     form = _canonical_form(
-        header, departments=departments, people=people, items=items, seeded=seeded
+        header,
+        departments=departments,
+        people=people,
+        items=items,
+        seeded=seeded,
+        automations=automations,
     )
-    return _build(header, departments, people, items, seeded, _content_hash(form))
+    return _build(
+        header, departments, people, items, seeded, automations, _content_hash(form)
+    )
 
 
 # =========================================================================

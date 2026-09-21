@@ -123,14 +123,20 @@ per run and starts anyway. One unreplayable run does not stop the clock for the 
 Top level:
 
 ```toml
-schema  = 1                    # the format version this file is written against
+schema  = 2                    # the format version this file is written against
 id      = "default"            # must match the filename without .toml
 title   = "Northwind Components"
 summary = "..."                # optional, one line, shown where a scenario is chosen
 ```
 
 Then four `[[department]]`, at least four `[[person]]`, at least one `[[item]]`, and any number of
-`[[seeded_assignment]]`.
+`[[seeded_assignment]]` and `[[automation]]`.
+
+**The version is 2, and a file saying 1 is refused.** Schema 2 added `[[automation]]`. A
+version-1 file would in fact load — the table is optional — and it is refused anyway, because the
+version is inside the content hash: loading it would produce a company whose identity no run
+recorded, and the mismatch would surface three guards later as "the file has changed" rather than
+as one sentence naming the version. Bump the number and the file is valid again.
 
 ### `[[department]]` — one per reporting line
 
@@ -322,6 +328,51 @@ give them. Genesis carries no movement event — the fold rebuilds day zero by *
 function rather than by replaying events, so a walk produced there would regenerate nowhere and
 strict replay would diverge on it. That is why the seed is two ids and a percent and not a position.
 
+### `[[automation]]` — what the report may propose
+
+```toml
+[[automation]]
+id = "au_duplicate_entry"
+line = "sales"                 # one of sales, admin, support, hr
+title = "One record for an order, not two"
+detail = "The same figures are typed into the sales spreadsheet and again into the order system."
+removes_draw_hours_per_month = 25
+motivated_by = ["wi_dup_entry", "wi_ai_rank"]   # optional, work items in this file
+```
+
+Optional, and a company with none simply has nothing prescriptive said about it.
+
+The Universe report ends by saying what is worth automating, and **this table is the only place a
+proposal can come from**. Nothing generates one. What a run decides is whether an authored
+candidate is *proposed at all*: the report proposes one only where its own fold found `line` over
+its ceiling for three consecutive sim-days or more, in at least one timeline of the tree. A
+company nobody overloaded gets no proposals rather than invented ones, which is what makes the
+ones it does get worth reading.
+
+`removes_draw_hours_per_month` is the only figure you author here, and everything the report
+states in money or in days is computed from it — the draw comes off the line, a draw is staffed
+work carried into the daily burn, and so the burn falls and the runway lengthens by exactly what
+the day boundary would have charged. Nothing is stored: a payback is recomputed at the day
+boundary it cites, so it cannot drift from the run it describes.
+
+Two rules the loader enforces:
+
+- **It cannot remove more than its line carries.** A draw is clamped at zero, so a proposal
+  larger than its own `draw_hours_per_month` would state a saving the company could never pay.
+- **`motivated_by` names work items in this file.** They are how a proposal reaches the events it
+  cites: a checkpoint the CEO settled on one of them is evidence they already called it a
+  problem, and it appears under the proposal with its sequence.
+
+Size a candidate against the decisions that would deliver it. In `default.toml` the duplicate
+order entry is worth 25 hours a month because that is what the decision on `wi_dup_entry` takes
+off the Sales line.
+
+When a model is configured, it writes a short paragraph over each proposal — and only over the
+figures above. Every sentence must cite one of the proposal's own events, and every number it
+writes in digits must be one the report computed; a sentence that invents either is refused
+before anybody reads it, twice, once where the prompt is and once where the document is
+assembled. With no model configured the proposals render complete and say the prose is absent.
+
 ## Tools, MCP servers and skills are description
 
 Nothing in this system executes anything a scenario names. `tools`, `mcp_servers` and `skills`
@@ -371,6 +422,8 @@ The things most often got wrong:
 - **A room holding more people than it has desks.**
 - **Text over its cap, or carrying a control character.**
 - **An `id` that does not match the filename.** The id is what a run records and reloads by.
+- **An `[[automation]]` that removes more draw than its line carries**, or one naming a work item
+  the file does not declare.
 
 ## Adding a scenario
 

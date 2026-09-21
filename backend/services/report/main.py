@@ -20,6 +20,7 @@ process, would have handed the fold the owner's connection and quietly retired t
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from fastapi import HTTPException, Query
@@ -34,6 +35,26 @@ from servicekit.status import Dependency
 SERVICE = "report"
 
 log = svclog.get_logger(SERVICE)
+
+#: Writes the prose over the report's automation proposals, or is absent (U21, M58).
+#:
+#: Takes a run id and the packets `report.proposals` built, and answers one reply per packet.
+#: A type alias rather than a client, for the reason the gateway's spend reader is one: the
+#: producer lives in the agents service, this service may not import it (R4), and the launcher
+#: hands the callable across (R28). This service therefore cannot ask a provider for anything
+#: the report did not first compute and hand it.
+Prescriber = Callable[[str, list[dict[str, Any]]], Sequence[Mapping[str, Any]]]
+
+#: Absent by default, and absent is a working state rather than a fault. With no prescriber the
+#: proposals render with their figures and say their prose is absent — which is also exactly
+#: what a keyless run shows for its whole life (M20's rule, applied to the report).
+_prescriber: Prescriber | None = None
+
+
+def use_prescriber(writer: Prescriber | None) -> None:
+    """Install the producer that writes prose over the proposals. Optional."""
+    global _prescriber
+    _prescriber = writer
 
 
 def reader_url() -> str:
@@ -191,6 +212,12 @@ def universe_report(run_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"no run {run_id}")
 
     report = universes.build(tree, logs)
+
+    # After the engine is disposed, and that ordering is the point rather than the sequence it
+    # happens to fall in: with a bench configured this makes a provider call per proposal, and
+    # holding a store connection open across a 30-second network timeout would be one of this
+    # process's connections spent waiting on somebody else's server.
+    _write_the_prose(report)
     log.info(
         "universe report built",
         extra={
@@ -198,10 +225,58 @@ def universe_report(run_id: str) -> dict[str, Any]:
             "root": report.root_run_id,
             "timelines": len(report.timelines),
             "claims": len(report.claims),
+            "proposals": [proposal.id for proposal in report.proposals],
             "refused": [entry.run_id for entry in report.timelines if entry.refusal],
         },
     )
     return report.to_dict()
+
+
+def _write_the_prose(report: Any) -> None:
+    """Ask the installed producer for prose over the proposals, and guard what comes back.
+
+    **After the figures, never before, and never instead of them.** The document is complete at
+    the point this is called: every proposal already carries its evidence and its payback, and
+    what this adds is sentences over them. So every failure here costs prose and nothing else —
+    no prescriber installed, a provider that could not be reached, a reply this repository will
+    not show — and the report is the same document minus a paragraph.
+
+    Keyed by the *root*, because the artifact is identified by its lineage root: two players in
+    two branches export the same document, and prose addressed by where somebody was standing
+    would make that false the moment it was cached.
+    """
+    from report import proposals as prescribing
+
+    if _prescriber is None or not report.proposals:
+        return
+
+    packets = [proposal.to_packet() for proposal in report.proposals]
+    try:
+        written = _prescriber(report.root_run_id, packets)
+    except Exception as exc:  # noqa: BLE001 - the prose is optional; the figures are not
+        log.warning(
+            "the proposals' prose could not be produced; their figures stand alone",
+            extra={"run": report.root_run_id, "error": str(exc)},
+        )
+        return
+
+    prescribing.attach(report.proposals, written)
+    log.info(
+        "the prescription's prose was read back",
+        extra={
+            "run": report.root_run_id,
+            "written": [
+                proposal.id
+                for proposal in report.proposals
+                if proposal.note.status == prescribing.WRITTEN
+            ],
+            "refused": [
+                f"{proposal.id}: {proposal.note.reason}"
+                for proposal in report.proposals
+                if proposal.note.status == prescribing.REFUSED
+            ],
+        },
+    )
 
 
 @app.get("/runs/{run_id}/diff/{against_run_id}")

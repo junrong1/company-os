@@ -425,6 +425,7 @@ def compose() -> tuple[KernelRuntime, InProcessKernel]:
     _publish_director_memory(gateway_main, runtime)
     _wire_the_bench(runtime)
     mount_surfaces(gateway_main.app)
+    _wire_the_prescription()
 
     # After the surfaces are imported and before anything logs. Importing a service app
     # calls `svclog.configure` with that service's name, so claiming the label any earlier
@@ -558,6 +559,31 @@ def _wire_the_bench(runtime: KernelRuntime) -> None:
     from agents import main as agents_main
 
     runtime.use_statement_producer(agents_main.produce_statement)
+
+
+def _wire_the_prescription() -> None:
+    """Point the report's prose seam at the agents surface's producer (U21).
+
+    The fifth of these, and the same shape as the other four for the same reason. The report
+    selects an automation proposal from the scenario's authored catalog and computes its payback
+    from the fold; the sentences over those figures are a provider call, and a provider call
+    lives in the agents service. Neither service may import the other (R4), so the launcher
+    hands one a callable and neither learns the other exists.
+
+    **The direction is what makes M57 structural.** What crosses is a *packet* the report built —
+    the proposal, its evidence and its figures — and what comes back is prose matched to a
+    proposal id the report already made. There is no call the agents service can make that adds
+    a proposal, because it is never given the catalog, the fold or the store read that would let
+    it find one.
+
+    Ordering is not load-bearing here — `report.main` is a module singleton, so the seam holds
+    whichever side of `mount_surfaces` this runs — and it sits after the mount so the install is
+    beside the thing that publishes the route it feeds.
+    """
+    from agents import main as agents_main
+    from report import main as report_main
+
+    report_main.use_prescriber(agents_main.write_prescription)
 
 
 def mount_surfaces(app: Any) -> list[Any]:

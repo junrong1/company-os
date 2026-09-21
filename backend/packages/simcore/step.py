@@ -1809,16 +1809,34 @@ def _consume_baseline_draw(state: State) -> None:
         cap.consume(department, per_tick)
 
 
+def draw_cost_of(monthly_hours: int) -> int:
+    """What a day of a recurring draw costs, for that many authored monthly hours (R60).
+
+    Split out of `day_cost_terms` because U21 needs the *counterfactual*: an automation proposal
+    states what the burn would be with some of the draw gone, and the only honest way to say that
+    is to run the company's own arithmetic over a smaller number. A report that multiplied out
+    its own copy would be a third opinion about what a draw costs — and the first tuning pass to
+    move `draw_cost_per_monthly_hour` would leave the prescription quoting a saving the day
+    boundary never paid.
+
+    Integer division at the end, not per department, which is why the report has to call this on
+    a *total* rather than on the hours it wants to remove: the saving is the difference between
+    two totals, and two roundings do not subtract to one.
+    """
+    return monthly_hours * TUNING["draw_cost_per_monthly_hour"] // 100
+
+
 def day_cost_terms(state: State) -> tuple[int, int, int]:
     """What a day costs this company: fixed, the recurring draw, and salaries.
 
-    Named and public because two callers need it and a second implementation would drift. The
+    Named and public because three callers need it and a second implementation would drift. The
     day boundary applies it; a comparison branch divides cash by it to state a runway at its
-    stopping tick, and a runway computed from a second copy of this arithmetic would disagree
-    with the burn the same branch actually paid.
+    stopping tick, and the Universe report divides by it twice to state what an automation would
+    give back. A runway computed from a second copy of this arithmetic would disagree with the
+    burn the same branch actually paid.
     """
     fixed = TUNING["fixed_cost_per_day"]
-    draw_cost = cap.manual_hours(state.capacity) * TUNING["draw_cost_per_monthly_hour"] // 100
+    draw_cost = draw_cost_of(cap.manual_hours(state.capacity))
     return fixed, draw_cost, hiring.salary_total(state.hires)
 
 

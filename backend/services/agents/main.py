@@ -827,6 +827,58 @@ def read_memory(
 
 
 # =========================================================================
+# The report's prose (U21)
+# =========================================================================
+
+
+def write_prescription(run_id: str, packets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Prose over the report's automation proposals, one reply per packet (M58).
+
+    **It cannot invent a proposal, and this signature is why.** `packets` come from
+    `report.proposals`, which selected them from the scenario's authored catalog over its own
+    fold; this service is handed the finished figures and asked for sentences. There is no route
+    for it on the agents surface and no reader of the store here that could assemble one — the
+    launcher hands the report this callable, exactly as it hands the gateway a spend reader and
+    the kernel a statement producer, and neither service learns the other exists.
+
+    One call per proposal rather than one for all of them, and the reason is the guard: a reply
+    is refused against *that proposal's* citable and resolvable sets, so a single answer covering
+    four proposals would either be accepted whole with one paragraph's figures checked against
+    another's, or refused whole because one sentence was wrong.
+
+    A reply is always returned, one per packet, so the report can tell "there is no bench" from
+    "the bench answered and was not usable" — the same distinction `Scripted reply` keeps for a
+    briefing. An exception here would cost the whole prescription section, so each packet is
+    caught on its own: prose is the optional half of a proposal and the figures are not.
+    """
+    from agents.bench import prescription
+
+    if not bench().present:
+        # Asked once for the whole batch: with no provider configured there is nothing to ask,
+        # and building a gateway per packet to be told so four times is work for an answer that
+        # cannot vary.
+        return [{"proposal": str(packet.get("proposal", ""))} for packet in packets]
+
+    written: list[dict[str, Any]] = []
+    for packet in packets:
+        proposal = str(packet.get("proposal", ""))
+        try:
+            # A *fresh* gateway per call, which is `guards.completed`'s rule rather than a
+            # habit: its `httpx.AsyncClient` is created and closed inside one `asyncio.run`, so
+            # a gateway held across two calls is a client awaited in a loop that has gone.
+            written.append(prescription.write(packet, gateway=bench(), run_id=run_id))
+        except Exception as exc:  # noqa: BLE001 - the prose is optional; the figures are not
+            log.warning(
+                "a proposal's prose could not be produced; its figures stand alone",
+                extra={"run": run_id, "proposal": proposal, "error": str(exc)},
+            )
+            written.append(
+                {"proposal": proposal, "refusal": str(modelgw.FailureKind.GATEWAY_FAULT)}
+            )
+    return written
+
+
+# =========================================================================
 # What the surface reads
 # =========================================================================
 

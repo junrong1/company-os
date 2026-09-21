@@ -38,6 +38,13 @@ rather than folding from zero; the measurement and the reason are in its section
 per timeline and carries the refusal where that timeline's figures would have been, for the same
 reason the plan gives for keeping the report off the bench: one broken input must not take the
 whole chain and everything downstream of it.
+
+**And then it prescribes, from an authored catalog over folded evidence** (M57, M58). The
+selection, the arithmetic and the guard on what a model may write over them are in
+`report.proposals`; what is here is the edge: this module hands that one the overload it folded
+and the economy each timeline reached, and carries the proposals back on the payload. The
+direction is fixed — `proposals` imports nothing from here — so the module that decides what may
+be proposed cannot reach the module that assembles the document around it.
 """
 
 from __future__ import annotations
@@ -48,6 +55,7 @@ from typing import Any
 
 from logschema import lineage
 from report import fold as reporting
+from report import proposals as prescribing
 from simcore import capacity as cap
 from simcore import scenario as scenarios
 from simcore import time as simtime
@@ -214,6 +222,13 @@ class Walked:
     #: resolves it through `scenario.load_recorded` and passes R7's guard doing so, so a file
     #: edited since the run refuses here exactly as it refuses everywhere else.
     company: scenarios.Scenario | None = None
+    #: What a day cost at the last boundary this timeline reached, which is what a proposal's
+    #: payback is computed against. The *last* one, because a prescription is forward-looking:
+    #: it says what automating would give back from here, so the terms it divides are the ones
+    #: the company is standing on. Captured during the walk rather than by a second fold, and
+    #: kept as terms rather than as a `State` — sixteen folded states held for the life of a
+    #: report is the cost `walk_days` exists to avoid.
+    economy: prescribing.Economy | None = None
 
 
 def walk(run_id: str, timeline: reporting.TimelineLog) -> Walked:
@@ -249,8 +264,13 @@ def walk(run_id: str, timeline: reporting.TimelineLog) -> Walked:
             )
 
         if folded.at_seq == 0:
-            # No event at this boundary to cite. See `LoadReading`.
+            # No event at this boundary to cite. See `LoadReading`. A payback is a claim like
+            # any other, so it is measured only where the log can address the measurement.
             continue
+
+        walked.economy = prescribing.economy_at(
+            run_id, folded.day, folded.at_tick, folded.at_seq, folded.state
+        )
 
         for director, department in folded.state.capacity.items():
             walked.readings.append(
@@ -330,6 +350,10 @@ class TimelineReport:
     report: reporting.Report | None = None
     spans: list[OverloadSpan] = field(default_factory=list)
     readings: list[LoadReading] = field(default_factory=list)
+    #: The terms at this timeline's last cited day boundary. Read by `proposals.propose` and
+    #: deliberately absent from `to_dict`: it is an input to a payback rather than a figure the
+    #: report states, and every number it produces is on the proposal, addressed.
+    economy: prescribing.Economy | None = None
     #: Sequences the log should hold and does not, and day boundaries whose fold did not
     #: reproduce the hash the kernel wrote there. Both empty is what a healthy timeline looks
     #: like; either non-empty is stated beside the figures rather than instead of them, because
@@ -378,6 +402,10 @@ class Universe:
     timelines: list[TimelineReport] = field(default_factory=list)
     #: M56, across the tree. Per line, never summed over timelines — see `LineOverload`.
     overload: list[LineOverload] = field(default_factory=list)
+    #: M57. Authored candidates this Universe's own fold is the argument for, in the order the
+    #: scenario declares them. Empty is a company whose lines nobody overloaded for long enough,
+    #: which is a report with nothing to prescribe rather than one that failed to prescribe.
+    proposals: list[prescribing.Proposal] = field(default_factory=list)
     #: Every figure in the report, each addressed by run and sequence together (M55).
     claims: list[reporting.Claim] = field(default_factory=list)
 
@@ -409,11 +437,34 @@ class Universe:
             "load_scale": self.load_scale,
             "timelines": [timeline.to_dict() for timeline in self.timelines],
             "overload": [line.to_dict() for line in self.overload],
+            "proposals": [proposal.to_dict() for proposal in self.proposals],
+            "prescription_rule": self.prescription_rule,
             "claims": [claim.to_dict() for claim in self.claims],
+        }
+
+    @property
+    def prescription_rule(self) -> dict[str, Any]:
+        """When this report is willing to propose something, said rather than implied (M57).
+
+        On the payload for the same reason `load_scale` is: a reader who disagrees with the
+        threshold can see it, count the spans themselves and decide the report is wrong — which
+        is a different and much better position than wondering where the proposals came from.
+        """
+        return {
+            "min_overload_days": prescribing.MIN_OVERLOAD_DAYS,
+            "says": (
+                "a candidate is proposed only where this Universe's own fold found its line "
+                f"over the ceiling for {prescribing.MIN_OVERLOAD_DAYS} consecutive sim-days or "
+                "more, in at least one timeline"
+            ),
+            "basis": AUTHORED,
         }
 
     def timeline_for(self, run_id: str) -> TimelineReport | None:
         return next((entry for entry in self.timelines if entry.run_id == run_id), None)
+
+    def proposal_for(self, proposal_id: str) -> prescribing.Proposal | None:
+        return next((entry for entry in self.proposals if entry.id == proposal_id), None)
 
 
 def build(
@@ -479,6 +530,7 @@ def build(
         entry.readings = walked.readings
         entry.diverged_days = walked.diverged
         entry.spans = spans_of(walked.readings)
+        entry.economy = walked.economy
 
         if company is None and walked.company is not None:
             company = walked.company
@@ -493,7 +545,8 @@ def build(
             universe.invented_company = invented_company(company)
 
     universe.overload = _overload(universe.timelines, company)
-    universe.claims = _claims(universe.timelines)
+    universe.proposals = prescribing.propose(company, universe.overload, universe.timelines)
+    universe.claims = _claims(universe.timelines) + prescribing.claims_of(universe.proposals)
     return universe
 
 

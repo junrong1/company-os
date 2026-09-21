@@ -9,7 +9,7 @@
 # recurring, and the decisions on offer trade a relationship against an hour. Same eight
 # rooms, same four lines, a company that plays differently inside them.
 
-schema = 1
+schema = 2
 id = "ashcroft"
 title = "Ashcroft Press"
 summary = "An independent publisher of nine: two seasons a year, a returns pile nobody owns, and royalty statements still typed by hand."
@@ -476,3 +476,44 @@ effect = { cash = 20, leadTime = -3, draw = -12, morale = 2 }
 item = "wk_freelance"
 person = "dir_people"
 done_percent = 40
+
+# --- what is worth automating -------------------------------------------------
+#
+# Four candidates against four lines, and People's is here because People is the line
+# this company is authored over its ceiling on: a press of nine carries the freelancer
+# paperwork twice a season and nobody has ever been given the hours to stop it.
+#
+# Same rule as Northwind's: each one sits inside its own line's draw, and the report
+# states it only where the fold found the line over its ceiling.
+
+[[automation]]
+id = "au_freelancer_pack"
+line = "hr"
+title = "Onboard a freelancer from one pack"
+detail = "Every freelancer is set up from scratch — contract, rate, tax form, system access — twice a season, by the one person who knows the order."
+removes_draw_hours_per_month = 18
+motivated_by = ["wk_freelance"]
+
+[[automation]]
+id = "au_royalty_statements"
+line = "admin"
+title = "Royalty statements off the sales ledger"
+detail = "Statements are retyped out of the sales ledger every half year, and a typo in one is found by the author rather than by the press."
+removes_draw_hours_per_month = 40
+motivated_by = ["wk_royalties"]
+
+[[automation]]
+id = "au_returns_intake"
+line = "support"
+title = "Take the paper out of returns intake"
+detail = "A returned carton is logged on a paper slip, then keyed again when somebody gets to it, and the pile is the reason nobody knows what is owed."
+removes_draw_hours_per_month = 25
+motivated_by = ["wk_returns"]
+
+[[automation]]
+id = "au_title_metadata"
+line = "sales"
+title = "One place a title's metadata lives"
+detail = "Title data is maintained in the trade spreadsheet, in the catalogue copy and at the distributor, and the three drift apart between seasons."
+removes_draw_hours_per_month = 22
+motivated_by = ["wk_metadata"]

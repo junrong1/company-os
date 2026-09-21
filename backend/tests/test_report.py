@@ -24,6 +24,8 @@ moment a lineage has more than one timeline in it:
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -32,8 +34,10 @@ from contracts import canonical
 from contracts.envelope import Envelope, EventKind
 from logschema import lineage as lin
 from report import fold as reporting
+from report import proposals as prescribing
 from report import universe as universes
 from simcore import capacity as cap
+from simcore import compare as comparing
 from simcore import hashing
 from simcore import scenario as scenarios
 from simcore import step as sim
@@ -445,6 +449,451 @@ def test_the_report_says_plainly_that_the_company_is_invented() -> None:
 
 
 # =========================================================================
+# What is worth automating (M57, M58)
+# =========================================================================
+#
+# The prescription is the report's one prescriptive claim and the easiest thing in this product
+# to make indefensible: "ask the model what to automate" satisfies a reading of M57, produces
+# something that reads well, and states a payback for a company that does not exist. So what is
+# pinned here is the three refusals that make it defensible instead —
+#
+# * **a candidate nobody authored cannot be proposed**, because the only door is the scenario's
+#   `[[automation]]` table and `test_scenario.py` proves nothing else reads it;
+# * **a candidate nobody's run overloaded is not proposed either**, however good it is;
+# * **no figure comes from a model**, which is asserted by refusing one that does.
+
+
+def _settled_overloaded(
+    run_id: str = "run-over-settled", *, settle_on_day: int = 4, days: int = 7
+) -> Recorder:
+    """The overloaded company, with the decision on its automation's own work item taken late.
+
+    `wk_freelance` is seeded at its own first checkpoint (M6), so it stops for the CEO on the
+    opening frame — and the People line is over its ceiling for as long as it stands there.
+
+    **The CEO is walked past it for three days first, and that is the fixture rather than an
+    accident of it.** Settling on day one relieves the line at tick one: the option takes 18
+    hours a month off the draw, the item finishes, and the report correctly proposes nothing,
+    because there is nothing left to propose. Which is the product working — and is why a test
+    about *citing* a decision has to let the pressure build before the decision is taken.
+    """
+    recorder = Recorder(run_id, scenario=scenarios.load(OVERLOADED))
+    recorder.advance_until(lambda s: s.tick >= simtime.tick_of_day_start(settle_on_day))
+    assert recorder.state.items["wk_freelance"].status == "blocked"
+    recorder.record(
+        sim.resolve_checkpoint(recorder.state, "wk_freelance", 0, 0, in_person=True)
+    )
+    recorder.advance_until(lambda s: s.tick >= simtime.tick_of_day_start(days))
+    return recorder
+
+
+def _busy_for_a_day(run_id: str = "run-busy", days: int = 9) -> Recorder:
+    """The shipped company with one line briefly over its ceiling and then not.
+
+    A real over-ceiling reading on a real run, lasting one day because the item burns down —
+    which is the shape `MIN_OVERLOAD_DAYS` exists to distinguish from a standing problem.
+    """
+    recorder = Recorder(run_id)
+    recorder.record(sim.assign_direct(recorder.state, "wi_faq", "stf_cs"))
+    recorder.advance_until(lambda s: s.tick >= simtime.tick_of_day_start(days))
+    return recorder
+
+
+def test_a_line_over_its_ceiling_for_long_enough_is_proposed_with_events_and_a_payback() -> None:
+    """M57, on the company authored over its ceiling.
+
+    Every clause of the requirement, checked separately: the proposal comes from the catalog,
+    it cites events, and it states a payback.
+    """
+    universe = _built(_overloaded())
+    company = scenarios.load(OVERLOADED)
+
+    assert universe.proposals, "a line over its ceiling for six days proposed nothing"
+    authored = {candidate.id for candidate in company.automations}
+    for proposal in universe.proposals:
+        assert proposal.id in authored, "a proposal that is not in the catalog"
+        assert proposal.evidence, proposal.id
+        assert proposal.paybacks, proposal.id
+        for payback in proposal.paybacks:
+            assert payback.daily_saving > 0, proposal.id
+
+    proposed = universe.proposal_for("au_freelancer_pack")
+    assert proposed is not None and proposed.line == OVERLOADED_LINE
+    assert proposed.everywhere, "one timeline, over the whole way; nothing escaped it"
+
+
+def test_a_run_with_no_overload_proposes_nothing_rather_than_something() -> None:
+    """The refusal that makes the other proposals worth reading.
+
+    The shipped company idles under its ceiling, and it authors four candidates. None of them
+    is proposed, and the payload says on what condition one would be.
+    """
+    universe = _built(played("run-plain", 0, 12))
+
+    assert scenarios.load_default().automations, "the fixture proves nothing without a catalog"
+    assert universe.proposals == []
+    assert universe.to_dict()["proposals"] == []
+    assert universe.to_dict()["prescription_rule"]["min_overload_days"] == (
+        prescribing.MIN_OVERLOAD_DAYS
+    )
+
+
+def test_a_line_over_for_one_day_is_a_busy_day_and_not_a_proposal() -> None:
+    """The threshold bites on a real reading rather than on an absent one.
+
+    Customer Support really does go over — the span is in the report — and no proposal is made,
+    because one day over is what a busy Tuesday looks like and the prescription is about the
+    standing problem.
+    """
+    universe = _built(_busy_for_a_day())
+
+    spans = [span for entry in universe.timelines for span in entry.spans]
+    assert spans and all(span.days < prescribing.MIN_OVERLOAD_DAYS for span in spans)
+    assert [line.line for line in universe.overload if line.timelines_over] == ["support"]
+    assert universe.proposals == []
+
+
+def test_a_payback_is_the_burn_the_log_charged_and_the_draw_taken_off_it() -> None:
+    """M57's payback clause, recomputed against the kernel rather than against this module.
+
+    Two independent facts, and the first is the one that makes the second mean anything:
+
+    * `daily_burn_before` is not this report's opinion of the burn — it is byte-equal to the
+      `total_cost` the kernel charged at the boundary the payback cites, read out of the log;
+    * the saving is the *difference between two totals* through `step.draw_cost_of`, which is
+      the function the day boundary itself divides by. The draw comes off the line, a draw is
+      staffed work carried into the daily burn (R60), and the runway follows.
+
+    And nothing is stored: the authored record carries hours and no money at all, asserted on
+    its fields so a payback added to the format later fails here rather than quietly becoming
+    a figure nobody recomputes.
+    """
+    recorder = _overloaded()
+    universe = _built(recorder)
+    proposal = universe.proposals[0]
+    payback = proposal.paybacks[0]
+
+    charged = [
+        envelope.decoded_payload()
+        for envelope in recorder.log
+        if envelope.kind is EventKind.DAILY_COSTS_APPLIED
+    ]
+    at_the_boundary = next(
+        entry for entry in charged if entry["tick"] == payback.at_tick
+    )
+    assert payback.daily_burn_before == at_the_boundary["total_cost"]
+
+    removed = payback.removes_hours
+    before = at_the_boundary["draw_cost"]
+    after = sim.draw_cost_of(payback.manual_hours_before - removed)
+    assert payback.daily_burn_after == payback.daily_burn_before - (before - after)
+    assert payback.daily_saving == before - after
+
+    cash = at_the_boundary["metrics"]["cash"]
+    assert payback.runway_days_before == comparing.runway_days(cash, payback.daily_burn_before)
+    assert payback.runway_days_after == comparing.runway_days(cash, payback.daily_burn_after)
+    assert payback.runway_days_gained == (
+        payback.runway_days_after - payback.runway_days_before
+    )
+
+    authored = {field.name for field in dataclasses.fields(scenarios.Automation)}
+    assert authored == {
+        "id",
+        "line",
+        "title",
+        "detail",
+        "removes_draw_hours_per_month",
+        "motivated_by",
+    }, "a scenario now authors a figure the report should be computing"
+
+
+def test_a_payback_answers_the_question_its_own_evidence_raises() -> None:
+    """A proposal is motivated by an overloaded line, so it has to say what it does to the load.
+
+    Two halves, and the first is what makes the second checkable:
+
+    * `load_permille_before` is the kernel's own recorded figure for that line at that boundary
+      — the same number the overload section reports and the HUD showed, not a second reading;
+    * `load_permille_after` is `capacity.load_permille`, the kernel's own function, over the
+      same queue and the same headcount with a smaller draw. Recomputed here independently.
+    """
+    universe = _built(_overloaded())
+    proposal = universe.proposals[0]
+    payback = proposal.paybacks[0]
+    timeline = universe.timelines[0]
+
+    recorded = next(
+        reading
+        for reading in timeline.readings
+        if reading.director == proposal.director and reading.day == payback.day
+    )
+    assert payback.load_permille_before == recorded.load_permille
+
+    economy = timeline.economy
+    assert economy is not None
+    lighter = cap.DepartmentCapacity(
+        director_id=proposal.director,
+        monthly_hours=economy.line_hours[proposal.director] - payback.removes_hours,
+    )
+    assert payback.load_permille_after == cap.load_permille(
+        lighter,
+        economy.line_queued[proposal.director],
+        economy.line_headcount[proposal.director],
+    )
+    assert payback.load_permille_removed == (
+        payback.load_permille_before - payback.load_permille_after
+    )
+
+
+def test_a_proposal_says_whether_it_would_clear_the_ceiling_and_says_no() -> None:
+    """The answer the reader wants, and on both shipped companies it is no.
+
+    Measured across every line of both files: **the recurring draw is at most 222 per mille of a
+    line's capacity** against a ceiling of 1000, so a line is only ever over its ceiling because
+    of queued work, and the largest authored candidate moves the figure by 100. A proposal is
+    therefore worth real money and is not the remedy for the overload that motivated it — which
+    is a true thing about this economy's tuning, and the report says it rather than leaving the
+    reader to infer that two numbers printed together are the same size.
+
+    Pinned so that re-tuning the draws re-opens the question instead of quietly making this
+    sentence false.
+    """
+    universe = _built(_overloaded())
+    payback = universe.proposals[0].paybacks[0]
+
+    assert payback.load_permille_before > cap.LOAD_CEILING
+    assert payback.load_permille_after > cap.LOAD_CEILING
+    assert payback.clears_the_ceiling is False
+    assert payback.daily_saving > 0, "and it is still worth doing"
+
+    for name in ("default", "ashcroft"):
+        company = scenarios.load(name)
+        for department in company.departments:
+            people = len(company.lines.get(department.director, ()))
+            capacity_units = (
+                people * cap.AVAILABLE_SIM_HOURS_PER_DAY * cap.EFFORT_UNITS_PER_SIM_HOUR
+            )
+            draw = cap.daily_draw_units(department.draw_hours_per_month)
+            assert draw * cap.LOAD_SCALE // capacity_units < cap.LOAD_CEILING, (
+                f"{name}/{department.id}: the draw alone now exceeds the ceiling, so an "
+                "automation can clear it and the sentence above needs rewriting"
+            )
+
+
+def test_clearing_the_ceiling_is_reported_when_the_draw_is_what_put_the_line_over() -> None:
+    """The other side of the predicate, on an economy where the draw is the whole problem.
+
+    Constructed rather than played, because no shipped company is tuned this way — which is the
+    point of the test above. What it pins is that `clears_the_ceiling` is a real answer and not
+    a field that is always no.
+    """
+    people = 2
+    capacity_units = people * cap.AVAILABLE_SIM_HOURS_PER_DAY * cap.EFFORT_UNITS_PER_SIM_HOUR
+    over = capacity_units // cap.DRAW_UNITS_PER_MONTHLY_HOUR + 1
+
+    economy = prescribing.Economy(
+        run_id="run-heavy",
+        day=4,
+        at_tick=simtime.tick_of_day_start(4),
+        at_seq=12,
+        cash=1000,
+        fixed_cost=18,
+        salaries=0,
+        manual_hours=over,
+        line_hours={"dir_cs": over},
+        line_load={"dir_cs": cap.LOAD_SCALE + 1},
+        line_queued={"dir_cs": 0},
+        line_headcount={"dir_cs": people},
+    )
+    payback = prescribing.payback_of(
+        economy, director="dir_cs", hours=over // 2, days_over=4
+    )
+
+    assert payback.load_permille_before > cap.LOAD_CEILING
+    assert payback.load_permille_after <= cap.LOAD_CEILING
+    assert payback.clears_the_ceiling is True
+
+
+def test_a_proposal_cites_the_decision_the_ceo_took_on_its_own_work_item() -> None:
+    """The other half of "the events that motivate it".
+
+    A span says the line is under pressure. A settled checkpoint on the work that would relieve
+    it says the CEO has already called it a problem out loud, which is the stronger citation —
+    and it is why the catalog carries `motivated_by` at all.
+    """
+    recorder = _settled_overloaded()
+    universe = _built(recorder)
+    proposal = universe.proposal_for("au_freelancer_pack")
+    assert proposal is not None
+
+    settled = {
+        envelope.seq
+        for envelope in recorder.log
+        if envelope.kind is EventKind.DECISION_RESOLVED
+    }
+    cited = {citation.at_seq for citation in proposal.evidence}
+
+    assert settled and settled <= cited, (settled, cited)
+    assert any("wk_freelance" in citation.note for citation in proposal.evidence)
+
+
+def test_every_figure_the_prescription_states_resolves_to_an_event(lineage) -> None:
+    """M55 over the new section, mechanically and over a real fork on both dialects."""
+    universe = _over(lineage, lineage.root)
+    held = {
+        run_id: {envelope.seq for envelope in lineage.events(run_id)}
+        for run_id in lineage.timelines
+    }
+
+    addressed = [
+        (proposal.id, citation.run_id, citation.at_seq)
+        for proposal in universe.proposals
+        for citation in proposal.evidence
+    ] + [
+        (proposal.id, payback.run_id, payback.at_seq)
+        for proposal in universe.proposals
+        for payback in proposal.paybacks
+    ]
+    for proposal_id, run_id, at_seq in addressed:
+        assert at_seq in held[run_id], (proposal_id, run_id, at_seq)
+
+    labels = {claim.label for claim in universe.claims}
+    for proposal in universe.proposals:
+        assert f"daily burn saved by {proposal.id}" in labels
+
+
+# --- the prose, and what it may not say (M58) ------------------------------
+
+
+def _proposal() -> prescribing.Proposal:
+    """One real proposal, off a real fold, to guard prose against."""
+    universe = _built(_overloaded())
+    assert universe.proposals
+    return universe.proposals[0]
+
+
+def _reply(proposal: prescribing.Proposal, text: str, citations=None) -> list[dict]:
+    cited = sorted(proposal.citable())[:1] if citations is None else citations
+    return [
+        {
+            "proposal": proposal.id,
+            "sentences": [{"text": text, "citations": list(cited)}],
+            "model_identity": "a-model",
+        }
+    ]
+
+
+def test_with_no_model_the_proposals_carry_their_figures_and_say_the_prose_is_absent() -> None:
+    """M20's rule, applied to the report: a run with no bench has no prose, not a canned one."""
+    proposal = _proposal()
+
+    assert proposal.note.status == prescribing.ABSENT
+    assert proposal.note.sentences == ()
+    assert proposal.evidence and proposal.paybacks
+    assert proposal.to_dict()["note"]["written_by"] == ""
+
+
+def test_prose_over_a_cited_figure_is_published_and_says_a_model_wrote_it() -> None:
+    proposal = _proposal()
+    figure = proposal.paybacks[0].daily_saving
+
+    prescribing.attach(
+        [proposal], _reply(proposal, f"Automating this takes {figure} off the daily burn.")
+    )
+
+    assert proposal.note.status == prescribing.WRITTEN, proposal.note.reason
+    assert proposal.note.model_identity == "a-model"
+    assert "a model" in proposal.to_dict()["note"]["written_by"]
+
+
+def test_a_figure_that_came_from_the_model_is_refused() -> None:
+    """M58, and the reason the requirement exists.
+
+    The number below is the daily saving multiplied out over a year — the single most likely
+    sentence a model writes over this evidence, arithmetically correct, and not a figure the
+    fold produced. It is refused, and the refusal names it.
+    """
+    proposal = _proposal()
+    invented = proposal.paybacks[0].daily_saving * 365
+    assert invented not in proposal.resolvable(), "pick a figure the report does not state"
+
+    prescribing.attach(
+        [proposal], _reply(proposal, f"Over a year that is {invented} back in the bank.")
+    )
+
+    assert proposal.note.status == prescribing.REFUSED
+    assert f"figure {invented}" in proposal.note.reason
+    assert "M58" in proposal.note.reason
+
+
+def test_a_sentence_with_nothing_behind_it_is_refused() -> None:
+    proposal = _proposal()
+
+    prescribing.attach([proposal], _reply(proposal, "This is the obvious one to do.", []))
+
+    assert proposal.note.status == prescribing.REFUSED
+    assert "cites nothing" in proposal.note.reason
+
+
+def test_a_citation_outside_this_proposals_evidence_is_refused() -> None:
+    proposal = _proposal()
+    outside = max(proposal.citable()) + 1000
+
+    prescribing.attach([proposal], _reply(proposal, "The line has been over for days.", [outside]))
+
+    assert proposal.note.status == prescribing.REFUSED
+    assert f"sequence {outside}" in proposal.note.reason
+
+
+def test_prose_about_a_proposal_this_report_did_not_make_is_discarded() -> None:
+    """The structural half of M57: a producer cannot add a proposal by naming one."""
+    proposal = _proposal()
+    reply = _reply(proposal, "An excellent idea.")
+    reply[0]["proposal"] = "au_something_nobody_authored"
+
+    prescribing.attach([proposal], reply)
+
+    assert proposal.note.status == prescribing.ABSENT
+
+
+def test_a_producer_that_could_not_answer_names_its_condition_rather_than_going_quiet() -> None:
+    proposal = _proposal()
+
+    prescribing.attach([proposal], [{"proposal": proposal.id, "refusal": "timeout"}])
+
+    assert proposal.note.status == prescribing.REFUSED
+    assert proposal.note.reason == "timeout"
+    assert proposal.evidence and proposal.paybacks, "the figures survive a refused paragraph"
+
+
+def test_the_two_guards_refuse_the_same_reply_for_the_same_reason() -> None:
+    """One rule, two call sites, and the point of the second one is that it agrees.
+
+    The producer's copy is the cheap one and keeps a refused reply out of the response cache;
+    this module's is the auditable one, because it is what reaches the exported file. They are
+    two implementations of a membership test over sets the report supplies, so the thing worth
+    asserting is that they do not disagree.
+    """
+    from agents.bench import prescription
+
+    proposal = _proposal()
+    packet = proposal.to_packet()
+    invented = max(proposal.resolvable()) + 7
+
+    for text, expect in (
+        (f"It saves {invented} a day.", True),
+        (f"It saves {proposal.paybacks[0].daily_saving} a day.", False),
+    ):
+        point = prescription.Point(text=text, citations=tuple(sorted(proposal.citable())[:1]))
+        here = prescribing.refusal_of(
+            [prescribing.Sentence(text=text, citations=point.citations)], proposal
+        )
+        there = prescription.refusal_of((point,), packet)
+
+        assert bool(here) is expect and bool(there) is expect, (text, here, there)
+
+
+# =========================================================================
 # What a tree can hold: an ended timeline, a broken one, a suspect one
 # =========================================================================
 
@@ -629,6 +1078,99 @@ def test_the_universe_answers_on_the_report_surface_the_launcher_mounts(composed
     assert body["claims"]
     for claim in body["claims"]:
         assert claim["run_id"] in reachable
+
+
+def test_the_launcher_is_what_joins_the_report_to_the_bench(composed) -> None:
+    """R28's fifth composed callable, asserted at both ends of it.
+
+    The report may not import the agents service and the agents service holds the only provider
+    call in the tree, so the two are joined by the launcher or not at all. What makes that more
+    than bookkeeping is the direction: what crosses is a packet the report built, and there is
+    no call the agents service can make that would add a proposal — it is never given the
+    catalog, the fold, or the store read that would let it find one.
+    """
+    from agents import main as agents_main
+    from report import main as report_main
+
+    assert report_main._prescriber is agents_main.write_prescription
+
+
+def test_the_prescription_reaches_the_surface_with_its_prose_over_it(composed, api) -> None:
+    """M57 and M58 end to end, through the route the launcher mounts and the seam it installs.
+
+    The producer here stands where the agents service stands in a composed process: the launcher
+    hands the report a callable, the report hands it packets it built, and what comes back is
+    attached by id and guarded before it is rendered. A producer answering about a proposal the
+    report did not make is in the same reply, and is discarded — which is the structural half of
+    "no prescription originates in a model".
+    """
+    from report import main as report_main
+
+    over = "run-over-api"
+    run = composed.create_run(over, SEED, scenario=OVERLOADED)
+    while run.state.tick < simtime.tick_of_day_start(6):
+        composed._advance(run, 1)
+
+    asked: list[dict] = []
+
+    def prescriber(run_id: str, packets: list[dict]) -> list[dict]:
+        asked.append({"run": run_id, "proposals": [entry["proposal"] for entry in packets]})
+        written = [
+            {
+                "proposal": packet["proposal"],
+                "sentences": [
+                    {
+                        "text": (
+                            "The line has been over its ceiling, and this would take "
+                            f"{packet['removes_draw_hours_per_month']} hours a month off it."
+                        ),
+                        "citations": packet["citable"][:1],
+                    }
+                ],
+                "model_identity": "a-model",
+            }
+            for packet in packets
+        ]
+        return written + [{"proposal": "au_nobody_authored_this", "sentences": []}]
+
+    report_main.use_prescriber(prescriber)
+    try:
+        answered = api.get(f"/report/runs/{over}/universe")
+    finally:
+        report_main.use_prescriber(None)
+
+    assert answered.status_code == 200, answered.text
+    body = answered.json()
+
+    assert body["proposals"], "the overloaded company proposed nothing through the surface"
+    assert asked and asked[0]["run"] == body["root_run_id"]
+    ids = [proposal["id"] for proposal in body["proposals"]]
+    assert "au_nobody_authored_this" not in ids
+
+    for proposal in body["proposals"]:
+        assert proposal["note"]["status"] == prescribing.WRITTEN, proposal["note"]
+        assert proposal["note"]["sentences"], proposal["id"]
+        assert proposal["payback"] and proposal["evidence"], proposal["id"]
+
+    assert body["prescription_rule"]["min_overload_days"] == prescribing.MIN_OVERLOAD_DAYS
+
+
+def test_with_no_producer_installed_the_surface_still_carries_the_figures(composed, api) -> None:
+    """The keyless path for the report: a proposal minus its paragraph is still a proposal."""
+    from report import main as report_main
+
+    over = "run-over-keyless"
+    run = composed.create_run(over, SEED, scenario=OVERLOADED)
+    while run.state.tick < simtime.tick_of_day_start(6):
+        composed._advance(run, 1)
+
+    report_main.use_prescriber(None)
+    body = api.get(f"/report/runs/{over}/universe").json()
+
+    assert body["proposals"]
+    for proposal in body["proposals"]:
+        assert proposal["note"]["status"] == prescribing.ABSENT
+        assert proposal["payback"] and proposal["evidence"]
 
 
 def test_a_run_this_store_never_heard_of_has_no_universe(composed, api) -> None:

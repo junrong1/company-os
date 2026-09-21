@@ -1222,7 +1222,11 @@ def test_a_scenario_that_will_not_load_is_listed_with_its_refusal(api, tmp_path,
     directory = tmp_path / "scenarios"
     directory.mkdir()
     (directory / "default.toml").write_bytes((sc.SCENARIO_DIR / "default.toml").read_bytes())
-    (directory / "broken.toml").write_text('schema = 1\nid = "broken"\ntitle = "Broken"\n')
+    # A current schema version on purpose: a file declaring an old one is refused for *that*
+    # and nothing else, which is a different refusal from the one this test is about.
+    (directory / "broken.toml").write_text(
+        f'schema = {sc.SCENARIO_SCHEMA_VERSION}\nid = "broken"\ntitle = "Broken"\n'
+    )
     monkeypatch.setattr(sc, "SCENARIO_DIR", directory)
 
     by_id = {entry["id"]: entry for entry in api.get("/scenarios").json()["scenarios"]}

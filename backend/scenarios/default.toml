@@ -5,7 +5,7 @@
 # the tools, MCP servers and skills describe what a person is understood to have
 # (M15, M16).
 
-schema = 1
+schema = 2
 id = "default"
 title = "Northwind Components"
 summary = "A mid-size components company: ten people, four reporting lines, and eight pieces of work that each stop for a decision only the CEO can take."
@@ -627,3 +627,47 @@ effect = { morale = 6, visibility = 6, draw = -8 }
 item = "wi_hiring"
 person = "dir_hr"
 done_percent = 45
+
+# --- what is worth automating -------------------------------------------------
+#
+# The catalog the Universe report prescribes from (M57). Nothing here is a claim that
+# a run will make: the report proposes one of these only where its own fold shows the
+# line was over its ceiling, and it computes the money and the runway from
+# `removes_draw_hours_per_month` by the same arithmetic the day boundary charges. So a
+# file supplies the candidate and its size, and the run supplies the argument.
+#
+# Sized against the decisions that would deliver each one, and never above the line's
+# own draw: a draw cannot go below zero, so a proposal larger than its line would be a
+# saving the company could not pay, and the loader refuses it.
+
+[[automation]]
+id = "au_invoice_matching"
+line = "admin"
+title = "Match invoices without reading them twice"
+detail = "Invoices arrive on paper and again as a PDF, and the accounts payable desk reconciles the two by hand before anything is paid."
+removes_draw_hours_per_month = 40
+motivated_by = ["wi_ap_map", "wi_ap_auto"]
+
+[[automation]]
+id = "au_month_end_close"
+line = "admin"
+title = "Close the month without the manual roll-forward"
+detail = "Five days of the close are spent carrying balances forward by hand, which is also why nobody upstairs sees a number until the sixth."
+removes_draw_hours_per_month = 26
+motivated_by = ["wi_close"]
+
+[[automation]]
+id = "au_duplicate_entry"
+line = "sales"
+title = "One record for an order, not two"
+detail = "The same figures are typed into the sales spreadsheet and again into the order system, and the two disagree often enough that somebody checks."
+removes_draw_hours_per_month = 25
+motivated_by = ["wi_dup_entry", "wi_ai_rank"]
+
+[[automation]]
+id = "au_first_line_faq"
+line = "support"
+title = "Answer the repeat questions once"
+detail = "Most of what reaches first-line support is the same handful of questions, answered again each time by the person who happens to pick up."
+removes_draw_hours_per_month = 30
+motivated_by = ["wi_faq"]

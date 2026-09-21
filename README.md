@@ -213,6 +213,56 @@ sequence it was folded through. At a day boundary the log holds the kernel's own
 value — so "these are the kernel's numbers" is checkable against the log rather than
 asserted.
 
+### Read the Universe report
+
+One document over the whole tree of timelines a Genesis produced: what happened in each,
+where the company was overloaded, and what is worth automating about it. A read over
+every log in the lineage, on one connection.
+
+```bash
+# Ask from any timeline. The answer is keyed by the lineage *root*, so a parent and a
+# child produce the same document — which is what makes it a report about a company
+# rather than about where you happen to be standing.
+curl -s http://127.0.0.1:8800/report/runs/demo/universe
+```
+
+**Overload is folded, not read off the log.** `LOAD_CHANGED` fires only on a day that
+produced morale counters, so a line can sit over its ceiling for days with the log
+silent about it — measured at twelve consecutive days named on three. So the answer to
+"when was this line overloaded" comes from folding each day boundary, and every reading
+cites the `DAY_CHECKPOINT` the kernel wrote at that tick. Days are never summed across
+the tree: timelines share a prefix, so adding a parent's overloaded days to its
+children's would count the same days twice.
+
+**Then it says what is worth automating, and nothing about that comes from a model.**
+The candidates are authored, in the scenario's `[[automation]]` table. One is proposed
+only where the fold found its line over the ceiling for three consecutive sim-days or
+more, so a company nobody overloaded gets no proposals rather than invented ones — and
+the payload states that rule rather than leaving you to infer it. The payback is
+recomputed from the company's own cost arithmetic at the day boundary it cites: the
+draw comes off the line, a draw is staffed work carried into the daily burn, so the
+burn falls and the runway lengthens by exactly what the day boundary would have
+charged. Measured on a real run of `ashcroft`: People over its ceiling for 21 days, a
+proposal worth 18 h/mo, a burn of 31 going to 30 and a runway of 134 days going to
+139 — with the 31 byte-equal to the `total_cost` the log says that day was charged.
+
+**It answers in load as well as in money, and often the answer is "this is not the
+remedy".** A proposal is selected because a line was over its ceiling, so it states
+what it does to that figure too: the same run reads 1287 per mille going to 1187
+against a ceiling of 1000, and the proposal is reported as *not* clearing it. On both
+shipped companies none of them could — the recurring draw is at most 222 per mille of
+a line's capacity and the largest authored candidate moves it by 100, so a line is
+over its ceiling only ever because of queued work. The saving is still real and the
+candidate is still worth doing; what the reader is spared is inferring that two
+numbers printed together are the same size.
+
+With a model configured, a short paragraph is written over each proposal and over
+nothing else. Every sentence cites the proposal's own events, every number it writes
+must be one the report computed, and a sentence that invents either is refused twice —
+once where the prompt is, so it is never cached, and once where the document is
+assembled, because that is the copy that gets exported. With no model the proposals
+render complete and say the prose is absent.
+
 ### Read a director's memory
 
 What a director carries forward about their reporting line, as a summary and the
@@ -409,6 +459,15 @@ run's own spend against its own ceiling, with the lineage total beside it.
 
 Reaching a ceiling stops model calls; it never stops the run. The directors fall back
 to their scripted replies and the report records where the bench went quiet.
+
+**Three things ask a provider, and none of them decides anything.** A director's
+briefing and objection at an open checkpoint; a director's memory summary over a
+selection the log already produced; and a paragraph over each of the Universe
+report's automation proposals. In all three the figures exist before the call — the
+model writes prose over them and is refused if it writes a number that resolves to
+nothing. The report's calls are charged to the lineage **root**, because the report is
+identified by its root: two players in two branches export one document and must not
+pay for it twice.
 
 **The same situation is only paid for once.** A director's briefing is cached under a
 digest of the assembled prompt, the reporting line it was drawn under, and what the call
@@ -860,6 +919,11 @@ an independent publisher of nine — and adding a third needs no code change: dr
 `acme.toml` next to them and a run can be created against `acme`. What is yours to
 author and what the rules fix is in
 [`backend/scenarios/schema.md`](backend/scenarios/schema.md).
+
+A company also authors what it would be worth automating, in `[[automation]]`. That
+table is the only place a proposal in the Universe report can come from — nothing
+generates one — and what the run decides is whether an authored candidate is proposed
+at all.
 
 Which one a run is of is chosen when the run is created, by name and never by path:
 

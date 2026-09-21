@@ -68,16 +68,24 @@ KEY_VERSION = 1
 class Purpose(StrEnum):
     """What the call was for. The namespace half of R3.
 
-    Two members, and the second one exists before its caller does deliberately. A CEO summary and
-    a director statement can be raised at the same tick about the same person, and if the prompts
-    ever converged — a short summary of one checkpoint reads very like a briefing on it — one
-    would be served where the other was asked for. That collision is impossible to notice from the
-    served text, so the namespace has to be in the key before the second producer is written
-    rather than added when somebody sees the wrong block on screen. U14 owns the summary itself.
+    Three members, and the second one existed before its caller did deliberately. A CEO summary
+    and a director statement can be raised at the same tick about the same person, and if the
+    prompts ever converged — a short summary of one checkpoint reads very like a briefing on it —
+    one would be served where the other was asked for. That collision is impossible to notice
+    from the served text, so the namespace has to be in the key before the second producer is
+    written rather than added when somebody sees the wrong block on screen. U14 owns the summary
+    itself.
+
+    `REPORT_PRESCRIPTION` is U21's, and it is the first member whose calls are not about a
+    person at all: the prose over an automation proposal is written over figures the report
+    folded, and the same evidence can reach a prompt that reads very like a briefing about the
+    line it concerns. A new member costs nothing — the string is inside the digest, so existing
+    entries neither move nor collide.
     """
 
     DIRECTOR_STATEMENT = "director_statement"
     CEO_SUMMARY = "ceo_summary"
+    REPORT_PRESCRIPTION = "report_prescription"
 
 
 @dataclass(frozen=True, slots=True)
