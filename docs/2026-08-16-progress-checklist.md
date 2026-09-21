@@ -148,14 +148,15 @@ pushed the office off the screen.
 
 ## Phase 5 — the MVP (`docs/plans/2026-08-16-001-feat-company-os-mvp-plan.md`)
 
-Twenty-five units in six phases. **Twenty-one are done: Phases A, B, C, D and E are complete, and
-the first of Phase F's is in** — the repository runs, scenarios are files, the bench briefs and
+Twenty-five units in six phases. **Twenty-two are done: Phases A, B, C, D and E are complete, and
+two of Phase F's are in** — the repository runs, scenarios are files, the bench briefs and
 refuses and pays for a situation once, a past decision forks into a timeline that plays forward and
 survives a restart, every director carries a memory the CEO can read, one line cannot read another's
 without the CEO saying so and the work stops until they do, the whole tree of timelines is a surface
-the player moves between, the fork is reachable from inside the game rather than from a terminal, and
-the suites now fold whole lineages rather than single runs. The plan's open questions and everything execution
-resolved or found are in
+the player moves between, the fork is reachable from inside the game rather than from a terminal, the
+suites now fold whole lineages rather than single runs, and a whole Universe of timelines folds into
+one report that says where the company was overloaded and which of its futures escaped it. The plan's
+open questions and everything execution resolved or found are in
 [`docs/2026-08-16-mvp-execution-decisions.md`](2026-08-16-mvp-execution-decisions.md), which also
 carries the deferred defect register.
 
@@ -211,15 +212,19 @@ carries the deferred defect register.
 |---|---|---|
 | U19. Determinism over the lineage | `[x]` | The suites now fold *lineages*, on both dialects, built through the kernel's own surfaces by `tests/conftest.py` — a parent walked to a briefing, a decision, and a fork per option. Every day boundary of every timeline re-folds to the hash the kernel wrote (M65); the three are one history below the divergence and three distinct futures above it, which is what stops that being vacuous; a fork exported and replayed in another process reproduces its hash; two fresh lineages from one seed are the same lineage timeline by timeline; emptying `model_cache` between the fork and the re-fold moves no hash and a child holds its parent's statements byte for byte (M34); and a comparison is diffed against **every table in `metadata`** rather than a list — one `OPTIONS_COMPARED` row for one that runs, nothing at all for one that is refused (M35). **The registered `verify` defect was not in `verify`, and not a diagnosis defect**: one expression in `simcore.log.fold` measured the run's reach by the largest tick an event *named* while the replay schedules by `issued_at_tick`, so `fork` refused a decision taken inside a scheduled input's lead and `resume_run` could not rebuild a run whose bench answer was in flight. Measured live on the compose path, the same three HTTP calls refused and then accepted. A second defect closed beside it: `verify` never called `compare_checkpoint`, so a divergence named ten subsystems instead of one. It also settled U16's review finding 9, which named U19 as its owner: a statement outstanding at the fork point was copied onto the child and asked by nobody, so the parent got a briefing and the child waited out a deadline — a difference between two timelines that the option did not cause, which is the one thing M34 forbids. 26 new backend tests plus a lineage harness; no event kind, no payload field, no shape version, no fixture |
 
-**Phase F.** Not started. **U20** is unblocked, and **U23**'s only dependency — U18 — is in, so it is
-reachable too; U21 and U22 sit behind U20. U18, U15 and U19 leave them four things: a lineage harness
-and a dual-dialect kernel fixture in `conftest`, which is the tree U20's report folds;
-`logschema.lineage.separating_decision`, which answers "what separated these two" for any pair at
-their nearest common ancestor, which is the naming U20's report over a whole tree needs;
-`report.fold.state_at_day` now returning the kernel's own hash in *every* case rather than all but
-the straddling one, so "the report's figures match the diff's" is a comparison between two surfaces
-that both reproduce the log; and a report that can be built for a run that hired at all, which it
-could not before U15.
+**U20 is in**, and the Universe has a report.
+
+| Unit | Status | Evidence |
+|---|---|---|
+| U20. The Universe report | `[x]` | `GET /report/runs/{id}/universe` — one artifact over a whole tree, **identified by its lineage root**, which is asserted by popping `asked_about` from two payloads and comparing them whole: asking from a child and from its parent produce the same document, because U22 mails it to somebody. `Claim` and `DecisionRecord` carry the run id, because a fork copies its parent's rows and a bare sequence stopped being an address — tested in both directions, that every claim resolves *and* that some sequence really is claimed by two timelines. **The plan's claim that the load events already carry overload is wrong**: `LOAD_CHANGED` fires only on a day that produced morale counters, measured at twelve consecutive days over the ceiling named by the log on three. So M56 is folded, and every reading cites the `DAY_CHECKPOINT` whose state hash it was read off — a boundary the log cannot cite produces no reading rather than an uncited one. `fold.walk_days` makes that one pass per timeline instead of one fold per day: 2617 ms → 254 ms on a 30-day timeline, ~35 s → 3.5 s at the sixteen-timeline fork cap, byte-identical at every boundary and asserted so. Days are never summed across a tree — timelines share a prefix — so the tree-wide figure is how many timelines a line went over in, and `everywhere` is the one U21 wants. `verify`'s two cheap halves get their first production callers; its O(days²) loop deliberately does not, with the measurement. 29 new backend tests on both dialects; verified live over Postgres on a three-timeline `ashcroft` lineage at day 21 — `hr` over ceiling days 1–12 in all three, 33 claims and 258 folded figures each resolved back to a row. **One live defect closed, and it was not this unit's**: `test_status.py` hard-coded the store's port while `conftest` resolves it from the environment, so the only assertion that the report's credential cannot write had been skipping for anybody whose Postgres is elsewhere |
+
+**Phase F, the rest.** **U23**'s only dependency — U18 — is in, so it is reachable now; **U21** and
+**U22** sit behind U20, which is done. U20 leaves them `report.universe.build`, a route that reads a
+whole lineage on one connection, `LineOverload.everywhere` as the defensible half of a proposal,
+spans carrying `opened_at_seq` and `peak_at_seq` so a proposal has events to cite, and a payload
+already at 382 KiB at the fork cap before proposals or prose — with the per-day load series named as
+the lever if U22's export binds on size. The scenario loader's closed key set is untouched, so U21's
+proposal catalog is a schema change before it is a report change.
 
 **One fix outside the plan.** `a69c304` — a command's events were never published to a connected
 client. `_publish` had one caller inside the tick loop and published only what that batch returned,

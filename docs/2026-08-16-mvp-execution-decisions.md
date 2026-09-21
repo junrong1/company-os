@@ -669,13 +669,33 @@ not the diagnosis path — the register's sentence about `POST /runs/{id}/diagno
 `diagnose` does not call `verify`. See *What U19 found* for the measurements, including the same
 fork refused and then accepted on the compose path.
 
-**`simcore.verify` has no production caller.** Noticed by U19 while closing the entry above. The
-function that decides whether a log can be trusted, and what truncating back to the last good
-boundary would cost, is reachable only from the suites: `diagnose` reports on the clock and the
-outstanding requests and never folds, and nothing else imports it. It is why a defect that made
-every briefed run report as damaged could sit in the tree without any surface saying so. A report
-over a lineage is the natural home for it — **U20** — and it is registered rather than taken by U19,
-whose requirements are M34, M65 and M35.
+**~~`simcore.verify` has no production caller.~~ Half closed by U20, and the other half is a
+cost.** Noticed by U19 while closing the entry above. The Universe report now answers both of
+`verify`'s questions for every timeline in a lineage, and carries the answers beside that
+timeline's figures: **sequence density** by calling `verify.sequence_gaps` outright, which is O(n)
+and needs no fold; and the **day-boundary hashes** by comparing each one as its own day walk
+passes it, localised by `verify.compare_checkpoint` exactly when a day fails. So the two functions
+have production callers and the claim has a surface.
+
+`verify` *itself* still does not, and that is now a measured decision rather than an omission. It
+folds **from zero at every checkpoint**, which is O(days²): 2617 ms for one 30-day timeline
+against 254 ms for one walk of it, and at the sixteen-timeline fork cap the difference is minutes
+against 3.5 seconds. Calling it per timeline would have made the report unopenable at the cap it is
+built for. What is genuinely lost by not calling it is `last_good_seq` — "truncate here and lose at
+most one sim-day", the recovery figure — which no surface offers. That is the remaining entry, and
+it is smaller than the one it replaces: `verify` would only need to fold day by day, the way
+`report.fold.walk_days` now does, for its own cost to stop being the reason nothing calls it.
+
+**`LOAD_CHANGED` is emitted only on a day that produced morale counters, so the log does not carry
+load.** Found by U20, and it is the reason the Universe report folds for M56 rather than reading
+the events the plan expected it to read. **Measured** on a driven run of the shipped company: a
+department at 1277 per-mille against a ceiling of 1000 for **twelve consecutive days**, named by
+the log on three of them — the three after somebody's morale had fallen below its threshold. Nine
+days of continuous overload left no load event at all. Nothing is wrong with the emission rule on
+its own terms (it is a morale event that happens to carry load), but anything downstream that wants
+"when was this line overloaded" from the log is in this trap, and U21's proposals are the next thing
+that will want it. The fold answers it exactly and cites the day checkpoint, so this is registered
+rather than fixed: adding an event would move the log's shape for a figure the fold already has.
 
 **`achieved_multiplier_permille` truncates a fraction of a tick at every wake and never accumulates
 it.** Found by U4, confirmed and deepened by U5. At rate 1 the clock runs at roughly 55% of nominal
@@ -2208,3 +2228,187 @@ fork route. Before this change there was one line.
   comparison between two surfaces that both reproduce the log's `DAY_CHECKPOINT` byte for byte —
   verified live against Postgres on a forked lineage at day 3.
 - **`verify` has no production caller**, and a report over a lineage is where one belongs.
+
+---
+
+## What U20 found, that U21 needs
+
+Twenty-two units. The Universe report is one artifact over a whole tree of timelines: every
+timeline forked from one Genesis, what separated each from its parent, and where the company was
+overloaded — by line, by day, and in how many of the futures. One new module, one new route, two
+fields on two existing dataclasses, one new fold helper. No event kind, no payload field, no shape
+version, no golden fixture, and nothing appended.
+
+### The plan's claim about overload is wrong, and the measurement is the reason for the design
+
+The plan says overload is "stated by department and over time, which the capacity draw and load
+events already carry." The load events do not carry it. `LOAD_CHANGED` is emitted inside
+`_end_of_day` under `if counters:` — the counters being people whose morale has fallen below its
+threshold — so a department can sit over its ceiling indefinitely with the log silent about it.
+
+**Measured**, on a driven run of the shipped company: `dir_cs` at **1277 per-mille against a
+ceiling of 1000 for twelve consecutive days**, and `LOAD_CHANGED` named it on **three** of them,
+days 10 to 12, once morale had finally fallen far enough. Nine days of continuous overload left no
+load event at all.
+
+So M56 is answered by folding: the report walks each timeline's day boundaries and reads
+`state.capacity[*].load_permille`, which is exact. Two things make that better than a compromise
+rather than worse than the events:
+
+- **Each reading cites the `DAY_CHECKPOINT` the kernel wrote at that tick** — or `GENESIS` at day
+  1, which opens at tick 0 where no checkpoint is written. That is both M55's citation and the
+  proof, because the same event carries the state hash the reading was taken off. A boundary the
+  log cannot cite produces **no reading at all**: M55 is a claim about every figure, so a figure
+  that cannot name its event is one the report does not present.
+- **A day is the granularity the simulation itself samples load at.** Over-ceiling load costs
+  morale at a day boundary and nowhere else — `test_capacity`'s strict `xfail` already says so,
+  diagnosing that an overload which opens and closes inside one day costs nothing. A finer series
+  here would report pressure the run never charged anybody for.
+
+### Folding every day from zero was the obvious shape and it does not survive the fork cap
+
+`report.fold.state_at_day` is what the diff calls, and it folds from zero. The Universe wants every
+day of every timeline, so the obvious implementation is that function in a loop — which is O(days²)
+per timeline.
+
+`fold.walk_days` is one pass instead: each day resumes from the last through `fold`'s own
+`resume_from`, handed exactly the events issued since. It is not a second fold. The window for day
+D is `(start(D-1), start(D)]` — the previous day's ticks and D's own opening tick — which is a
+shift off the day an event *falls* in, and `window_day` expresses it as `day_of(t - 1) + 1` so the
+division stays `simtime`'s.
+
+**Measured**, and they agree byte for byte:
+
+| | 30-day timeline, 123 events | 16 timelines × 21 days (the fork cap) |
+|---|---|---|
+| a fold per day, from zero | 2617 ms | ~35 s |
+| one walk, resumed per day | **254 ms** | **3491 ms** |
+
+Every day of both produces the same state hash, the same metrics and the same per-line load, and
+every one agrees with the `DAY_CHECKPOINT` the kernel wrote there. The equality is a test
+(`test_walking_the_days_once_agrees_with_folding_each_from_zero`) rather than a note, because it is
+the whole of the optimisation's licence: two fold strategies over one log, and if they ever part,
+the report and the diff are two readings of one company.
+
+**At the cap the report is 3.5 s and a 382 KiB payload**, of which the bulk is the 1344 per-day
+load readings. Both are U22's to know: that is what the standalone export embeds.
+
+### A sequence stopped being an address, which is why the run id had to go on the claim
+
+A fork copies its parent's rows verbatim, so sequence 42 exists in the parent and in every child —
+below the divergence it is the same event, above it, it is not. The run report never had to care,
+because it knew which log it was reading. The Universe does not. `Claim` and `DecisionRecord` carry
+the pair now, and the test for it is mechanical in both directions: every claim resolves against
+the logs, **and** there exists a sequence claimed by more than one timeline, so the first assertion
+is not vacuously true.
+
+### The identity is the root, and that is what makes it a document
+
+Asking from a child and asking from its parent produce the same artifact — asserted by taking both
+payloads, popping `asked_about`, and comparing them whole. `asked_about` exists so a surface can
+mark where the player is standing; it is deliberately the only field allowed to differ, because
+U22 mails this file to somebody and a report whose identity moved with a camera position would be a
+different document on every export.
+
+### Days are not summed across a tree, and the shape is what refuses to
+
+Timelines share a prefix, so a parent's overloaded days are also its children's. A tree-wide total
+would count them two and three times and report a company three times as overloaded as it was.
+What the tree-wide section states instead is **how many of its timelines** a line went over in,
+where the earliest and the highest readings sit, and whether **every** timeline had it. The days
+stay under the timeline they belong to.
+
+`everywhere` is the figure U21 will want, and it is the one this report can state that no run
+report can: a line over its ceiling in every timeline was never fixed by any decision the CEO took,
+which is a different problem from one that a particular option caused.
+
+### The second shipped company is authored over its ceiling, and that is the honest fixture
+
+`ashcroft`'s People line is one person carrying the hiring work: **1288 per-mille at genesis**. The
+shipped default never goes over in a short run — `dir_hr` peaks at 838 and `dir_admin` at 814, both
+under 1000 — so every M56 test is written against `ashcroft` rather than against a department a
+test inflated to produce the answer it wanted.
+
+Verified live over Postgres through the launcher, on a three-timeline lineage of `ashcroft` played
+to day 21: `hr` over ceiling **days 1 to 12 in all three timelines**, peak 1288, `everywhere` true,
+and the span closing at day 13 in each — the same shape on every branch, which is what "no decision
+fixed this" looks like on the page. 710–726 ms per call whichever timeline asked, and the three
+payloads identical but for `asked_about`.
+
+### Verification: every claim back to its event, against the store
+
+The plan's verification line, done against Postgres rather than against a fixture: **33 claims and
+258 folded figures**, each looked up by `(run_id, seq)` in `event_log`. None unresolved. The claims
+land on `GENESIS`, `DAY_CHECKPOINT`, `DAILY_COSTS_APPLIED`, `DECISION_RESOLVED`,
+`DELIVERABLE_PRODUCED` and `RUN_TERMINATED`.
+
+### One timeline that cannot be folded costs its own section
+
+Two folds per timeline and two separate refusals, because the run report and the day walk fail
+independently — the first reads to the head, the second stops at every boundary — and one message
+for both would leave a reader unable to tell a timeline with no figures from one whose overload
+section is the part that is missing. A log written under different rules refuses, its section says
+so, and the rest of the Universe is unaffected. This is the plan's own argument for keeping the
+report off the bench, applied one level down.
+
+### Two things outside the stated file list, and one thing already in it
+
+- **`services/report/main.py`** is not in U20's file list and carries the route. A module with no
+  production caller is the defect this unit was partly written to close, so shipping the fold
+  without the surface would have reproduced it. U22 owns `main.py` for the export and will find
+  one route already there.
+- **`tests/conftest.py` and `tests/test_diff.py`.** U18's `Recorder` — a timeline driven in-process
+  and recorded exactly as the kernel's loop records it — is what this suite needed too. It moved to
+  `conftest`, which exists for that, and gained a `scenario` argument so a suite can play a company
+  other than the default. `test_diff.py` imports it now and is otherwise untouched; `SEED` was
+  hoisted out of the lineage section so both halves of the file can see it.
+- **`packages/logschema/lineage.py` needed nothing.** The plan lists it, expecting the
+  naming — but U18 already added `separating_decision`, and what a Universe report actually needs
+  is per-node rather than per-pair: which decision separated *this* child from *its* parent, which
+  `Node` has carried since U17 and `_divergences` reads for the whole tree in one select. A second
+  reading here would have been a second answer to a question the tree already answers for the
+  surface the player navigates by.
+
+### A live defect, and it was not this unit's
+
+**`tests/test_status.py` held a second answer to the question `conftest` exists to answer once.**
+Its `_TEST_POSTGRES` and `_READER_POSTGRES` were hard-coded to port 55432 while `conftest` resolves
+the store from `COMPANY_OS_TEST_POSTGRES_URL` — so a contributor whose Postgres is anywhere else got
+the store suite on both dialects and `test_the_reports_connection_cannot_append` **skipped, with a
+message naming a port they had not used**. That test is the only assertion that the report's
+credential cannot write, which is R28's store-side half, and this unit adds a route that uses that
+credential. Closed here rather than registered for that reason: both DSNs derive from
+`conftest.POSTGRES_URL` now.
+
+It cost one trap on the way, worth knowing: **`str(URL)` masks the password as `***`**, so deriving
+the reader's DSN by stringifying a modified `URL` produces a credential that renders plausibly and
+cannot authenticate. `create_engine` takes the `URL` object, so the fix is to never make it text.
+
+### What U21 inherits
+
+- **`report.universe.build(tree, logs)`**, and a route at `GET /report/runs/{id}/universe` that
+  reads the tree and every timeline's log **on one connection** — N engines would be N chances to
+  read N timelines from N different instants, and a report whose sections disagreed about where the
+  Universe was would be worse than a slow one.
+- **`LineOverload.everywhere`**, which is the defensible half of a proposal: a line overloaded in
+  every timeline was not caused by a decision, so automating it is worth arguing for. The spans
+  under each timeline carry `opened_at_seq` and `peak_at_seq`, so a proposal citing "the events
+  that motivate it" has events to cite that already resolve.
+- **`fold.walk_days`**, if a proposal's payback needs a per-day series of anything else. It yields
+  the whole `State` at each boundary and is one pass; anything read off it inherits the day
+  checkpoint as its citation for free.
+- **The loader's closed key set is still closed.** U6 refuses unknown top-level keys, so U21's
+  proposal catalog is a scenario-schema change before it is a report change — the plan says so and
+  nothing here has softened it.
+- **A payload already at 382 KiB at the fork cap**, before proposals and before prose. If U22's
+  export binds on size, the per-day `load` series is the lever: the spans are the summary and are
+  two orders of magnitude smaller.
+
+### One pre-existing failure on this machine, proven not to be this unit's
+
+`test_modelgw.py::test_a_connection_refused_at_a_configured_local_base_url_is_typed` fails here:
+it binds a loopback port, closes it, and expects `UNREACHABLE`, but something on this machine
+answers **502** and it types as `PROVIDER_ERROR`. Confirmed by running it in a clean worktree at
+`06cb9c9` with no changes applied, where it fails identically. Everything else is green: **1443
+passed, 1 skipped** (the keyless-CI marker, by design) **and 1 xfailed** (the documented strict
+one) on both dialects, plus 600 client tests and a clean `tsc`.
