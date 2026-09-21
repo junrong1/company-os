@@ -148,14 +148,16 @@ pushed the office off the screen.
 
 ## Phase 5 — the MVP (`docs/plans/2026-08-16-001-feat-company-os-mvp-plan.md`)
 
-Twenty-five units in six phases. **Twenty-two are done: Phases A, B, C, D and E are complete, and
-two of Phase F's are in** — the repository runs, scenarios are files, the bench briefs and
+Twenty-five units in six phases. **Twenty-three are done: Phases A, B, C, D and E are complete,
+and three of Phase F's are in** — the repository runs, scenarios are files, the bench briefs and
 refuses and pays for a situation once, a past decision forks into a timeline that plays forward and
 survives a restart, every director carries a memory the CEO can read, one line cannot read another's
 without the CEO saying so and the work stops until they do, the whole tree of timelines is a surface
 the player moves between, the fork is reachable from inside the game rather than from a terminal, the
-suites now fold whole lineages rather than single runs, and a whole Universe of timelines folds into
-one report that says where the company was overloaded and which of its futures escaped it. The plan's
+suites now fold whole lineages rather than single runs, a whole Universe of timelines folds into
+one report that says where the company was overloaded and which of its futures escaped it, and that
+report now ends by saying what is worth automating — from a catalog somebody authored, about a line
+this run actually overloaded, priced by the company's own arithmetic. The plan's
 open questions and everything execution resolved or found are in
 [`docs/2026-08-16-mvp-execution-decisions.md`](2026-08-16-mvp-execution-decisions.md), which also
 carries the deferred defect register.
@@ -218,13 +220,19 @@ carries the deferred defect register.
 |---|---|---|
 | U20. The Universe report | `[x]` | `GET /report/runs/{id}/universe` — one artifact over a whole tree, **identified by its lineage root**, which is asserted by popping `asked_about` from two payloads and comparing them whole: asking from a child and from its parent produce the same document, because U22 mails it to somebody. `Claim` and `DecisionRecord` carry the run id, because a fork copies its parent's rows and a bare sequence stopped being an address — tested in both directions, that every claim resolves *and* that some sequence really is claimed by two timelines. **The plan's claim that the load events already carry overload is wrong**: `LOAD_CHANGED` fires only on a day that produced morale counters, measured at twelve consecutive days over the ceiling named by the log on three. So M56 is folded, and every reading cites the `DAY_CHECKPOINT` whose state hash it was read off — a boundary the log cannot cite produces no reading rather than an uncited one. `fold.walk_days` makes that one pass per timeline instead of one fold per day: 2617 ms → 254 ms on a 30-day timeline, ~35 s → 3.5 s at the sixteen-timeline fork cap, byte-identical at every boundary and asserted so. Days are never summed across a tree — timelines share a prefix — so the tree-wide figure is how many timelines a line went over in, and `everywhere` is the one U21 wants. `verify`'s two cheap halves get their first production callers; its O(days²) loop deliberately does not, with the measurement. 29 new backend tests on both dialects; verified live over Postgres on a three-timeline `ashcroft` lineage at day 21 — `hr` over ceiling days 1–12 in all three, 33 claims and 258 folded figures each resolved back to a row. **One live defect closed, and it was not this unit's**: `test_status.py` hard-coded the store's port while `conftest` resolves it from the environment, so the only assertion that the report's credential cannot write had been skipping for anybody whose Postgres is elsewhere |
 
-**Phase F, the rest.** **U23**'s only dependency — U18 — is in, so it is reachable now; **U21** and
-**U22** sit behind U20, which is done. U20 leaves them `report.universe.build`, a route that reads a
-whole lineage on one connection, `LineOverload.everywhere` as the defensible half of a proposal,
-spans carrying `opened_at_seq` and `peak_at_seq` so a proposal has events to cite, and a payload
-already at 382 KiB at the fork cap before proposals or prose — with the per-day load series named as
-the lever if U22's export binds on size. The scenario loader's closed key set is untouched, so U21's
-proposal catalog is a schema change before it is a report change.
+**U21 is in**, and the report prescribes.
+
+| Unit | Status | Evidence |
+|---|---|---|
+| U21. What is worth automating | `[x]` | `[[automation]]` in the scenario, which took `SCENARIO_SCHEMA_VERSION` to 2 — the table is optional and a version-1 file would load, and it is refused anyway because the declared version is inside the content hash, so accepting one would defer the failure to a guard that can only say "the file has changed". **The golden fixture moved by exactly one line**, the content hash: nothing puts the catalog on the wire, which is asserted by a tripwire requiring its only two readers to be the loader and `report/proposals.py`. A candidate is proposed only where the fold found its line over the ceiling for three consecutive sim-days — a reporting threshold, deliberately *not* in `rates.TUNING`, because moving it changes no run's log, hash or readings. The payback is recomputed from the company's own arithmetic at the day boundary it cites, never stored: `step.draw_cost_of` was split out of `day_cost_terms` because integer division means the hours removed cannot be priced on their own (18 h/mo is `18 * 5 // 100 = 0`, while the difference of the two totals is 1). **It answers in load as well as in money**, because the evidence that motivates a proposal is an overloaded line and two numbers printed together read as the same size — `load_permille_before` is the kernel's recorded figure and `after` is `capacity.load_permille` over a smaller draw, with `clears_the_ceiling` saying outright. Measured over both shipped companies: the draw is at most 222 per mille of a line against a ceiling of 1000 and the largest candidate moves it by 100, so **no authored automation can clear an overloaded line on this content** — stated, pinned per line, and not fixed by re-tuning two companies until the demo looked better. Prose is the only generated half, and a sentence that cites nothing, cites outside the proposal's own evidence, or carries a figure the report did not compute is refused **twice** — at the prompt, so it is never cached, and at publication, because that copy is exported. A producer cannot add a proposal by naming one. The fifth composed callable joins the two services, and what crosses is a packet the report built. 38 new test functions; verified live over Postgres on a 21-day `ashcroft` run — People over ceiling all 21 days, load 1287 → 1187 against a ceiling of 1000 and reported as not clearing it, burn 31 → 30, runway 134 → 139, with 31 byte-equal to the `total_cost` the log says that day was charged and the cited sequence 95 read back as a `DAY_CHECKPOINT`. **No live defect of its own**; it knowingly widens a registered one — the universe route is synchronous and now makes a provider call per proposal in series, which the register now names as the worst of the three |
+
+**Phase F, the rest.** **U23**'s only dependency — U18 — is in, so it is reachable now, and it is
+independent of everything left. **U22** sits behind U21, which is done. What it inherits is in the
+decisions doc: `proposals` and `prescription_rule` on the payload, a `note` per proposal saying
+which part a model wrote, everything interpolable already capped and control-character-free at
+its source, and a payload measured at **398 KiB at the sixteen-timeline fork cap** — of which the
+prescription is 14.3 KiB, four per cent, so U20's lever is unchanged: the per-day load series is
+the bulk and the spans are the summary.
 
 **One fix outside the plan.** `a69c304` — a command's events were never published to a connected
 client. `_publish` had one caller inside the tick loop and published only what that batch returned,
@@ -339,7 +347,7 @@ Every shipped unit but one turned up a live defect on its path. The pattern is w
 
 ---
 
-## MVP PRD — M1–M67 as of twelve units of the MVP plan
+## MVP PRD — M1–M67 as of twenty-three units of the MVP plan
 
 Requirements this plan has moved are marked with the unit that moved them.
 
@@ -434,8 +442,13 @@ Requirements this plan has moved are marked with the unit that moved them.
   figure carries the marking on the wire and on the surface, swept the way the HUD's tiles are
 
 **The Report (M53–M61)**
-- [~] M55 every claim resolves to its event — `services/report/fold.py`, and the report is now mounted and answering in the one process (**U24**)
-- [ ] M53, M54, M56–M61 — U20 through U22
+- [x] M53 one report over the whole Universe — **U20**, identified by the lineage root rather than by the timeline that asked
+- [x] M55 every claim resolves to its event — `services/report/fold.py` (**U24** mounted it), and **U20** made a claim's address the run *and* the sequence, because a fork copies its parent's rows
+- [x] M56 where the company was overloaded, by line and over time — **U20**, folded at each day boundary because `LOAD_CHANGED` does not carry it
+- [x] M57 what is worth automating, from the authored catalog, citing events and stating payback — **U21**. The catalog is `[[automation]]` in the scenario; a candidate is proposed only where the fold found its line over the ceiling for three consecutive sim-days; the payback is recomputed from the company's own cost arithmetic at the boundary it cites
+- [x] M58 prose over cited figures only, and no figure from a model — **U21**, refused at the prompt and again at publication, with a test that the two refuse the same replies
+- [x] M59 the marking on every figure, and the report says the company is invented — **U20**
+- [ ] M54, M60, M61 — U22
 
 **Closing the known holes (M62–M65)**
 - [x] M62 staff movement on the wire — **U3**, and live only because `a69c304` publishes what a command committed; U3 measured that the delegation walk never reached the client before it

@@ -728,6 +728,15 @@ and the launcher.
 > `diagnose`, the call an operator makes when things are stalling, is one of the routes that then
 > cannot be served. Recorded here rather than left in the code comment that says it, so whoever
 > makes the `async` change knows it has two callers to move.
+>
+> **U21 widened it again, and this is now the worst of them.** `GET /report/runs/{id}/universe`
+> is synchronous, and with a bench configured it makes **one provider call per automation
+> proposal, in series, inside the request**. At the scenario catalog's cap of twelve and the
+> default 30-second timeout, one report can hold a threadpool worker for six minutes — where a
+> comparison holds one for seconds. Two things bound it and neither is a fix: the response cache
+> is addressed by the assembled prompt, so a second open of the same report costs nothing, and a
+> keyless run makes no call at all. The `async` change now has three callers to move, and this
+> is the one whose worst case is measured in minutes.
 
 **No authored checkpoint offers six options.** Found by U5. All nine offer three, while
 `MAX_BRANCHES_PER_COMPARISON` is 6 — so the plan's "six-option comparison" and its 1.6s figure
@@ -2412,3 +2421,218 @@ answers **502** and it types as `PROVIDER_ERROR`. Confirmed by running it in a c
 `06cb9c9` with no changes applied, where it fails identically. Everything else is green: **1443
 passed, 1 skipped** (the keyless-CI marker, by design) **and 1 xfailed** (the documented strict
 one) on both dialects, plus 600 client tests and a clean `tsc`.
+
+---
+
+## What U21 found, that U22 needs
+
+Twenty-three units. The Universe report prescribes: authored candidates, selected by the fold,
+priced by the company's own cost arithmetic, with a model writing prose over figures it did not
+compute. One new module in the report service, one in the bench, one new scenario table, one
+function split out of `step.py`, and the fifth composed callable. No event kind, no payload
+field, no state shape version, and nothing appended.
+
+### The scenario schema moved to 2, and the golden fixture moved by exactly one line
+
+`[[automation]]` is a top-level table, and U6's closed key set refuses one it does not know —
+so the prescription was a scenario-format change before it was a report change, exactly as the
+plan said. The version went to 2 with it, and the argument for bumping is worth writing down
+because the obvious reading says not to: the table is *optional*, so a version-1 file would
+load unchanged. It is refused anyway. The declared version is inside the content hash, so
+accepting an old file would build a company whose identity no run recorded, and the mismatch
+would surface three guards later as "the file has changed" — the least actionable sentence
+available — instead of one line naming the version.
+
+**What that cost is one value.** `tests/fixtures/golden/genesis.json` moved by a single line,
+the scenario content hash; the genesis *payload* did not move at all, because nothing puts the
+catalog on the wire. That is asserted rather than observed: `test_the_catalog_has_exactly_two_
+readers_and_neither_is_the_kernel` scans `packages/`, `services/`, `scripts/` and the launcher
+for the words and requires the set to be exactly `{scenario.py, report/proposals.py}` — the same
+tripwire M16 already has over the tool lists, and here it is what makes "the bump moved the
+identity and nothing a run does" a fact. Every existing run written against either shipped
+company is now unfoldable, which is the deal `schema.md` already states for any edit.
+
+### The threshold is a reporting rule, and putting it in the tuning table would have been wrong
+
+A proposal is made where a line was over its ceiling for **three consecutive sim-days**, and
+`MIN_OVERLOAD_DAYS` lives in `report/proposals.py` rather than in `rates.TUNING`. The test is
+whether moving it changes a run, and it does not: two runs of one seed produce the same log, the
+same day-boundary hashes and the same load readings under any value of it. Only what the report
+is *willing to prescribe* from them differs. Putting it in the tuning table would have made it
+part of the rules identity and every existing run unplayable for a number the kernel never
+reads. It is on the payload as `prescription_rule`, for the reason `load_scale` is: a reader who
+disagrees can see the spans and count.
+
+### The payback is the difference of two totals, which is why `draw_cost_of` had to be split out
+
+`day_cost_terms` computed the draw's cost as `manual_hours * draw_cost_per_monthly_hour // 100`
+inline. A proposal needs the counterfactual — the same arithmetic over a smaller number — and
+the integer division at the end means **you cannot price the hours removed on their own**: at
+the shipped tuning, 18 hours a month is `18 * 5 // 100 = 0`, while the difference between
+`draw_cost_of(270)` and `draw_cost_of(252)` is 1. Two roundings do not subtract to one. So
+`step.draw_cost_of` is now a named function with three callers, and the report divides by the
+company's own arithmetic twice rather than keeping a third opinion about what a draw costs.
+
+Nothing about a payback is stored. The scenario authors hours and only hours — asserted on
+`Automation`'s field names, so a payback added to the format later fails a test rather than
+quietly becoming a figure nobody recomputes — and the money and the days are computed at the
+day boundary the payback cites.
+
+### Verified live, and the burn figure is the log's own
+
+On the compose path against Postgres: an `ashcroft` run to day 21, People over its ceiling for
+all 21 days at 1288 per mille against 1000, one proposal worth 18 h/mo. The payback reads a
+daily burn of **31 going to 30** and a runway of **134 days going to 139**, measured at the day-21
+boundary and citing sequence 95.
+
+Every one of those resolves:
+
+* sequence 95 is a `DAY_CHECKPOINT` at tick 10800, read back out of `event_log`;
+* the log's `DAILY_COSTS_APPLIED` at that same tick records `fixed 18 + draw 13 + salaries 0 =
+  31` — so `daily_burn_before` is not the report's opinion of the burn, it is byte-equal to what
+  the kernel charged;
+* the load reads **1287 going to 1187** against a ceiling of 1000, so the proposal is reported as
+  *not* clearing the ceiling it is proposed against;
+* `draw_cost_of(270) = 13` and `draw_cost_of(252) = 12`, so the saving is 1 and the burn after is
+  30; cash was 4180, and `4180 // 31 = 134` against `4180 // 30 = 139`.
+
+The timeline came back `trustworthy`: no sequence gaps, and every day boundary re-folded to the
+hash the kernel wrote there. `tests/test_report.py` pins the same chain mechanically, against
+`DAILY_COSTS_APPLIED` rather than against this module.
+
+### The shipped company proposes nothing, and that is the requirement working
+
+Measured, and all three of these are tests:
+
+* a plain 12-day run of `default` never puts a line over its ceiling, and **proposes nothing**,
+  although it authors four candidates;
+* assigning `wi_faq` to the Customer Support line really does put it over — 1166 per mille — for
+  **exactly one day**, because the item burns down. Under the threshold, so still nothing. A busy
+  Tuesday is not a standing problem, and the prescription is about the standing problem;
+* `ashcroft`, authored over its ceiling on the People line, proposes.
+
+So the second shipped company is the honest fixture again, for the same reason U20 needed it.
+
+### Settling the decision removes the proposal, which took a fixture rewrite to notice
+
+The first version of "a proposal cites the decision the CEO took on its own work item" settled
+`wk_freelance` as soon as it blocked, which is tick 1 — and the report then proposed **nothing**.
+The option takes 18 hours a month off the People line at once, the item finishes, and load falls
+from 1288 to 122 by day 3. The report was right and the test was wrong: there was nothing left to
+propose. The fixture now walks the CEO past the decision for three days first, which is also the
+more honest thing to be testing — a proposal that cites a decision is one where the pressure
+survived it.
+
+### The payback had to answer the question the evidence raises, and the answer is no
+
+The first shape of this stated the payback in money alone — burn and runway — while the thing
+that *motivated* the proposal was an overloaded line. Two numbers printed together read as the
+same size, and here they are not: a proposal is selected because a line sat at 1288 per mille
+and priced by what it takes off a draw worth 222.
+
+So a payback now carries `load_permille_before` and `load_permille_after` as well, and a
+`clears_the_ceiling` that answers outright. `before` is the kernel's own recorded figure — the
+same number the overload section reports — and `after` is `capacity.load_permille`, the kernel's
+own function, over the same queue and the same headcount with a smaller draw. On the live
+`ashcroft` run: **1287 going to 1187, against a ceiling of 1000. It does not clear it.**
+
+**And measured across both shipped companies, none of them ever could.** Line by line, the
+recurring draw is at most **222 per mille** of a line's capacity — People at Ashcroft, one person
+carrying 40 hours a month — and the largest authored candidate moves the figure by **100**. Every
+other line is lower: Northwind's Administration draw is 222 with a best candidate worth 74,
+Sales 185 against 46, Customer Support 166 against 83. So on this content a line is over its
+ceiling **only ever because of queued work**, and an automation is worth real money and is not
+the remedy for the overload that motivated it.
+
+That is a statement about the economy's tuning rather than a defect, and the fix was to say it
+rather than to re-tune two companies until the demo looked better. A test pins the arithmetic
+per line, so moving a draw re-opens the question instead of quietly making the sentence false,
+and `clears_the_ceiling` is exercised true on a constructed economy so it is a real answer and
+not a field that is always no.
+
+What is still not said is *why* the line is at 1287 — in the unplayed demo it is a checkpoint
+raised on day one that nobody ever settled, and the report does not cite the decision not taken.
+That is a diagnosis feature rather than a prescription one, and the two figures now beside each
+other are what point at it.
+
+### The guard runs twice, and the ranking guard is deliberately not one of them
+
+The same two-call-site shape §1 describes for a statement. `agents/bench/prescription.py` refuses
+next to the prompt, which is what keeps a refused paragraph out of the response cache — and that
+bites harder here than anywhere, because a Universe report is regenerated on every open and every
+export, so a cached refusal would be served back and refused again for the life of the lineage.
+`report/proposals.py` refuses at the point of publication, and that is the auditable copy, because
+it is the one that reaches an exported file. Neither reimplements what a figure *is*: both call
+`simcore.statement.figures_in`, which has been public since U14 for exactly this reason. A test
+runs one reply through both and requires them to agree.
+
+**`stmt.ranking` is not applied, and the omission is deliberate.** Every other prose guard in the
+tree refuses a recommendation. A director may not rank the options at a checkpoint because the
+choosing is the CEO's; a proposal *is* the report recommending something, which is what M57 asks
+it to do. What stops that being a model's opinion is not a vocabulary check — it is that the
+candidate was authored, the evidence was folded and the figures were computed before any prose
+existed. A producer cannot even add a proposal by naming one: `attach` matches replies to ids the
+report already made and discards the rest, which is tested.
+
+### The fifth composed callable, and the direction that makes M57 structural
+
+The report may not import the agents service (R4) and the agents service holds the only provider
+call in the tree, so the launcher joins them — `report.main.use_prescriber(agents_main.
+write_prescription)`, beside the kernel client, the spend reader, the memory read and the
+statement producer. What crosses is a *packet* the report built: the proposal, its evidence, its
+figures, and the two sets the guard reads. There is no call the agents service can make that adds
+a proposal, because it is never given the catalog, the fold, or the store read that would let it
+find one. Both ends of that are asserted.
+
+One call per proposal rather than one for all of them, because the guard is per proposal: a single
+answer covering four would be accepted whole with one paragraph's figures checked against
+another's, or refused whole because one sentence was wrong.
+
+The calls are charged to the **lineage root**, which is the same id the report is identified by —
+so two players in two branches export one document and do not pay for it twice, and the response
+cache addresses it once.
+
+### What U22 inherits
+
+- **`GET /report/runs/{id}/universe` now carries `proposals` and `prescription_rule`**, each
+  proposal with its evidence, a payback per timeline — money *and* load, with
+  `clears_the_ceiling` saying outright whether it is the remedy for what motivated it — and a
+  `note` that is `written`, `absent` or `refused`. `note.written_by` says out loud which part a model wrote, which the export will want
+  next to the paragraph rather than in a caption somebody drops.
+- **The payload at the sixteen-timeline fork cap is 398 KiB**, measured at day 21, of which the
+  prescription is **14.3 KiB — four per cent** for one proposal. Four proposals would be nearer
+  57 KiB. U20's lever is unchanged and is still the right one: the per-day `load` series is the
+  bulk, the spans are the summary, and they are two orders of magnitude smaller.
+- **Everything the export interpolates from this section is already bounded.** Authored title and
+  detail are capped and control-character-free by the loader; generated sentences are capped at
+  `MAX_PROSE_CHARS`, refused for control characters, and every figure in them resolves to one the
+  report computed. That is the input side of U22's escaping argument, not a substitute for it.
+- **`proposals.claims_of`** puts one claim per payback into `Universe.claims`, addressed by run
+  and sequence like every other — so the export's "every claim resolves" sweep covers the
+  prescription without knowing it exists.
+
+### This unit widens a registered defect, knowingly
+
+`GET /report/runs/{id}/universe` is a **synchronous** FastAPI route, and with a bench configured
+it now makes one provider call per proposal, in series, inside the request. At the catalog cap of
+twelve and the default 30-second timeout that is a route able to hold a threadpool worker for six
+minutes. The register already names three synchronous routes sharing one starved pool with one of
+them calling a provider; this is the fourth, and the worst of them.
+
+Recorded rather than fixed, for the reason U16 gave when it widened the same entry: the fix is the
+`async` change the register already scopes, and it reaches into the gateway and the launcher. Two
+things bound the exposure meanwhile, and neither is a solution. The response cache is addressed by
+the assembled prompt, so the second open of a report costs nothing. And a keyless run — which is
+every run in CI and every run of the default configuration — installs a producer that answers
+without touching a provider at all.
+
+### Verification, and the one pre-existing failure
+
+**1485 passed, 1 skipped** (the keyless-CI marker, by design) **and 1 xfailed** (the documented
+strict one) on both dialects, plus 600 client tests and a clean `tsc`. Thirty-eight new test
+functions: 20 in `test_report.py`, 11 in `test_scenario.py`, 7 in `test_bench.py`.
+
+`test_modelgw.py::test_a_connection_refused_at_a_configured_local_base_url_is_typed` still fails
+on this machine for the reason U20 recorded — something here answers **502** on a closed loopback
+port, so the failure types as `PROVIDER_ERROR` rather than `UNREACHABLE`. Untouched by this unit,
+and failing identically at `66e5421`.
