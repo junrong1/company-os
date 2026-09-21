@@ -28,6 +28,7 @@ from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import Any
 
+import conftest
 import pytest
 from fastapi.testclient import TestClient
 
@@ -852,23 +853,29 @@ def test_the_report_falls_back_to_the_writer_where_there_are_no_roles(
     assert report_main.reader_url() == url
 
 
-# Reachability is decided once, so the skip message is the same sentence the store
-# suite's is and an omission is visible rather than inferred.
-_TEST_POSTGRES = "postgresql+psycopg://companyos:companyos@127.0.0.1:55432/companyos_test"
-_READER_POSTGRES = "postgresql+psycopg://report_reader:report_reader@127.0.0.1:55432/companyos_test"
+# Reachability is decided once, so the skip message is the same sentence the store suite's is
+# and an omission is visible rather than inferred — and "once" now means once. This file held a
+# *second* copy of the DSN, hard-coded to port 55432, while `conftest` resolves it from
+# `COMPANY_OS_TEST_POSTGRES_URL`. A contributor whose Postgres is anywhere else got the store
+# suite on both dialects and this test skipped, with a message naming a port they had not used.
+# Two probes were two answers, which is the thing conftest's own docstring exists to prevent.
+_TEST_POSTGRES = conftest.POSTGRES_URL
+
+
+def _reader_url():
+    """The same store, reached as the role `infra/postgres/init` provisions with SELECT only.
+
+    Returns the `URL` rather than a string, and that is not a style choice: `str(URL)` masks the
+    password as `***`, so stringifying this produces a DSN that renders plausibly and cannot
+    authenticate. `create_engine` takes the object directly, so the credential never becomes text.
+    """
+    from sqlalchemy.engine import make_url
+
+    return make_url(_TEST_POSTGRES).set(username="report_reader", password="report_reader")
 
 
 def _postgres_reachable() -> bool:
-    from kernel.store import make_engine
-
-    try:
-        engine = make_engine(_TEST_POSTGRES)
-        with engine.connect():
-            return True
-    except Exception:  # noqa: BLE001 - unreachable is the only thing being asked
-        return False
-    finally:
-        engine.dispose()
+    return conftest.POSTGRES_OK
 
 
 def test_the_reports_connection_cannot_append() -> None:
@@ -909,7 +916,7 @@ def test_the_reports_connection_cannot_append() -> None:
                 text("GRANT SELECT ON ALL TABLES IN SCHEMA public TO report_reader")
             )
 
-        reader = create_engine(_READER_POSTGRES, future=True)
+        reader = create_engine(_reader_url(), future=True)
         try:
             with reader.connect() as connection:
                 # It can read: a report that could not fold the log would be useless.

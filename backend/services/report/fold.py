@@ -19,6 +19,7 @@ that is tuned — it is a record of what the CEO actually did.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -38,8 +39,17 @@ AUTHORED = "authored-tuning"
 
 @dataclass(slots=True)
 class Claim:
-    """One number, and the event sequence that produced it."""
+    """One number, and the event that produced it — named by run and by sequence.
 
+    **A sequence alone stopped being an address when forks landed** (U16, U20). A fork copies
+    its parent's rows verbatim, so sequence 42 exists in the parent and in every child, and
+    below the divergence it is the same event in all of them while above it, it is not. A claim
+    carrying a bare sequence is therefore resolvable only by whoever already knows which log it
+    came from — which the run report did know, and the Universe report does not. Both carry the
+    pair now, so "follow this number back to its event" is one lookup on any surface.
+    """
+
+    run_id: str
     label: str
     value: Any
     at_seq: int
@@ -49,6 +59,7 @@ class Claim:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "run_id": self.run_id,
             "label": self.label,
             "value": self.value,
             "at_seq": self.at_seq,
@@ -60,8 +71,14 @@ class Claim:
 
 @dataclass(slots=True)
 class DecisionRecord:
-    """A decision, and everything about how it was taken."""
+    """A decision, and everything about how it was taken.
 
+    Addressed by run and sequence together, for the reason `Claim` gives: the same decision
+    sequence exists in a parent and in each of its children, and a Universe report lists all of
+    them beside each other.
+    """
+
+    run_id: str
     item: str
     choice: str
     note: str
@@ -75,6 +92,7 @@ class DecisionRecord:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "run_id": self.run_id,
             "item": self.item,
             "choice": self.choice,
             "note": self.note,
@@ -232,6 +250,7 @@ def build(run_id: str, events: list[Envelope], through_tick: int | None = None) 
         if envelope.kind is EventKind.DECISION_RESOLVED:
             report.decisions.append(
                 DecisionRecord(
+                    run_id=run_id,
                     item=payload["item"],
                     choice=payload["choice"],
                     note=payload["note"],
@@ -402,6 +421,7 @@ def _claims(report: Report, state: sim.State, head_seq: int) -> list[Claim]:
         last = points[-1]
         claims.append(
             Claim(
+                run_id=report.run_id,
                 label=f"final {key}",
                 value=last["value"],
                 at_seq=last["at_seq"],
@@ -412,6 +432,7 @@ def _claims(report: Report, state: sim.State, head_seq: int) -> list[Claim]:
     outcome = report.outcome
     claims.append(
         Claim(
+            run_id=report.run_id,
             label="outcome",
             value=outcome["reason"],
             at_seq=outcome["at_seq"],
@@ -420,6 +441,7 @@ def _claims(report: Report, state: sim.State, head_seq: int) -> list[Claim]:
     )
     claims.append(
         Claim(
+            run_id=report.run_id,
             label="decisions taken",
             value=outcome["decisions_taken"],
             at_seq=outcome["at_seq"],
@@ -428,6 +450,7 @@ def _claims(report: Report, state: sim.State, head_seq: int) -> list[Claim]:
     )
     claims.append(
         Claim(
+            run_id=report.run_id,
             label="decisions in person",
             value=sum(1 for decision in report.decisions if decision.path == "in person"),
             at_seq=head_seq,
@@ -436,6 +459,7 @@ def _claims(report: Report, state: sim.State, head_seq: int) -> list[Claim]:
     )
     claims.append(
         Claim(
+            run_id=report.run_id,
             label="tacit lines surfaced",
             value=sum(1 for decision in report.decisions if decision.tacit_surfaced),
             at_seq=head_seq,
@@ -444,6 +468,7 @@ def _claims(report: Report, state: sim.State, head_seq: int) -> list[Claim]:
     )
     claims.append(
         Claim(
+            run_id=report.run_id,
             label="deliverables",
             value=len(report.deliverables),
             at_seq=head_seq,
@@ -661,6 +686,124 @@ def state_at_day(events: list[Envelope], day: int) -> tuple[sim.State, int]:
     prefix = [envelope for envelope in events if fold_tick_of(envelope) <= at_tick]
     result = folder.fold(prefix, at_live_head=False, strict=False, through_tick=at_tick)
     return result.state, result.through_seq
+
+
+# =========================================================================
+# Every day of one timeline, in one pass (U20)
+# =========================================================================
+#
+# `state_at_day` answers "where was this timeline on day N" and folds from zero to do it. Asking
+# it for *every* day is O(days squared), and the Universe report asks for every day of every
+# timeline — so the cost the diff accepts for one step of a control becomes the cost of opening
+# the report.
+#
+# **Measured, on a 30-day timeline of 123 events**: 2617 ms folding each day from zero, 254 ms
+# walking the days once and resuming each from the last. Both produce byte-identical state
+# hashes at every boundary, and both agree with the `DAY_CHECKPOINT` the kernel wrote there.
+# A three-timeline lineage is the difference between eight seconds and under one.
+#
+# The resumption is `fold`'s own `resume_from`, not a second fold: each day is handed the
+# previous day's state and exactly the events issued since it. Nothing here re-derives a tick.
+
+
+@dataclass(frozen=True, slots=True)
+class DayFold:
+    """One timeline at one day boundary: where it was, and the event that proves it was there."""
+
+    day: int
+    at_tick: int
+    #: The event this boundary is cited by: the `DAY_CHECKPOINT` the kernel wrote at this tick,
+    #: or `GENESIS` at day 1, which opens at tick 0 where no checkpoint is written. Zero when the
+    #: log holds neither — a prefix rather than a healthy run, and a reading with no citation,
+    #: which is a reading the report does not present (M55).
+    at_seq: int
+    state: sim.State
+    #: This fold's own hash of the state above.
+    state_hash: str
+    #: The hash the kernel recorded at this boundary, and its sub-hashes. Empty at day 1 and in a
+    #: log whose checkpoint is missing.
+    recorded_hash: str = ""
+    recorded_subsystems: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def agrees(self) -> bool:
+        """Whether this fold reproduced the kernel's own hash.
+
+        True when there is nothing recorded to check against, because an absent checkpoint is not
+        a disagreement. Whether an absence is itself a problem is the sequence-density question,
+        which `simcore.verify.sequence_gaps` answers separately and cheaply.
+        """
+        return not self.recorded_hash or self.recorded_hash == self.state_hash
+
+
+def window_day(issued_at_tick: int) -> int:
+    """Which day boundary's fold an event issued at this tick belongs to.
+
+    The boundary at day D folds the ticks `(start(D-1), start(D)]` — the previous day's, and D's
+    own opening tick. So an event is *not* in the window of the day it falls in: one issued on the
+    last tick of day 4 is applied on the way to day 5's boundary, and one issued exactly on a
+    boundary was already applied by the walk that stopped there.
+
+    Expressed as `day_of(t - 1) + 1` so the division stays `simtime`'s. A second arithmetic for a
+    sim-day here is exactly the drift the tree, the HUD and the report are written to avoid.
+    """
+    if issued_at_tick <= 0:
+        return 1
+    return simtime.day_of(issued_at_tick - 1) + 1
+
+
+def walk_days(events: list[Envelope], *, through_day: int) -> Iterator[DayFold]:
+    """Fold one timeline day by day, yielding it at each boundary. One pass over the log.
+
+    Yields rather than returns, because the caller wants a handful of figures per day and a list
+    would hold one whole `State` per day per timeline for the life of the build. Each yielded
+    state is the fold's own — `fold` clones on resume — so the next day cannot move the last one
+    underneath a caller that kept it.
+    """
+    ordered = sorted(events, key=lambda envelope: envelope.seq)
+
+    windows: dict[int, list[Envelope]] = {}
+    for envelope in ordered:
+        windows.setdefault(window_day(fold_tick_of(envelope)), []).append(envelope)
+
+    #: Where each boundary's citation and recorded hash come from. Day 1 cites genesis, which is
+    #: the event that produced the state at tick 0 and carries no hash of its own.
+    cited: dict[int, tuple[int, str, dict[str, str]]] = {}
+    for envelope in ordered:
+        if envelope.kind is EventKind.GENESIS:
+            cited.setdefault(0, (envelope.seq, "", {}))
+        elif envelope.kind is EventKind.DAY_CHECKPOINT:
+            payload = envelope.decoded_payload()
+            cited[int(payload["tick"])] = (
+                envelope.seq,
+                str(payload["state_hash"]),
+                {
+                    str(name): str(digest)
+                    for name, digest in (payload.get("subsystems") or {}).items()
+                },
+            )
+
+    resume: tuple[sim.State, int] | None = None
+    for day in range(1, through_day + 1):
+        at_tick = simtime.tick_of_day_start(day)
+        result = folder.fold(
+            windows.get(day, []),
+            at_live_head=False,
+            strict=False,
+            resume_from=resume,
+            through_tick=at_tick,
+        )
+        resume = (result.state, result.through_seq)
+        at_seq, recorded_hash, recorded_subsystems = cited.get(at_tick, (0, "", {}))
+        yield DayFold(
+            day=day,
+            at_tick=at_tick,
+            at_seq=at_seq,
+            state=result.state,
+            state_hash=hashing.state_hash(sim.snapshot(result.state)).overall,
+            recorded_hash=recorded_hash,
+            recorded_subsystems=recorded_subsystems,
+        )
 
 
 def _side(timeline: TimelineLog, day: int) -> tuple[Side, sim.State]:

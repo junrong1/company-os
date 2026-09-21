@@ -22,6 +22,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from conftest import SEED, Recorder, played
 from contracts import canonical
 from contracts.envelope import Envelope, EventKind, build as build_envelope
 from logschema import lineage
@@ -33,83 +34,16 @@ from simcore import time as simtime
 from simcore import verify as verifier
 from simcore.rates import RULES_VERSION
 
-SEED = 0xC0FFEE
 RUN = "run-diff"
 
 
 # =========================================================================
 # A run, without a store
 # =========================================================================
-
-
-class Recorder:
-    """One timeline, driven in-process and recorded exactly as the kernel records it.
-
-    The day checkpoint is emitted here for the same reason the kernel's loop emits it — the log
-    is what the diff folds, and a log with no boundary hashes could not be used to check that the
-    diff folded to the state the kernel was in.
-    """
-
-    def __init__(self, run_id: str, horizon_tick: int | None = None) -> None:
-        self.run_id = run_id
-        self.state, genesis = sim.new_run(run_seed=SEED, horizon_tick=horizon_tick)
-        self.log: list[Envelope] = []
-        self._seq = 0
-        self.record(genesis)
-
-    def record(self, emitted: list[sim.Emitted]) -> None:
-        for item in emitted:
-            self._seq += 1
-            self.log.append(
-                build_envelope(
-                    seq=self._seq,
-                    tick=int(item.payload.get("tick", self.state.tick)),
-                    kind=item.kind,
-                    rules_ver=RULES_VERSION,
-                    payload=item.payload,
-                    run_id=self.run_id,
-                    request_id=item.request_id,
-                )
-            )
-
-    def advance(self, ticks: int) -> None:
-        for _ in range(ticks):
-            emitted = sim.step(self.state)
-            if simtime.is_day_boundary(self.state.tick) and self.state.tick > 0:
-                emitted.append(
-                    sim.Emitted(
-                        kind=EventKind.DAY_CHECKPOINT,
-                        payload=verifier.build_checkpoint_payload(self.state),
-                    )
-                )
-            self.record(emitted)
-
-    def advance_until(self, predicate, limit: int = 60_000) -> None:
-        for _ in range(limit):
-            if predicate(self.state):
-                return
-            self.advance(1)
-        raise AssertionError(f"condition never held within {limit} ticks")
-
-    def settle(self, option_index: int) -> None:
-        """Drive to the first checkpoint of the first authored item and settle it."""
-        self.record(sim.assign_direct(self.state, "wi_ap_map", "stf_ap"))
-        self.advance_until(lambda s: s.items["wi_ap_map"].status == "blocked")
-        self.record(
-            sim.resolve_checkpoint(self.state, "wi_ap_map", 0, option_index, in_person=True)
-        )
-
-    def timeline(self) -> reporting.TimelineLog:
-        return reporting.TimelineLog(
-            run_id=self.run_id, events=self.log, current_tick=self.state.tick
-        )
-
-
-def _played(run_id: str, option_index: int, days: int) -> Recorder:
-    recorder = Recorder(run_id)
-    recorder.settle(option_index)
-    recorder.advance_until(lambda s: s.tick >= simtime.tick_of_day_start(days))
-    return recorder
+#
+# `Recorder` and `played` are `conftest`'s: U20's Universe report drives a timeline the same way,
+# and one harness that records a log exactly as the kernel's loop does is what keeps the two
+# suites folding the same shape.
 
 
 def _two_timelines(days: int = 4) -> tuple[reporting.TimelineLog, reporting.TimelineLog]:
@@ -120,8 +54,8 @@ def _two_timelines(days: int = 4) -> tuple[reporting.TimelineLog, reporting.Time
     checkpoint differently are the same two logs the diff would be handed.
     """
     return (
-        _played(f"{RUN}-left", 0, days).timeline(),
-        _played(f"{RUN}-right", 1, days).timeline(),
+        played(f"{RUN}-left", 0, days).timeline(),
+        played(f"{RUN}-right", 1, days).timeline(),
     )
 
 
@@ -294,8 +228,8 @@ def test_both_sides_are_folded_to_the_same_tick() -> None:
 
 def test_the_day_defaults_to_the_furthest_both_sides_have_reached() -> None:
     """The newest point the two can honestly be compared at, and the bound on the control."""
-    left = _played(f"{RUN}-long", 0, 5).timeline()
-    right = _played(f"{RUN}-short", 1, 3).timeline()
+    left = played(f"{RUN}-long", 0, 5).timeline()
+    right = played(f"{RUN}-short", 1, 3).timeline()
 
     answer = reporting.diff(left, right)
 
@@ -313,7 +247,7 @@ def test_the_figures_are_the_state_the_kernel_hashed_at_that_boundary() -> None:
     this path would have to reproduce the kernel's hash to pass, which is another way of saying
     it would have to be the same fold.
     """
-    recorder = _played(f"{RUN}-hashed", 0, 4)
+    recorder = played(f"{RUN}-hashed", 0, 4)
     at_tick = simtime.tick_of_day_start(3)
 
     recorded = {
@@ -490,7 +424,7 @@ def test_a_timeline_that_had_ended_by_that_day_says_so_from_its_own_fold() -> No
     row_says_running = reporting.TimelineLog(
         run_id=ended.run_id, events=ended.log, current_tick=ended.state.tick
     )
-    other = _played(f"{RUN}-alongside", 1, 4).timeline()
+    other = played(f"{RUN}-alongside", 1, 4).timeline()
 
     answer = reporting.diff(row_says_running, other)
 
@@ -507,10 +441,12 @@ def test_a_timeline_is_known_to_have_reached_what_its_own_log_proves() -> None:
     reached — and the log is evidence rather than a guess: an event stamped at tick T is proof
     the run got to T.
     """
-    played = _played(f"{RUN}-lagging", 0, 4)
-    lagging = reporting.TimelineLog(run_id=played.run_id, events=played.log, current_tick=1)
+    recorder = played(f"{RUN}-lagging", 0, 4)
+    lagging = reporting.TimelineLog(
+        run_id=recorder.run_id, events=recorder.log, current_tick=1
+    )
 
-    assert lagging.reached_tick == max(event.tick for event in played.log)
+    assert lagging.reached_tick == max(event.tick for event in recorder.log)
     assert lagging.current_day == simtime.day_of(lagging.reached_tick) > 1
 
 
@@ -535,8 +471,8 @@ def test_a_day_one_side_has_not_reached_is_refused_rather_than_extrapolated() ->
     through ticks that are not in its history and report the result beside the other side's
     facts. So the answer is the reason, and it names which timeline and how far it got.
     """
-    left = _played(f"{RUN}-ahead", 0, 6).timeline()
-    right = _played(f"{RUN}-behind", 1, 2).timeline()
+    left = played(f"{RUN}-ahead", 0, 6).timeline()
+    right = played(f"{RUN}-behind", 1, 2).timeline()
 
     answer = reporting.diff(left, right, day=5)
 

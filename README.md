@@ -596,6 +596,16 @@ drops the schema and takes the writer lease, and so does a running kernel. Witho
 Postgres half the suite still passes on SQLite, which is why there is a test that fails
 visibly rather than skipping quietly when the dialect coverage is incomplete.
 
+Port 55432 is chosen not to collide, but a laptop is a laptop. `COMPANY_OS_TEST_POSTGRES_URL`
+points the whole suite somewhere else, and it is read in one place so that every Postgres-only
+test follows it — the lineage suites, the store suite and the report's read-only-role check
+included:
+
+```bash
+COMPANY_OS_TEST_POSTGRES_URL=postgresql+psycopg://companyos:companyos@127.0.0.1:55433/companyos_test \
+  uv run pytest
+```
+
 The main `docker-compose.yml` deliberately does **not** publish the store. R34 is not a
 default to be relaxed for convenience; a test needing host access is not a reason to open
 a running system's store to the host, hence the separate override file.

@@ -146,6 +146,64 @@ def run_report(run_id: str) -> dict[str, Any]:
     return report.to_dict()
 
 
+@app.get("/runs/{run_id}/universe")
+def universe_report(run_id: str) -> dict[str, Any]:
+    """One report over the whole tree of timelines this run belongs to (M53–M56, M59).
+
+    **Named by any timeline, identified by the root.** The caller passes whichever timeline they
+    are standing in and gets the Universe that contains it, keyed by `root_run_id` — so two
+    players in two branches of one lineage export the same artifact, which is what makes it a
+    document about a company rather than about a camera position.
+
+    Synchronous, like the run report and for the same reason: a fold over a whole lineage is real
+    work, and FastAPI runs a synchronous endpoint in its threadpool so the blocking happens off
+    the event loop.
+
+    **Every timeline's log is read on one connection**, as the diff's two are. On Postgres,
+    N engines would be N chances to read N timelines from N different instants, and a report
+    whose sections disagreed about where the Universe was would be worse than a slow one.
+    """
+    from sqlalchemy import create_engine
+
+    from logschema import lineage
+    from report import universe as universes
+    from simcore import time as simtime
+
+    engine = create_engine(reader_url(), future=True)
+    try:
+        tree = lineage.tree(engine, run_id, simtime.TICKS_PER_SIM_DAY)
+        if tree is None:
+            raise HTTPException(status_code=404, detail=f"no run {run_id}")
+
+        with engine.connect() as connection:
+            logs = {
+                node.run_id: _timeline_log(connection, node) for node in tree.nodes
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - surfaced as a 503, not a stack trace
+        log.warning("could not read the lineage", extra={"run": run_id, "error": str(exc)})
+        raise HTTPException(status_code=503, detail=f"the log is unreadable: {exc}") from exc
+    finally:
+        engine.dispose()
+
+    if not logs.get(run_id) or not logs[run_id].events:
+        raise HTTPException(status_code=404, detail=f"no run {run_id}")
+
+    report = universes.build(tree, logs)
+    log.info(
+        "universe report built",
+        extra={
+            "run": run_id,
+            "root": report.root_run_id,
+            "timelines": len(report.timelines),
+            "claims": len(report.claims),
+            "refused": [entry.run_id for entry in report.timelines if entry.refusal],
+        },
+    )
+    return report.to_dict()
+
+
 @app.get("/runs/{run_id}/diff/{against_run_id}")
 def timeline_diff(
     run_id: str,

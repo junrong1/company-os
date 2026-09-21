@@ -7,6 +7,13 @@ suites ask it again, and two probes would be two answers — one suite skipping 
 runs is worse than either, because the skip message is what tells a contributor the run was
 incomplete. One probe, one URL, one sentence.
 
+**How a timeline is driven without a store.** `Recorder` plays a run in-process and records it
+exactly as the kernel's loop does, day-boundary checkpoints included. U18 wrote it for the diff
+and U20's Universe report needs the same thing — a log it can fold — so it is here rather than
+imported across two suites. It is deliberately a *second* writer of the same events: a harness
+that called the kernel's own appender would be unable to say anything about a log the kernel
+wrote wrongly.
+
 **How a lineage is built.** A lineage is a parent, a decision, and the timelines forked from
 it, and nothing below `KernelRuntime` can make one: the fork copies log rows through the single
 writer. So the assertions in `test_replay.py`, `test_determinism.py` and `test_compare.py` are
@@ -33,13 +40,16 @@ from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from contracts import canonical
-from contracts.envelope import Envelope, EventKind
+from contracts.envelope import Envelope, EventKind, build as build_envelope
 from contracts.grpc import kernel_pb2
 from kernel.loop import KernelRuntime
 from kernel.store import LogStore, make_engine
 from logschema import metadata
+from report import fold as reporting
 from simcore import step as sim
 from simcore import time as simtime
+from simcore import verify as verifier
+from simcore.rates import RULES_VERSION
 
 #: A separate database from the application's, provisioned by
 #: infra/postgres/init/20-test-database.sql, and published on the host by
@@ -71,6 +81,11 @@ POSTGRES_SKIP = (
 )
 
 
+#: The run seed every in-process harness here plays from. One value, because two suites
+#: comparing "two runs of one seed" must mean the same seed.
+SEED = 0xC0FFEE
+
+
 def engine_for(dialect: str, tmp_path) -> Engine:
     """An engine on the named dialect, with the shared database emptied first.
 
@@ -89,11 +104,97 @@ def engine_for(dialect: str, tmp_path) -> Engine:
 
 
 # =========================================================================
+# One timeline, driven in-process and recorded as the kernel records it
+# =========================================================================
+
+
+class Recorder:
+    """A run played without a store, and the log it would have written.
+
+    The day checkpoint is emitted here for the same reason the kernel's loop emits it: the log is
+    what a read surface folds, and a log with no boundary hashes could not be used to check that
+    the fold reached the state the kernel was in.
+
+    `scenario` is passed through to `new_run`, so a suite can play a company other than the
+    shipped default. The fold resolves it back by the identity genesis records, which means the
+    company has to be one that exists on disk — an in-memory scenario would be refused at the
+    fold's own guard (R7), which is the correct answer rather than a limitation of this harness.
+    """
+
+    def __init__(
+        self,
+        run_id: str,
+        horizon_tick: int | None = None,
+        scenario=None,
+        seed: int = SEED,
+    ) -> None:
+        self.run_id = run_id
+        self.state, genesis = sim.new_run(
+            run_seed=seed, horizon_tick=horizon_tick, scenario=scenario
+        )
+        self.log: list[Envelope] = []
+        self._seq = 0
+        self.record(genesis)
+
+    def record(self, emitted: list[sim.Emitted]) -> None:
+        for item in emitted:
+            self._seq += 1
+            self.log.append(
+                build_envelope(
+                    seq=self._seq,
+                    tick=int(item.payload.get("tick", self.state.tick)),
+                    kind=item.kind,
+                    rules_ver=RULES_VERSION,
+                    payload=item.payload,
+                    run_id=self.run_id,
+                    request_id=item.request_id,
+                )
+            )
+
+    def advance(self, ticks: int) -> None:
+        for _ in range(ticks):
+            emitted = sim.step(self.state)
+            if simtime.is_day_boundary(self.state.tick) and self.state.tick > 0:
+                emitted.append(
+                    sim.Emitted(
+                        kind=EventKind.DAY_CHECKPOINT,
+                        payload=verifier.build_checkpoint_payload(self.state),
+                    )
+                )
+            self.record(emitted)
+
+    def advance_until(self, predicate, limit: int = 60_000) -> None:
+        for _ in range(limit):
+            if predicate(self.state):
+                return
+            self.advance(1)
+        raise AssertionError(f"condition never held within {limit} ticks")
+
+    def settle(self, option_index: int, item: str = "wi_ap_map", person: str = "stf_ap") -> None:
+        """Drive to the first checkpoint of an authored item and settle it."""
+        self.record(sim.assign_direct(self.state, item, person))
+        self.advance_until(lambda s: s.items[item].status == "blocked")
+        self.record(sim.resolve_checkpoint(self.state, item, 0, option_index, in_person=True))
+
+    def timeline(self) -> reporting.TimelineLog:
+        return reporting.TimelineLog(
+            run_id=self.run_id, events=self.log, current_tick=self.state.tick
+        )
+
+
+def played(run_id: str, option_index: int, days: int) -> Recorder:
+    """One timeline: a decision settled one way, then played out to the given day."""
+    recorder = Recorder(run_id)
+    recorder.settle(option_index)
+    recorder.advance_until(lambda s: s.tick >= simtime.tick_of_day_start(days))
+    return recorder
+
+
+# =========================================================================
 # A lineage: one parent, one decision, and the timelines forked from it
 # =========================================================================
 
 ROOT = "run-lineage"
-SEED = 0xC0FFEE
 
 #: The item the CEO is walked to and the director who briefs on it. `wi_hiring` is assigned at
 #: genesis (U2), so it reaches its checkpoint without being assigned first — which keeps the
