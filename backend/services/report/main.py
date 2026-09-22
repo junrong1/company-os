@@ -21,16 +21,21 @@ process, would have handed the fold the owner's connection and quietly retired t
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException, Query
+from fastapi.responses import HTMLResponse
 
+from report import export as exporting
 from report import fold as reporting
 from servicekit import logging as svclog
 from servicekit.app import create_service_app
 from servicekit.probes import ENV_REPORT_STORE_URL, probe_store, store_url
 from servicekit.runtime import serve
 from servicekit.status import Dependency
+
+if TYPE_CHECKING:  # pragma: no cover - the runtime import is deliberately lazy, below
+    from report import universe as universes
 
 SERVICE = "report"
 
@@ -169,7 +174,58 @@ def run_report(run_id: str) -> dict[str, Any]:
 
 @app.get("/runs/{run_id}/universe")
 def universe_report(run_id: str) -> dict[str, Any]:
-    """One report over the whole tree of timelines this run belongs to (M53–M56, M59).
+    """One report over the whole tree of timelines this run belongs to (M53–M56, M59)."""
+    return _universe(run_id).to_dict()
+
+
+@app.get("/runs/{run_id}/universe.html", response_class=HTMLResponse)
+def universe_export(run_id: str) -> HTMLResponse:
+    """The same report as one standalone HTML file (M54, M60, M61).
+
+    **The same fold, rendered rather than serialised.** It is the export route's whole design
+    that it is not a second reading of the log: `_universe` is the one that both this and the
+    JSON route call, so a figure on the page a player is looking at and a figure in the file
+    they mailed cannot disagree about a company.
+
+    **Served from here rather than proxied into existence.** The launcher mounts this app at
+    `/report` in the one process (R28), so the client's link is `/api/report/...` through the
+    same nginx prefix every other call goes through — one anchor, no second origin, and no
+    gateway import of a fold that R4 forbids.
+
+    `Content-Disposition: inline` rather than `attachment`: reaching the report from the client
+    should *show* it, and the filename is there for the Save As that follows. The name is
+    derived from a validated identifier because a run id is whatever `POST /runs` accepted, and
+    an unfiltered one would be a header a caller writes.
+
+    The policy travels twice — as this response's header, which governs it while it is served,
+    and inside the document, which is what governs it once it is a file on somebody's disk.
+    """
+    report = _universe(run_id)
+    document = exporting.render(report.to_dict())
+    log.info(
+        "universe exported",
+        extra={
+            "run": run_id,
+            "root": report.root_run_id,
+            "timelines": len(report.timelines),
+            "bytes": len(document.encode("utf-8")),
+        },
+    )
+    return HTMLResponse(
+        content=document,
+        headers={
+            "content-disposition": (
+                f'inline; filename="{exporting.filename_for(report.root_run_id)}"'
+            ),
+            "content-security-policy": exporting.csp(),
+            "referrer-policy": "no-referrer",
+            "x-content-type-options": "nosniff",
+        },
+    )
+
+
+def _universe(run_id: str) -> universes.Universe:
+    """The Universe this run belongs to, folded once for whoever asked (M53–M56, M59).
 
     **Named by any timeline, identified by the root.** The caller passes whichever timeline they
     are standing in and gets the Universe that contains it, keyed by `root_run_id` — so two
@@ -229,7 +285,7 @@ def universe_report(run_id: str) -> dict[str, Any]:
             "refused": [entry.run_id for entry in report.timelines if entry.refusal],
         },
     )
-    return report.to_dict()
+    return report
 
 
 def _write_the_prose(report: Any) -> None:

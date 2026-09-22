@@ -263,6 +263,36 @@ once where the prompt is, so it is never cached, and once where the document is
 assembled, because that is the copy that gets exported. With no model the proposals
 render complete and say the prose is absent.
 
+### Export the report as one file
+
+The same fold, rendered rather than serialised. **Press *Report* in the top bar** — one
+action, from any stage, from a live run — or ask for it directly:
+
+```bash
+curl -s -o report.html http://127.0.0.1:8800/report/runs/demo/universe.html
+```
+
+The file opens with no server and makes no network request: its data, its styling and
+its QR code are inside it, and there is no element in it that could fetch anything.
+Verified by opening it from a filesystem with the browser offline — one request, for
+the document itself, and nothing else asked for. It contains no script at all and says
+so in a content-security policy it carries, which is what still governs it once it is a
+file on somebody's disk rather than a response from this process.
+
+**It declares what it contains.** § *What this file contains* is the same declaration
+the renderer is bound by: a field belonging to no content class refuses the export
+rather than riding along in it, so a new figure on the report is a decision about what
+this artifact mails to somebody. One field is declared and deliberately withheld — which
+model wrote the proposals' prose. That is the operator's business and this file travels.
+
+Everything interpolated into it is escaped by construction rather than by care: a
+scenario arrived by pull request and a sentence came out of a model, and both are
+rendered through a type whose only unescaped values are the stylesheet and the QR code.
+
+Two exports of one Universe are byte-identical. The document is identified by its
+lineage root, so a parent and a child produce the same file, and nothing in it is
+stamped with a wall clock.
+
 ### Read a director's memory
 
 What a director carries forward about their reporting line, as a summary and the

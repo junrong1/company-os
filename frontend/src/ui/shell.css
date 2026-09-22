@@ -153,8 +153,37 @@
   background: var(--tianlan);
 }
 
-.rates {
+/*
+ * The right-hand group: the report link, then the clock.
+ *
+ * One grid cell holding two things rather than a fourth column, so the stage toggle stays
+ * centred on the bar. The link sits *before* the clock deliberately — the rates are the control
+ * a player's hand returns to, and putting a link that leaves the page between them and the edge
+ * would put a navigation under a misjudged click at the rate they press most.
+ */
+.topbar__right {
   justify-self: end;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.topbar__report {
+  border: 1px solid var(--rule);
+  padding: 5px 10px;
+  color: var(--text-muted);
+  background: var(--ganglan);
+  font: 650 12px/1.2 var(--mono);
+  text-decoration: none;
+}
+
+.topbar__report:hover {
+  color: var(--ganglan);
+  background: var(--text);
+  border-color: var(--text);
+}
+
+.rates {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -191,6 +220,7 @@
  * semantics; ink at 15:1 loses nothing in visibility.
  */
 .stage-toggle button:focus-visible,
+.topbar__report:focus-visible,
 .rates button:focus-visible,
 .item__actions button:focus-visible,
 .decision__actions button:focus-visible,

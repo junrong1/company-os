@@ -25,6 +25,7 @@ import { PAL } from '../design/tokens'
 import { ChainStrip } from '../dag/ChainStrip'
 import { Dag } from '../dag/Dag'
 import { Renderer } from '../render/index'
+import { universeReportUrl } from '../net/gateway'
 import { EventStream, newIdempotencyKey, submitCommand } from '../net/stream'
 import { runState, subscribeTo, useRunStore } from '../net/store'
 import { comparePayload } from './comparison-model'
@@ -536,17 +537,36 @@ export function Shell({
           </button>
           <span className="hint">Tab</span>
         </nav>
-        <div className="rates" aria-label="Clock">
-          {[0, 1, 3].map((option) => (
-            <button
-              key={option}
-              type="button"
-              data-active={rate === option}
-              onClick={() => setRate(option)}
-            >
-              {option === 0 ? 'Pause' : `×${option}`}
-            </button>
-          ))}
+        <div className="topbar__right">
+          {/* M61, and one action is the requirement rather than a nicety: the report is what a
+              session is *for*, and a player who has to be told a URL to reach it does not reach
+              it. An anchor rather than a button because the thing on the other end is a
+              document — so middle-click, Save Link As and the browser's own back button all
+              work, none of which a fetch-and-blob would have kept.
+
+              Unconditional, because the shell is: the app renders the start screen until there
+              is a run and this component only exists for one. */}
+          <a
+            className="topbar__report"
+            href={universeReportUrl(runId)}
+            target="_blank"
+            rel="noreferrer"
+            title="One standalone HTML file, over every timeline of this lineage"
+          >
+            Report
+          </a>
+          <div className="rates" aria-label="Clock">
+            {[0, 1, 3].map((option) => (
+              <button
+                key={option}
+                type="button"
+                data-active={rate === option}
+                onClick={() => setRate(option)}
+              >
+                {option === 0 ? 'Pause' : `×${option}`}
+              </button>
+            ))}
+          </div>
         </div>
       </header>
 

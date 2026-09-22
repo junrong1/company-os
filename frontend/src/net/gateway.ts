@@ -652,3 +652,29 @@ export async function fetchDiff(
 
   return (await response.json()) as DiffWire
 }
+
+// =========================================================================
+// The standalone report (U22, M61)
+// =========================================================================
+
+/**
+ * Where the exported report lives, for a link rather than for a fetch.
+ *
+ * **A URL and not a call**, which is the whole of why this is three lines with no `fetch` in
+ * them. The export is a document: the browser is better at opening one than this client is at
+ * receiving 400 KiB of HTML, holding it in memory and re-serving it to itself through a blob —
+ * and a plain anchor is a middle-click, a Save Link As and a "copy link" the player already
+ * knows how to use. A button that assembled the file in JavaScript would have taken all three
+ * away to gain nothing.
+ *
+ * On `/api/report/...` for the reason the diff is: the fold lives in the report service, the
+ * gateway may not import it (R4), and the launcher mounts that service at `/report` inside the
+ * one process (R28). So the anchor is same-origin and goes through the same nginx prefix as
+ * every other call — no second port for a player to reach, and nothing to configure.
+ *
+ * The run id is encoded because `POST /runs` accepts a client-supplied one and refuses only
+ * control characters; a slash in it would otherwise reach the server as a different route.
+ */
+export function universeReportUrl(runId: string): string {
+  return `${GATEWAY_BASE}/report/runs/${encodeURIComponent(runId)}/universe.html`
+}
