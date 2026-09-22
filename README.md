@@ -1,11 +1,32 @@
 # Company OS — a company simulator
 
+**You are the CEO of a nine-person company. You walk to people's desks, they tell
+you things the tray never shows, you decide — and then you fork the decision and
+play the other answer, side by side.**
+
+![Eight seconds of Company OS: the CEO walks across the office to a director, the
+director says what only a conversation yields, the CEO decides in person, and the
+run forks into two timelines whose figures are compared at the same sim-day.](docs/assets/hero/company-os-hero.gif)
+
+```bash
+docker compose up     # then open http://127.0.0.1:8790
+```
+
 [![CI](https://github.com/junrong1/company-os/actions/workflows/ci.yml/badge.svg)](https://github.com/junrong1/company-os/actions/workflows/ci.yml)
 
-A pixel-art simulator of a company. You are the CEO: you assign work, employees
-move along the real reporting lines to do it, and they stop at the point where
-only you can decide. Walking over to ask them beats clearing it from the tray,
-because in person they tell you things the tray never shows.
+Everything above is one recording of one run: the walk, the conversation, the
+decision taken in person, and the diff of the two futures it produced. Nothing in
+it is a mockup — `frontend/scripts/hero.mjs` drives the real client against a real
+kernel and the last frame is the diff route's own answer. Every figure in the
+product carries a marking saying it is authored tuning rather than a measurement,
+which is why the numbers in that last frame wear a `≈`.
+
+**The loop.** You assign work; employees move along the real reporting lines to do
+it; they stop at the point where only you can decide. Clearing it from the tray
+works and costs morale. Walking over beats it, because in person they tell you the
+one thing that is not written down anywhere. Then a past decision can be forked
+into a second timeline that plays forward from the moment you took it, and the two
+can be read against each other at the same sim-day.
 
 Built as a demo surface for the `100_avater` idea (virtual office → hearing →
 work-knowledge graph), but it runs standalone.
@@ -623,7 +644,10 @@ frontend/
   src/render/                 the ported canvas office, lifecycle-managed (U12)
   src/ui/                     shell, HUD, panels (U13)
   src/dag/                    node encoding, layout, DAG view, chain strip (U14)
+  src/universe/               the timeline tree and the diff between two of them (U17, U18)
+  scripts/                    the capture and asset tools: screenshots, the hero, a GIF writer
   tests/
+docs/assets/hero/             the README's hero, and its last frame as a still
 infra/postgres/init/          the read-only reporting role, and the suite's database
 docker-compose.yml            three containers, no profile
 docker-compose.test.yml       publishes the store, for the store suite only
@@ -638,6 +662,25 @@ across five containers. What collapsed is the deployment.
 so `packages/simcore/time.py` imports as `simcore.time`. A flat module named
 `time.py` can never shadow the standard library that way, because a submodule
 reference is always fully qualified.
+
+### Regenerating the hero
+
+The image at the top is checked in, and it is a recording rather than a montage. To
+make it again, bring a kernel up and run the capture:
+
+```bash
+docker compose up -d
+cd frontend && npm run hero          # HERO_DEBUG=1 narrates it and writes every frame
+```
+
+It creates its own run, walks the CEO with the arrow keys, opens the conversation by
+standing next to somebody, takes the decision in person, forks the other option, runs
+both timelines past the next day boundary, and ends on the diff route's answer about
+the two. It refuses to run without a kernel, because there is no fallback that would
+still be the loop. The GIF is written by `scripts/gif.mjs`, which is about two hundred
+lines on top of nothing — the same argument `scripts/png.mjs` makes, plus one of its
+own: the office is flat pixel art on an ivory ground, and a generic encoder's dithering
+scatters noise across a floor drawn without any.
 
 ---
 

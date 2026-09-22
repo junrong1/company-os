@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "cast": "node scripts/make-cast-atlas.mjs",
+    "hero": "node scripts/hero.mjs",
     "verify": "node scripts/screenshots.mjs"
   },
   "dependencies": {
