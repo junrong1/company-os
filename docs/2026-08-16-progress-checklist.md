@@ -148,16 +148,18 @@ pushed the office off the screen.
 
 ## Phase 5 — the MVP (`docs/plans/2026-08-16-001-feat-company-os-mvp-plan.md`)
 
-Twenty-five units in six phases. **Twenty-three are done: Phases A, B, C, D and E are complete,
-and three of Phase F's are in** — the repository runs, scenarios are files, the bench briefs and
+Twenty-five units in six phases. **All twenty-five are done, and the MVP is complete** — the
+repository runs, scenarios are files, the bench briefs and
 refuses and pays for a situation once, a past decision forks into a timeline that plays forward and
 survives a restart, every director carries a memory the CEO can read, one line cannot read another's
 without the CEO saying so and the work stops until they do, the whole tree of timelines is a surface
 the player moves between, the fork is reachable from inside the game rather than from a terminal, the
 suites now fold whole lineages rather than single runs, a whole Universe of timelines folds into
-one report that says where the company was overloaded and which of its futures escaped it, and that
-report now ends by saying what is worth automating — from a catalog somebody authored, about a line
-this run actually overloaded, priced by the company's own arithmetic. The plan's
+one report that says where the company was overloaded and which of its futures escaped it, that
+report ends by saying what is worth automating — from a catalog somebody authored, about a line
+this run actually overloaded, priced by the company's own arithmetic — and the whole of it exports
+as one file that opens on a stranger's laptop with nothing installed and reaches for nothing. The
+README leads with eight seconds of the loop, recorded from a run that really happened. The plan's
 open questions and everything execution resolved or found are in
 [`docs/2026-08-16-mvp-execution-decisions.md`](2026-08-16-mvp-execution-decisions.md), which also
 carries the deferred defect register.
@@ -226,13 +228,17 @@ carries the deferred defect register.
 |---|---|---|
 | U21. What is worth automating | `[x]` | `[[automation]]` in the scenario, which took `SCENARIO_SCHEMA_VERSION` to 2 — the table is optional and a version-1 file would load, and it is refused anyway because the declared version is inside the content hash, so accepting one would defer the failure to a guard that can only say "the file has changed". **The golden fixture moved by exactly one line**, the content hash: nothing puts the catalog on the wire, which is asserted by a tripwire requiring its only two readers to be the loader and `report/proposals.py`. A candidate is proposed only where the fold found its line over the ceiling for three consecutive sim-days — a reporting threshold, deliberately *not* in `rates.TUNING`, because moving it changes no run's log, hash or readings. The payback is recomputed from the company's own arithmetic at the day boundary it cites, never stored: `step.draw_cost_of` was split out of `day_cost_terms` because integer division means the hours removed cannot be priced on their own (18 h/mo is `18 * 5 // 100 = 0`, while the difference of the two totals is 1). **It answers in load as well as in money**, because the evidence that motivates a proposal is an overloaded line and two numbers printed together read as the same size — `load_permille_before` is the kernel's recorded figure and `after` is `capacity.load_permille` over a smaller draw, with `clears_the_ceiling` saying outright. Measured over both shipped companies: the draw is at most 222 per mille of a line against a ceiling of 1000 and the largest candidate moves it by 100, so **no authored automation can clear an overloaded line on this content** — stated, pinned per line, and not fixed by re-tuning two companies until the demo looked better. Prose is the only generated half, and a sentence that cites nothing, cites outside the proposal's own evidence, or carries a figure the report did not compute is refused **twice** — at the prompt, so it is never cached, and at publication, because that copy is exported. A producer cannot add a proposal by naming one. The fifth composed callable joins the two services, and what crosses is a packet the report built. 38 new test functions; verified live over Postgres on a 21-day `ashcroft` run — People over ceiling all 21 days, load 1287 → 1187 against a ceiling of 1000 and reported as not clearing it, burn 31 → 30, runway 134 → 139, with 31 byte-equal to the `total_cost` the log says that day was charged and the cited sequence 95 read back as a `DAY_CHECKPOINT`. **No live defect of its own**; it knowingly widens a registered one — the universe route is synchronous and now makes a provider call per proposal in series, which the register now names as the worst of the three |
 
-**Phase F, the rest.** **U23**'s only dependency — U18 — is in, so it is reachable now, and it is
-independent of everything left. **U22** sits behind U21, which is done. What it inherits is in the
-decisions doc: `proposals` and `prescription_rule` on the payload, a `note` per proposal saying
-which part a model wrote, everything interpolable already capped and control-character-free at
-its source, and a payload measured at **398 KiB at the sixteen-timeline fork cap** — of which the
-prescription is 14.3 KiB, four per cent, so U20's lever is unchanged: the per-day load series is
-the bulk and the spans are the summary.
+**U22 is in, and the report leaves the machine.**
+
+| Unit | Status | Evidence |
+|---|---|---|
+| U22. The standalone export | `[x]` | `GET /report/runs/{id}/universe.html` — the same fold the JSON route answers, rendered rather than serialised, and `_universe` is the one function both call so the page a player is looking at and the file they mailed cannot disagree about a company. **It opens with no server and reaches for nothing**, verified from a filesystem with the browser offline: one request, for the document; nothing failed, no console error, zero scripts, and the stylesheet applied under its own `sha256-` policy on `file://`. **Escaping is a type rather than a discipline** — `markup.raw` is the only door for unescaped bytes and the suite asserts it has exactly two call sites in the service, the checked-in QR asset and the stylesheet; the type earned itself on the first render, when a definition list built by concatenation came out as the visible characters `<dt>Lineage root</dt>`. **The manifest is load-bearing**: `render` refuses a payload carrying a field no content class declares, so a new figure on the report fails the suite until somebody decides what it means to mail it — and the declaration is checked the other way too, so a pattern nothing produces fails as well. One field is declared and deliberately withheld, the model that wrote the prose. **The QR code is decoded by the suite** rather than assumed: `tests/qrread.py` reads the SVG's own path data back into a module grid, undoes the mask the symbol declares and parses the segment out of it. Nothing is time-stamped, so two exports of one Universe are byte-identical; the filename derives from a validated identifier, because a run id is whatever `POST /runs` accepted and this one lands in a header. 26 new backend tests plus 9 client ones. **One live defect, on its own new surface and invisible to every suite**: a timeline that would not fold rendered `None ≈ taken of None ≈ offered`, a `Shipped` of `None ≈` and an event at `seq None` — four fabrications wearing the authored-tuning marking, on the one timeline whose point is that it has no figures. Every assertion about a refused timeline was about the payload, where everything was correct. Verified live three ways: offline from a file, on Postgres through the launcher, and `docker compose up` end to end — start, settle, fork, press *Report*, and a two-timeline document named by the lineage root. Nothing appended: no event kind, no payload field, no shape version, no fixture |
+
+**U23 is in, and the README leads with the product.**
+
+| Unit | Status | Evidence |
+|---|---|---|
+| U23. The README hero and the first command | `[x]` | Eight seconds at the top of the page: the CEO walks to a director, the director says the thing only a conversation yields, the decision is taken in person, and the film cuts to the two timelines it produced and the diff between them at day 3 — *Avg lead time +3, Morale −3, Visibility −4*. **A recording, and the capture is what makes that checkable**: `frontend/scripts/hero.mjs` refuses to start without a kernel, creates its own run through the gateway, walks with the arrow keys and ends on the diff route's own rows, where `screenshots.mjs` next door deliberately falls back to a recorded genesis because what *it* photographs is the art. The two futures are made to differ off camera, because a decision taken inside day one diffs to a column of zeros until both timelines pass the next boundary. **Three things about the client only driving it reveals**: the store's `ceo` is the spawn and never moves — the live position is a `POSITION_ECHO` control frame in `ceoEcho`, and reading the wrong one routes every walk from the spawn; `typingTarget` gives the arrow keys to a focused BUTTON, so clicking the clock first films a CEO standing still with **no `CEO_INPUT` rows in the log at all**; and a held key's length is set by the client's *nominal* render clock rather than the kernel's achieved rate, measured at 36 against 20.4 and legs landing 1.8× too far. That last gap also stalls the render clock between echoes and raises a refusal banner the player did not cause, which is now in the register. `scripts/gif.mjs` is a dependency-free GIF89a writer with a median-cut quantiser and per-frame differencing — 94 frames of a 1200×675 UI in 0.34 MB — and `tests/hero.test.ts` **decodes** it with a reader written from the spec that shares nothing with the writer, pixel for pixel. 9 new backend tests plus 9 client ones. Nothing appended |
 
 **One fix outside the plan.** `a69c304` — a command's events were never published to a connected
 client. `_publish` had one caller inside the tick loop and published only what that batch returned,
@@ -347,7 +353,7 @@ Every shipped unit but one turned up a live defect on its path. The pattern is w
 
 ---
 
-## MVP PRD — M1–M67 as of twenty-three units of the MVP plan
+## MVP PRD — M1–M67 as of all twenty-five units of the MVP plan
 
 Requirements this plan has moved are marked with the unit that moved them.
 
@@ -448,7 +454,13 @@ Requirements this plan has moved are marked with the unit that moved them.
 - [x] M57 what is worth automating, from the authored catalog, citing events and stating payback — **U21**. The catalog is `[[automation]]` in the scenario; a candidate is proposed only where the fold found its line over the ceiling for three consecutive sim-days; the payback is recomputed from the company's own cost arithmetic at the boundary it cites
 - [x] M58 prose over cited figures only, and no figure from a model — **U21**, refused at the prompt and again at publication, with a test that the two refuse the same replies
 - [x] M59 the marking on every figure, and the report says the company is invented — **U20**
-- [ ] M54, M60, M61 — U22
+- [x] M54, M60, M61 — **U22**. One standalone HTML file that opens with no server and makes no
+  network request — verified from a filesystem with the browser offline, one request for the
+  document and nothing else asked for. It carries its own data, styling and QR code; contains no
+  script and says so in a policy that travels inside it; escapes by construction rather than by
+  care; declares what it contains and refuses a payload carrying a field no content class claims.
+  The QR code is a checked-in asset the suite *decodes* back to the repository URL. Reachable in
+  one action from a live run, from any stage
 
 **Closing the known holes (M62–M65)**
 - [x] M62 staff movement on the wire — **U3**, and live only because `a69c304` publishes what a command committed; U3 measured that the delegation walk never reached the client before it
@@ -464,7 +476,11 @@ Requirements this plan has moved are marked with the unit that moved them.
 - [x] M67's CI proof — **U13**. The smoke job runs the README's first command from a clean checkout,
   builds all three images, and asserts the client is served, a run is created through nginx, and the
   bench reports absent with nothing spent
-- [ ] M66's hero — U23
+- [x] M66's hero — **U23**. Eight seconds at the top of the README: the walk, the conversation,
+  the decision taken in person, then a cut to the two timelines it produced and the diff between
+  them. A recording of one real run rather than a montage, and the capture is what says so —
+  it refuses to start without a kernel, creates its own run, walks the CEO with the arrow keys,
+  and ends on the diff route's own rows
 
 ---
 
@@ -475,14 +491,14 @@ U15 closed when MVP U16 minted a fork id that cannot collide. The
 simulation half of the product is built and covered by four suites plus golden vectors across two
 languages, and the daylight visual system is complete on top of it.
 
-The MVP plan is **21 of 25 units in**, with Phases A, B, C, D and E complete and the first of
-Phase F's done. Of the PRD's 67 requirements, roughly 8 were met when that plan was written and about
-61 are met now — M13 is the one U7 closed, M15 and M16 stopped being half-met, U11 closed the five the
-bench is made of, U13 closed M30 and M67's proof half, U12 built all of M33 but the one line U16
-owned, U16 closed that line plus the five forks are made of, U14 closed the three memory rests on,
-U17 closed M49, U18 closed M50 and M52, U15 closed M39 through M43, and U19 closed M34 and M65 and
-made M35 a store diff. The suites went from 699 backend tests to **1,416**, and the client from 404
-to **600**.
+The MVP plan is **25 of 25 units in, and every one of the PRD's 67 requirements is met.** Roughly
+8 were met when that plan was written — M13 is the one U7 closed, M15 and M16 stopped being
+half-met, U11 closed the five the bench is made of, U13 closed M30 and M67's proof half, U12 built
+all of M33 but the one line U16 owned, U16 closed that line plus the five forks are made of, U14
+closed the three memory rests on, U17 closed M49, U18 closed M50 and M52, U15 closed M39 through
+M43, U19 closed M34 and M65 and made M35 a store diff, U20 and U21 closed the report's seven, U22
+closed the export's three, and U23 closed the hero. The suites went from 699 backend tests to
+**1,520**, and the client from 404 to **617**.
 
 What remains is still concentrated where the plan said it would be, but the shape has changed three
 times. The bench was the plan's single biggest risk and the unit most likely to be "estimated as an
@@ -495,7 +511,9 @@ subsystem, a state-shape move and a rules-version move, all of it for a mechanic
 that a refusal stops work. It is also the unit that put the *stall* behind a request for the first
 time: `raise_request` had claimed one since U11 and never had one. **The diff is in on the same
 terms**, and it is the fourth read surface in a row that cost the log
-nothing. What does not exist is Authorization and the report.
+nothing. **The report and its export are in on the same terms again** — five read surfaces in a row
+that appended nothing, the last of which is a file that leaves the machine. What does not exist is
+in *Scope Boundaries*, deliberately, and in the deferred defect register, knowingly.
 
 **CI was the thing genuinely overdue, and it is now in.** Four jobs, no secret of any kind, and it
 earned itself twice before it was ever green: a second `tsc -b` failure sitting in a tree whose suites
@@ -565,3 +583,35 @@ synchronous route, so it was verified in the container's own log rather than in 
 hero ends on. U20 inherits a lineage harness, a `state_at_day` that now returns the kernel's own hash
 in every case, and the open question U19 registered rather than took: `simcore.verify` has no
 production caller at all, and a report over a lineage is where one belongs.
+
+**U22 is in, and it is the fifth read surface in a row that cost the log nothing.** What it added
+is a *refusal*: the export declares the content classes it may carry and `render` will not write a
+payload holding a field none of them claims, so a new figure on the Universe report is a decision
+about what this artifact mails to somebody rather than a diff nobody read. The declaration is
+checked from both ends, so it cannot rot in either direction. Escaping stopped being a discipline
+and became a type with two trusted call sites, and it earned itself on the first render — a
+definition list built by concatenation came out as visible `<dt>` characters, because `Html + Html`
+is a plain `str`. The QR code is checked in, as execution decision §5 settled, and the suite
+*decodes* the asset back to the repository URL rather than trusting a picture. Its live defect is
+the pattern's cleanest instance yet: a timeline that would not fold rendered four `None`s wearing
+the authored-tuning marking, and no suite could have seen it, because every assertion about a
+refused timeline is about the payload — where everything was correct.
+
+**U23 is in, and it is the only unit whose deliverable is a picture.** The interesting part is that
+"this is a recording, not a montage" is not visible in the file, so it is asserted in the capture:
+the script refuses to start without a kernel, creates its own run, walks the CEO with the arrow
+keys and ends on the diff route's own rows. It also turned up three things about the client that
+only driving it from outside reveals — the store's `ceo` is the spawn and the live position is a
+control frame in `ceoEcho`; a focused BUTTON owns the arrow keys, so clicking the clock first films
+a CEO standing still with no `CEO_INPUT` in the log at all; and a held key's length is set by the
+client's nominal render clock rather than the kernel's achieved rate, measured at 36 against 20.4.
+The third of those is now a register entry, because the same gap stalls the clock between echoes
+and shows the player a refusal they did not cause.
+
+**The MVP is done.** Twenty-five units, six phases, sixty-seven requirements. **Every shipped unit
+but one turned up a live defect no suite was failing on**, and the pattern never changed: every
+observable agreed, and the disagreement was with something no observable reported.
+A clock that said it was running over a world standing still. A tree whose day came from a row that
+lags the fold. A column of figures under the other timeline's heading. Four fabricated numbers on
+the one timeline that has none. The suite is 1,520 backend tests and 617 client ones and it did not
+find any of them; `docker compose up` and reading the page did.

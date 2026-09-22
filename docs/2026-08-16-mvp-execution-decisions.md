@@ -697,6 +697,27 @@ its own terms (it is a morale event that happens to carry load), but anything do
 that will want it. The fold answers it exactly and cites the day checkpoint, so this is registered
 rather than fixed: adding an event would move the log's shape for a figure the fold already has.
 
+**The client's render clock stalls between position echoes when the machine is slow, and the
+next key release is then refused with a banner the player did not cause.** Found by U23, while
+driving the real client from a capture script. The clock extrapolates from the last tick the
+kernel said out loud and stops after `MAX_EXTRAPOLATION_TICKS` — 90 — of hearing nothing. The
+kernel speaks once a sim-hour, which is 60 ticks: comfortably inside the budget at the nominal
+rate, and outside it once the achieved multiplier drops below about two thirds, because 60
+achieved ticks then take longer in wall-time than 90 nominal ones. Past that point the clock
+stalls before every echo, and an input tagged from a stalled clock is tagged for a tick that has
+already passed. **Measured** during a capture: the client tagging tick 16 while the run was at
+314, and `input is for tick 16, which is not in the future (now 314)` across the top of the page.
+
+Registered rather than fixed, and the reason is that the observed cause is the *capture*: a
+browser being screenshotted ten times a second, beside Docker, on one laptop. Nobody playing at
+sixty frames a second on an idle machine reaches an achieved multiplier that low. What makes it
+worth a line anyway is that the failure is silent in the direction that matters — the player sees
+a refusal about something they did not do, and the only way to tell it from a real one is to know
+this paragraph. The fix is not the extrapolation cap, which exists for a good reason (a clock that
+extrapolated forever would drift into fiction); it is that a refusal *caused by the client's own
+late tag* is a different thing from a refusal of the player's intent, and only the second is worth
+a banner. `scripts/hero.mjs` sweeps the sentence rather than hiding it, and says so at length.
+
 **`achieved_multiplier_permille` truncates a fraction of a tick at every wake and never accumulates
 it.** Found by U4, confirmed and deepened by U5. At rate 1 the clock runs at roughly 55% of nominal
 while the field reports `1000`, and because the truncation is per-wake a *delayed* loop loses
@@ -2636,3 +2657,264 @@ functions: 20 in `test_report.py`, 11 in `test_scenario.py`, 7 in `test_bench.py
 on this machine for the reason U20 recorded — something here answers **502** on a closed loopback
 port, so the failure types as `PROVIDER_ERROR` rather than `UNREACHABLE`. Untouched by this unit,
 and failing identically at `66e5421`.
+
+---
+
+## What U22 found, that U23 needs
+
+### The manifest is load-bearing, or it is a comment
+
+The plan asked for "a manifest declaring the content classes the export may carry" and "a test
+that fails when a new field arrives undeclared". Both were built, and then one more thing was,
+because the two on their own are a list and a test that somebody eventually deletes: **`render`
+refuses a payload carrying a field no class declares.** Not a warning, not a silently narrower
+document — a `ValueError` naming every undeclared path and saying what the decision is.
+
+That turns the manifest from documentation into the thing standing between a new field on the
+Universe report and that field being mailed to a stranger. A figure added to the report fails the
+report suite until somebody has decided which class it belongs to, which is exactly the moment to
+notice that, say, a director's retrieved context has just become something the artifact travels
+with.
+
+The declaration is checked **in both directions**, and the second one is the half that keeps it
+honest. `test_the_manifest_declares_nothing_the_report_never_produces` takes the union of every
+leaf path two real fixtures produce and asserts that no declared pattern is unmatched — so a
+field removed from the report takes its declaration with it, and a line written for a field that
+was later renamed fails on the day of the rename rather than years afterwards. A manifest only
+ever added to is a manifest that eventually describes a document nobody ships.
+
+One field is declared and deliberately **withheld**: `note.model_identity`, which names the
+provider and model that wrote a proposal's prose. It is on the wire because the live surface is
+entitled to say which model spoke; it is not in the file, because the file travels and the
+operator's provider is theirs. Declared, so nobody "fixes" the manifest by moving it into a
+carried class; and asserted from the other side, that the value never appears in the bytes.
+
+### Escaping is a type, and the trusted surface is two call sites
+
+Everything the export interpolates is content this repository did not write — a scenario that
+arrived by pull request, prose that came out of a model, a run id off a URL, a director's name in
+a TOML file — and the artifact is then deliberately sent to somebody and opened from a filesystem
+where a script still reaches the network. "We escaped carefully" is a claim that is true on the
+day it is written, so it is not the claim made here.
+
+`report/markup.py` makes raw markup a type. `tag` escapes every child that is not already `Html`,
+attribute values included and quotes included, and the only door for unescaped bytes is
+`markup.raw` — which the suite asserts has **exactly two call sites in the service**: the
+checked-in QR asset and the stylesheet, both repository-authored constants. It also asserts the
+`Html` constructor appears nowhere outside `markup.py`, because that is the way around `raw`. A
+third of either is a review conversation rather than a line that looks like every other line.
+
+This is deliberately not a template engine. A template is a string with holes in it, which is the
+shape that makes a missed hole possible; a tree of calls has no holes.
+
+**The type earned itself on the first render.** `Html + Html` is a plain `str` — `str.__add__`
+knows nothing about the subclass — so a fragment built by concatenation gets escaped as text by
+the next `join` it reaches. The definition list at the top of the document rendered as the visible
+characters `<dt>Lineage root</dt>`, in the browser, on the first look. The fix is one call site;
+the test is that a document rendered over content containing no markup contains no `&lt;` at all,
+which catches the whole class.
+
+### The QR code is checked in, and the suite decodes it
+
+Execution decision §5 settled that the code is a checked-in inline SVG rather than a runtime
+encoder: the URL is fixed at authoring time, the export may contain no script, and R8 rules out a
+few hundred lines of Reed–Solomon to do what a constant already does. What that decision left
+open is the one way the asset can be wrong — it is a picture, and a picture of the wrong URL
+looks exactly like a picture of the right one.
+
+So `tests/qrread.py` reads it. It parses the SVG's own path data back into a module grid, reads
+the format information, un-XORs it, undoes the mask the symbol declares, walks the data modules in
+the interleaving order and parses the byte-mode segment — and asserts what comes out is
+`export.REPOSITORY`. It is a reader and not half an encoder: no Reed–Solomon, no error
+correction, nothing in it could reproduce the asset. The one thing it shares with an encoder is
+the spec. The symbol is 3-M, single-block, mask 5, and the link beside it in the document is
+asserted to be the same string.
+
+### The policy travels twice, and the stylesheet is admitted by hash
+
+`Content-Security-Policy` is on the response *and* in the document, and the second one is the one
+that matters: the response is gone the moment the file is saved, and saving it is what the
+artifact is for. `default-src 'none'` is the whole policy; `base-uri` and `form-action` close the
+two things `default-src` does not govern.
+
+The stylesheet is admitted by `sha256-` hash rather than by `'unsafe-inline'`, so the policy
+permits exactly the bytes this module wrote and not a second `<style>` somebody's content
+smuggled in. A browser too old to understand a style hash drops the stylesheet, and the document
+is semantic HTML that reads perfectly well without one — the right way round for that failure.
+The suite recomputes the hash from the `<style>` element that is actually in the document, which
+is the only version of this check that cannot rot: a helper that normalised whitespace on the way
+in would leave a policy that is present, well-formed and wrong.
+
+### The live defect: four fabricated figures on the one timeline with none
+
+Every shipped unit but one has turned up a live defect on its own path, and this one was found by
+rendering a lineage whose only timeline had been written under other rules.
+
+A timeline that **would not fold** fell through to the same blocks every other timeline gets,
+against an empty report. It rendered `None ≈ taken of None ≈ offered`, a `Shipped` of `None ≈`, a
+last event at `seq None`, and the sentence "No decision was settled in this timeline" about a log
+nobody could read. Four fabrications wearing the authored-tuning marking, on the one timeline
+whose whole point is that it has no figures.
+
+**No suite could have seen it**, and that is the part worth keeping. Every existing assertion
+about a refused timeline is about the *payload*, where `report` is correctly `null` and `refusal`
+correctly carries a sentence. The payload was right the whole time. It took rendering it and
+reading the page. Closed twice over: the section stops at the refusal, and `figure()` renders an
+absent value as a stated absence rather than as a marked one.
+
+The same pass found the emptier shape beside it — a Universe whose every timeline refused printed
+blank identifiers where the company, the rules version and the state shape should be, which reads
+as a missing value rather than as a report that correctly has none.
+
+### Small things that were decisions
+
+- **Nothing is time-stamped.** The report is identified by its lineage root, so two exports of one
+  Universe are the same document — asserted as byte-equality rather than trusted. A "generated at"
+  line would have made that false on every export, for a fact the covering message already carries.
+- **The filename derives from a validated identifier, and derives rather than refuses.** A run id
+  is whatever `POST /runs` accepted — the kernel refuses only control characters, so a quote, a
+  semicolon, a slash and a right-to-left run are all reachable, and this string lands in a
+  `Content-Disposition` header. Unusable parts are dropped and an id that survives as nothing at
+  all falls back to a digest of itself, so two hostile ids are still two files. The document prints
+  the root id in full whatever the file is called.
+- **`Content-Disposition: inline`, not `attachment`.** Reaching the report from the client should
+  *show* it; the filename is there for the Save As that follows.
+- **The per-day load readings are drawn as a grid, not a column.** They are the bulk of the payload
+  — 1344 of them at the fork cap — and a thousand-row table is a thousand rows nobody reads. One
+  row per line and one cell per day is the same data in a shape where an overloaded line is visible
+  at a glance.
+- **A trajectory's change is printed unsigned by colour.** The client colours a delta by whether it
+  is *favourable*, which the diff's wire carries as `good` and a trajectory does not. Colouring by
+  sign here would have put a green number on a company getting worse, in the product's own
+  favourable-delta hue, on the one surface a reader cannot cross-check against the app.
+
+### What U22 inherits to U23, and what it cost the log
+
+Nothing. No event kind, no payload field, no state-shape version, no rules version, no golden
+fixture, nothing appended. The fifth read-and-write-through surface in a row built entirely out of
+answers the backend already had: the export is the JSON route's own fold, rendered, and
+`_universe` is the one function both call so that a figure on the page a player is looking at and
+a figure in the file they mailed cannot disagree about a company.
+
+### Verification
+
+**1452 passed on SQLite and 1520 on both dialects, 1 skipped, 1 xfailed**, plus 609 client tests,
+a clean `tsc -b`, a clean `oxlint` and a clean build. Twenty-six new backend test functions and
+nine client ones.
+
+Verified live three ways, because the claims are about a file rather than about a payload:
+
+1. **Offline, from the filesystem, with the browser offline.** One request — the document itself.
+   Nothing else asked for, nothing failed, no console error, zero `<script>` elements, and the
+   stylesheet applied under the hash policy on `file://` (body `#fffef8`, links `#1677b3`). That is
+   M54 done the way the plan asked for it rather than the way the suite asserts it.
+2. **Live on Postgres through the launcher.** A two-timeline lineage exported from the *child*,
+   named by the *root* in the `Content-Disposition`, with all 22 of the JSON route's claims printed
+   in the document and the two reads agreeing figure for figure once the clock was paused between
+   them.
+3. **`docker compose up`, end to end, through nginx.** Start a run, settle a decision in person,
+   fork the alternative from the Decided panel, press *Report* — a new tab at
+   `/api/report/runs/<child>/universe.html` holding a standalone two-timeline document. M61 is one
+   action from the office, and it was verified as one.
+
+`test_modelgw.py::test_a_connection_refused_at_a_configured_local_base_url_is_typed` still fails
+on this machine for the reason U20 and U21 recorded — something here answers **502** on a closed
+loopback port. Confirmed environmental this time: it passes with `NO_PROXY=*` set, and it fails
+identically at `4b384b1`.
+
+---
+
+## What U23 found, and why the hero is a recording
+
+### The hero is captured, and four things make that checkable
+
+M66 asks for eight seconds — walk, conversation, decision, then a cut to the timeline tree with
+two futures side by side — and the easy version of that is four mockups in a row. A viewer cannot
+tell the difference, so the difference is asserted where it *is* visible, in the capture:
+`scripts/hero.mjs` refuses to start without a kernel, creates its own run through the gateway,
+walks the CEO with the arrow keys, and ends on the rows the diff route answers with. A montage
+would need none of those and could not have any of them. `backend/tests/test_readme.py` pins all
+four, and pins the first screenful around them.
+
+The neighbouring harness deliberately does the opposite, and the contrast is the point.
+`screenshots.mjs` falls back to a recorded genesis because what it photographs is the *art*, and
+requiring a Python stack up to look at the art means nobody looks at it. This one photographs the
+*loop*, and there is no fallback that would still be the loop.
+
+**The two futures are made to differ, off camera.** The decision is taken inside day one and a
+diff compares at a *day*, so a diff taken straight after the fork is two identical columns and a
+difference of zeros — a correct reading of a Universe nothing has happened in yet, and a terrible
+last frame. Both timelines are therefore run past the next day boundary between the cut and the
+final beat, through the gateway rather than the UI, because a lineage has one clock and moving it
+between timelines is a `switch`. The film ends on *Avg lead time +3, Morale −3, Visibility −4*.
+
+### Three things about the client that only driving it reveals
+
+**The store's `ceo` is where the kernel spawned them, and never moves.** The live position arrives
+as a `POSITION_ECHO` *control frame* and lands in `ceoEcho`; `ceo` is replaced only by a resync.
+Every routing decision in the first version of the capture read the wrong one, so every walk was
+routed from the spawn however far the CEO had got — which looks exactly like a walk that works
+until the route has a corner in it. Both fields are documented in `store.ts` and the distinction
+is deliberate; it is simply invisible until something outside the client tries to use it.
+
+**A focused button owns the arrow keys.** `typingTarget` refuses the stage's keys while a `BUTTON`
+has focus, deliberately, because the decision tray is built out of radios. So clicking the clock
+control and then holding Down films eight seconds of a CEO standing still — with **no `CEO_INPUT`
+rows in the log at all**, which is what finally identified it, because every other observable said
+the client was fine. Anything that clicks before it walks has to hand the keyboard back.
+
+**An input's length is measured by the client's nominal clock, not the kernel's achieved one.** A
+key held for D milliseconds moves the CEO by whatever tick interval the client tags the press and
+the release with, and the client tags from its render clock, which runs at a fixed 36 ticks per
+wall second per rate step. The kernel, on a machine busy taking screenshots, achieves rather less.
+Timing the holds against the *achieved* rate stretched every leg by the ratio of the two —
+**measured, 36 nominal against 20.4 achieved, legs landing 1.8× too far**, and four attempts in a
+row oscillating either side of a one-tile doorway. That same gap is what stalls the render clock
+between echoes and produces the refusal banner now in the register.
+
+### What the capture does about precision, rather than pretending to have it
+
+A leg is a key held for a wall-clock duration against a client whose tagging is an estimate, so
+the CEO arrives within about a third of a tile of where it was aimed. Three things make that
+enough:
+
+- **The route is a breadth-first search over the client's own collision grid** — the same
+  `buildGrid` and `walkable` the prediction uses — rather than a greedy step toward the target. A
+  greedy walk into a corner stays there: measured, the CEO pressing Down against a wall at tile
+  (3, 8) while the capture happily filmed it.
+- **Legs are measured between tile *centres*, in milli-tiles.** Aiming at a tile edge lands on the
+  wrong side of it whenever the timing is a hair short, and a doorway is one tile wide. Aiming at
+  the centre leaves half a tile of slack on both sides.
+- **The walk is cut after thirty frames, whether or not it has arrived.** The corrections that
+  follow are neither interesting nor short, and the walk's job in the film — the CEO is a body on
+  a floor, not a cursor over a list — is done in two and a half seconds. This is a decision about
+  the film that happens to remove the precision problem from the picture.
+
+### The GIF writer is two hundred lines and no dependency
+
+`scripts/gif.mjs` is a GIF89a writer with a median-cut quantiser, written for the reason
+`scripts/png.mjs` gives at length and one more of its own. The shared reason: the requirement is
+"turn a hundred RGBA frames into one looping file", and every package that does it brings a
+lockfile entry and a supply-chain edge that outlive the code. Its own reason: the office is flat
+pixel art on an ivory ground, so a generic encoder's default dithering scatters noise across a
+floor drawn without any, and the first thing a stranger sees of this product is the quality of
+that file.
+
+Frames after the first are written as the changed rectangle only, with unchanged pixels left
+transparent over the frame below. That is what keeps 94 frames of a 1200×675 UI to **0.34 MB**.
+
+`frontend/tests/hero.test.ts` **decodes**. The reader in it is written from the spec and shares
+nothing with the writer — its own LZW, its own frame composition, its own disposal handling — and
+the round trip is asserted pixel for pixel. The quantiser has its own tests, including the bug it
+shipped with for ten minutes: a box split at its last index leaves an empty box behind, and the
+average of no colours is `NaN`.
+
+### Verification
+
+**1520 passed on both dialects, 1 skipped, 1 xfailed**, plus 617 client tests, a clean `tsc -b`,
+`oxlint` and build. Nine new backend test functions and nine client ones.
+
+The hero itself was captured against the compose stack, and every claim `test_readme.py` makes
+about it is about the checked-in file: GIF89a, 1200×675, 94 frames, 7.5 seconds, 0.34 MB, and a
+last frame kept as a PNG of the same size. Whether eight seconds of a company reads as a company
+is a human call, like every other judgement `screenshots.mjs` exists to put in front of somebody.
